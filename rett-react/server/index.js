@@ -186,6 +186,18 @@ app.use((err, _req, res, _next) => {
   return res.status(400).json({ error: err?.message || 'Upload error' });
 });
 
+// ---- Serve the built React app from ../dist if it exists. This lets a single
+// ---- Node process serve both the static frontend and the /api proxy on EC2,
+// ---- so we don't need Nginx. In dev (vite running separately) dist/ won't
+// ---- exist and these handlers no-op.
+const DIST_PATH = resolve(__dirname, '..', 'dist');
+if (existsSync(DIST_PATH)) {
+  app.use(express.static(DIST_PATH, { index: 'index.html', extensions: ['html'] }));
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(resolve(DIST_PATH, 'index.html'));
+  });
+}
+
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(
