@@ -1,0 +1,133 @@
+/*
+ * React-only styles. Everything user-visible is styled by the upstream
+ * /legacy/css/styles.css — this file only contains tweaks for the
+ * engine-loading overlay (a piece of UI that doesn't exist upstream
+ * because upstream is a single-file HTML page that loads synchronously).
+ */
+
+.engine-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+.engine-overlay__card {
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  padding: 28px 32px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+  max-width: 380px;
+  text-align: center;
+}
+
+.engine-overlay__title {
+  font-family: 'Fraunces', Georgia, serif;
+  font-weight: 500;
+  font-size: 22px;
+  margin: 0 0 8px;
+  color: #1a1a1a;
+}
+
+.engine-overlay__sub {
+  margin: 0 0 16px;
+  color: #555;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.engine-overlay__bar {
+  height: 6px;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.engine-overlay__bar > div {
+  height: 100%;
+  background: linear-gradient(90deg, #2b6cb0, #1a4a7a);
+  transition: width 200ms ease-out;
+}
+
+.engine-overlay__pct {
+  margin-top: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #666;
+}
+
+.engine-overlay--error .engine-overlay__title {
+  color: #b91c1c;
+}
+
+/* ---------- W-2 uploader inside Section 02 ---------- */
+.w2-uploader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  border: 1px dashed rgba(43, 108, 176, 0.45);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f4f8ff 0%, #ffffff 100%);
+}
+
+.w2-uploader[aria-busy="true"] {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.w2-uploader__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #1a4a7a;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.w2-uploader__btn:hover { background: #143a60; }
+.w2-uploader__btn:disabled { background: #6b7d92; cursor: progress; }
+
+.w2-uploader__icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.w2-uploader__hint {
+  font-size: 11px;
+  color: #5a6573;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+.w2-uploader__file-input {
+  display: none;
+}
+
+.w2-uploader__status {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  line-height: 1.45;
+}
+
+.w2-uploader__status--busy    { background: #eff6ff; color: #1a4a7a; }
+.w2-uploader__status--success { background: #e9f7ec; color: #1f5f33; }
+.w2-uploader__status--error   { background: #fdecea; color: #8a1f1f; }

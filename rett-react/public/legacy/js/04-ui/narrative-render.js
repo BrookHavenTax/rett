@@ -1,0 +1,318 @@
+// FILE: js/04-ui/narrative-render.js
+// Auto-generated plain-English narrative shown at the top of Page 2.
+//
+// Pattern source: Holistiplan's "Custom Client Observations" and the
+// narrative cards used by FP Alpha and RightCapital. Advisors lean on
+// these when explaining the strategy in client meetings — a one-line
+// summary anchors the rest of the dashboard.
+//
+// Reads window.__lastResult, __lastRecommendation, and the form so we
+// can name the strategy, the gain, and the savings dollar amount.
+//
+// Public entry point: renderNarrative()
+
+(function (root) {
+  'use strict';
+
+  function _fmt(n) {
+    if (n == null || !isFinite(n)) return '—';
+    if (typeof fmtUSD === 'function') return fmtUSD(n);
+    var sign = n < 0 ? '-' : '';
+    var v = Math.round(Math.abs(n));
+    return sign + '$' + v.toLocaleString('en-US');
+  }
+
+  function _strategyLabel(key) {
+    var map = {
+      beta1: 'Brooklyn Beta 1',
+      beta0: 'Brooklyn Beta 0',
+      beta05: 'Brooklyn Beta 0.5',
+      advisorManaged: 'Brooklyn Advisor-Managed'
+    };
+    return map[key] || 'Brooklyn';
+  }
+
+  function _stateLabel(code) {
+    if (!code || code === 'NONE') return null;
+    var m = {
+      AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas', CA:'California',
+      CO:'Colorado', CT:'Connecticut', DE:'Delaware', DC:'District of Columbia',
+      FL:'Florida', GA:'Georgia', HI:'Hawaii', ID:'Idaho', IL:'Illinois',
+      IN:'Indiana', IA:'Iowa', KS:'Kansas', KY:'Kentucky', LA:'Louisiana',
+      ME:'Maine', MD:'Maryland', MA:'Massachusetts', MI:'Michigan', MN:'Minnesota',
+      MS:'Mississippi', MO:'Missouri', MT:'Montana', NE:'Nebraska', NV:'Nevada',
+      NH:'New Hampshire', NJ:'New Jersey', NM:'New Mexico', NY:'New York',
+      NC:'North Carolina', ND:'North Dakota', OH:'Ohio', OK:'Oklahoma',
+      OR:'Oregon', PA:'Pennsylvania', RI:'Rhode Island', SC:'South Carolina',
+      SD:'South Dakota', TN:'Tennessee', TX:'Texas', UT:'Utah', VT:'Vermont',
+      VA:'Virginia', WA:'Washington', WV:'West Virginia', WI:'Wisconsin',
+      WY:'Wyoming'
+    };
+    return m[code] || code;
+  }
+
+  function renderNarrative() {
+    var host = document.getElementById('narrative-host');
+    if (!host) return;
+    // Pin the narrative to the RECOMMENDED scenario's auto-picked data
+    // when available — this is what the Strategy Comparison panel
+    // identifies as the winner and matches the dashboard for that row
+    // exactly. Fall back to the global pipeline data only when the
+    // recommendation hasn't run yet (initial paint race).
+    var recData = window.__rettRecommendedData || null;
+    var recLabel = window.__rettRecommendedLabel || null;
+    var result = (recData && recData.result) || window.__lastResult;
+    if (!result || !result.years || !result.years.length) {
+      // Synthesize a years-shape from comp.rows when we have a recommended
+      // comp but no projection-engine result (deferred path doesn't run
+      // ProjectionEngine).
+      if (recData && recData.comp && Array.isArray(recData.comp.rows) && recData.comp.rows.length) {
+        result = {
+          config: recData.cfg || {},
+          years: recData.comp.rows.map(function (r) {
+            return {
+              year: r.year,
+              taxNoBrooklyn: r.baseline ? r.baseline.total : 0,
+              taxNoBrooklynDoNothing: r.doNothingBaseline ? r.doNothingBaseline.total : null,
+              taxWithBrooklyn: r.withStrategy ? r.withStrategy.total : 0,
+              investmentThisYear: r.investmentThisYear || 0,
+              fee: r.fee || 0
+            };
+          }),
+          totals: { cumulativeFees: recData.comp.totalFees || 0 }
+        };
+      } else {
+        host.innerHTML = '';
+        host.hidden = true;
+        return;
+      }
+    }
+
+    var cfg = (recData && recData.cfg) || result.config || {};
+    var years = result.years;
+    var horizon = years.length;
+    var totals = result.totals || {};
+
+    // Compute the savings story. Pull from the comparison rows when
+    // available so the narrative agrees with the ribbon and hero (the
+    // raw projection-engine deltas can disagree because they don't
+    // reflect the structured-sale recommendation).
+    var totalSave = 0, cumFees = 0;
+    var comp = (recData && recData.comp) || window.__lastComparison;
+    if (comp && Array.isArray(comp.rows) && comp.rows.length) {
+      if (comp.totalSavings != null) {
+        totalSave = comp.totalSavings;
+      } else {
+        comp.rows.forEach(function (r) { totalSave += (r.savings || 0); });
+      }
+      if (comp.deferred && comp.totalFees != null) {
+        cumFees = comp.totalFees;
+      } else {
+        years.forEach(function (y) { cumFees += (y.fee || 0); });
+      }
+    } else {
+      years.forEach(function (y) {
+        var no = y.taxNoBrooklyn || 0;
+        var w  = (y.taxWithBrooklyn != null) ? y.taxWithBrooklyn : no;
+        totalSave += (no - w);
+        cumFees += (y.fee || 0);
+      });
+    }
+    if (!(comp && comp.deferred) && totals.cumulativeFees != null) cumFees = totals.cumulativeFees;
+    var brookhavenFees = (comp && comp.totalBrookhavenFees) || 0;
+    // Shared engagement detector in format-helpers.js — keeps the
+    // narrative net figure in sync with the ribbon and dashboard.
+    var _engineEngaged = (typeof window.rettEngineEngaged === 'function')
+      ? window.rettEngineEngaged(comp, window.__lastResult)
+      : false;
+    if (comp && comp.rows && !_engineEngaged) {
+      cumFees = 0;
+      brookhavenFees = 0;
+    }
+    var net = totalSave - cumFees - brookhavenFees;
+
+    // Invested capital: prefer the cfg.investment that the projection
+    // actually ran with (which inputs-collector resolves as Available
+    // Capital when the dedicated invested-capital field is hidden /
+    // zero). Fall back to the available-capital field, then to the
+    // legacy invested-capital field.
+    var sale = parseUSD((document.getElementById('sale-price') || {}).value) || 0;
+    var cost = parseUSD((document.getElementById('cost-basis') || {}).value) || 0;
+    var depr = parseUSD((document.getElementById('accelerated-depreciation') || {}).value) || 0;
+    var invested = (cfg && Number(cfg.investment)) ||
+                   parseUSD((document.getElementById('available-capital') || {}).value) ||
+                   parseUSD((document.getElementById('invested-capital') || {}).value) ||
+                   0;
+    // STG is independent income (in Income Sources), not part of the
+    // property sale. LT gain is sale - basis - depr only.
+    var ltGain = Math.max(0, sale - cost - depr);
+
+    var strategy = _strategyLabel(cfg.tierKey || (window.__lastRecommendation && window.__lastRecommendation.tierKey));
+    var state = _stateLabel(cfg.state);
+    var year1 = years[0].year;
+
+    // Build the narrative sentence(s). Always two short sentences max so
+    // it reads as a memo, not a paragraph. Article (a / an) for the state
+    // name is chosen by first-letter vowel test — covers AL, AK, AZ, AR,
+    // ID, IL, IN, IA, OH, OK, OR correctly.
+    function _articleFor(word) {
+      if (!word) return 'a';
+      return /^[aeiouAEIOU]/.test(word) ? 'an' : 'a';
+    }
+    var s1Parts = [];
+    if (sale > 0 && cost > 0 && ltGain > 0) {
+      s1Parts.push('A property sale in ' + year1 +
+        ' creates an estimated ' + _fmt(ltGain) + ' long-term capital gain' +
+        (state ? ' for ' + _articleFor(state) + ' ' + state + ' filer' : '') + '.');
+    } else {
+      s1Parts.push('Projected ' + horizon + '-year baseline tax for ' + year1 +
+        '\u2013' + (year1 + horizon - 1) +
+        (state ? ' (' + state + ')' : '') + '.');
+    }
+
+    // Build a per-year tranche description from the comparison rows.
+    // We detect a "tranche addition" wherever investmentThisYear jumps
+    // above the prior year's investment level. For immediate
+    // recognition this is a single Year-1 tranche; for deferred
+    // recognition we get one tranche for the basis (Year 1) plus one
+    // for each year the gain is recognized and reinvested. We use
+    // "starting in <year>" phrasing because each tranche keeps
+    // generating short-term losses every year for the rest of the
+    // horizon — the lossByYear curve just tapers (year-1 highest,
+    // year-2 lower, etc.) rather than dropping to zero.
+    var trancheParts = [];
+    var prevInv = 0;
+    if (comp && Array.isArray(comp.rows) && comp.rows.length) {
+      comp.rows.forEach(function (r, idx) {
+        var inv = r.investmentThisYear || 0;
+        var added = inv - prevInv;
+        if (added > 1) {
+          var label = (idx === 0) ? 'starting ' + r.year + ' (basis)'
+                                  : 'reinvested ' + r.year + ' (gain)';
+          trancheParts.push(_fmt(added) + ' ' + label);
+        }
+        prevInv = inv;
+      });
+    }
+    // Only fall through to the "Investing $X starting <year>" line
+    // when the engine ACTUALLY deployed capital. If it returned
+    // no-action (custodian min, no gain to offset, etc.), don't
+    // echo the user-typed Available Capital — let the no-engagement
+    // s2 branch handle the messaging.
+    var _engaged = (typeof window.rettEngineEngaged === 'function')
+      ? window.rettEngineEngaged(comp, window.__lastResult)
+      : true;
+    if (!trancheParts.length && invested > 0 && _engaged) {
+      trancheParts.push(_fmt(invested) + ' starting ' + year1);
+    }
+
+    // Did the engine actually deploy capital into Brooklyn? Read the
+    // comparison rows: if every row has zero investmentThisYear and
+    // zero gain/loss activity, the engine returned a no-action result
+    // and we should narrate that instead of repeating the user's
+    // typed available-capital ("Investing $3M ...").
+    var engineDeployedCapital = false;
+    if (comp && Array.isArray(comp.rows)) {
+      engineDeployedCapital = comp.rows.some(function (r) {
+        return (r.investmentThisYear || 0) > 0 ||
+               (r.gainRecognized || 0) > 0 ||
+               (r.lossApplied || 0) > 0;
+      });
+    } else {
+      engineDeployedCapital = invested > 0;
+    }
+
+    // Detect lump-sum / no-structured-sale. Lump-sum requires BOTH:
+    //   1. All gain recognized in Year 1 (immediate-path comp shape,
+    //      OR a recognition schedule with everything concentrated in
+    //      the first year).
+    //   2. No multi-year tranche pattern in the comparison rows
+    //      (trancheParts.length <= 1). If the engine deployed capital
+    //      across multiple years, that's a structured sale by
+    //      definition — even if the comp shape suggests Y1-only.
+    var isLumpSum = false;
+    if (comp) {
+      if (!comp.deferred && !comp.recognitionSchedule) {
+        isLumpSum = true;
+      } else if (Array.isArray(comp.recognitionSchedule) && comp.recognitionSchedule.length) {
+        var firstRec = comp.recognitionSchedule[0];
+        var totalRec = comp.recognitionSchedule.reduce(function (s, r) { return s + (r.gainRecognized || 0); }, 0);
+        if (totalRec > 0 && firstRec && firstRec.gainRecognized >= totalRec - 0.01) isLumpSum = true;
+      }
+    }
+    if (isLumpSum && trancheParts.length > 1) isLumpSum = false;
+
+    var s2;
+    if (totalSave > 0) {
+      var savingsTone = (net > 0 ? 'a net' : 'a gross');
+      var investedClause;
+      if (isLumpSum) {
+        // Lump-sum: a single Year-1 deposit, no structured-sale
+        // tranches. Phrase it as a one-liner that flags the absence of
+        // a structured-sale lockup.
+        investedClause = 'Lump-sum sale (no structured-sale lockup): the full ' +
+          _fmt(invested) + ' lands in Brooklyn ' + strategy + ' on engagement and absorbs the entire gain in Year 1';
+      } else if (trancheParts.length === 1) {
+        investedClause = 'Investing ' + trancheParts[0] + ' in ' + strategy;
+      } else {
+        // Join with commas + final "and": "$5M starting 2026 (basis),
+        // $3M reinvested 2028 (gain) and $2M reinvested 2029 (gain)"
+        var lastTranche = trancheParts[trancheParts.length - 1];
+        var earlyTranches = trancheParts.slice(0, -1).join(', ');
+        investedClause = 'Investing ' + earlyTranches + ' and ' + lastTranche +
+          ' in ' + strategy;
+      }
+      var feesClause = brookhavenFees > 0
+        ? _fmt(cumFees) + ' in Brooklyn fees and ' + _fmt(brookhavenFees) + ' in Brookhaven advisory fees'
+        : _fmt(cumFees) + ' in strategy fees';
+      var generatesClause = isLumpSum
+        ? '. Brooklyn losses reduce ' + horizon + '-year tax by '
+        : ' generates short-term losses every year (year-1 rate on each tranche, tapering thereafter) that reduce ' + horizon + '-year tax by ';
+      s2 = investedClause + generatesClause +
+        _fmt(totalSave) + ' \u2014 ' + savingsTone + ' benefit of ' +
+        _fmt(net) + ' after ' + feesClause + '.';
+    } else if (!engineDeployedCapital) {
+      // Engine deployed nothing \u2014 no gain to offset, or below custodian
+      // min, or otherwise unable to engage. Don't echo the user's
+      // typed Available Capital (that was an input, not a deployment).
+      s2 = 'No Brooklyn engagement recommended for these inputs \u2014 ' +
+        'the strategy produces no net tax offset here. ' +
+        'Try a different strategy, leverage, or recognition timing.';
+    } else if (invested > 0 && totalSave === 0) {
+      s2 = 'Investing ' + _fmt(invested) + ' in ' + strategy +
+        ' generates losses, but they produce no tax offset for these inputs. ' +
+        'Try a different leverage, horizon, or recognition timing.';
+    } else if (totalSave === 0) {
+      s2 = 'No Brooklyn investment is recommended for these inputs.';
+    } else {
+      s2 = 'Investing ' + _fmt(invested) + ' in ' + strategy +
+        ' costs more in fees than it saves in tax for these inputs. ' +
+        'Try a different leverage or horizon.';
+    }
+
+    // Tone follows NET benefit — what the advisor actually defends. A
+    // strategy that reduces tax by $X but costs $X+1 in fees is not
+    // "positive" even if gross savings are positive.
+    var tone;
+    if (totalSave === 0) tone = 'narrative-neutral';
+    else if (net > 0)    tone = 'narrative-positive';
+    else if (net < 0)    tone = 'narrative-negative';
+    else                 tone = 'narrative-neutral';
+
+    var recHeader = recLabel
+      ? '<p class="narrative-rec-tag"><strong>Recommended:</strong> ' + recLabel + '</p>'
+      : '';
+    host.innerHTML =
+      '<div class="rett-narrative ' + tone + '" role="status">' +
+        '<div class="narrative-icon" aria-hidden="true">\u00A7</div>' +
+        '<div class="narrative-body">' +
+          recHeader +
+          '<p>' + s1Parts.join(' ') + '</p>' +
+          '<p>' + s2 + '</p>' +
+        '</div>' +
+      '</div>';
+    host.hidden = false;
+  }
+
+  root.renderNarrative = renderNarrative;
+})(window);
