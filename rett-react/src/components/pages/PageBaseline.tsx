@@ -22,7 +22,10 @@ export default function PageBaseline() {
               <tr className="indent" style={{ display: 'none' }}><td>Carried forward to next year</td><td id="bt-loss-cfy">$0</td></tr>
               <tr className="subtotal"><td>Total Taxable Income</td><td id="bt-taxable">$0</td></tr>
               <tr><td>Federal Income Tax</td><td id="bt-fed">$0</td></tr>
-              <tr style={{ display: 'none' }}><td>AMT Top-up</td><td id="bt-amt">$0</td></tr>
+              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Ordinary Income Tax (W-2 + STG)</td><td id="bt-fed-ord">$0</td></tr>
+              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Depreciation Recapture Tax (&sect;1250, capped at 25%)</td><td id="bt-fed-recap">$0</td></tr>
+              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Long-Term Capital Gains Tax</td><td id="bt-fed-lt">$0</td></tr>
+              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;AMT Top-up (if applicable)</td><td id="bt-amt">$0</td></tr>
               <tr><td>State Income Tax</td><td id="bt-state">$0</td></tr>
               <tr><td>NIIT (3.8%)</td><td id="bt-niit">$0</td></tr>
               <tr><td>Additional Medicare (0.9%)</td><td id="bt-addmed">$0</td></tr>
