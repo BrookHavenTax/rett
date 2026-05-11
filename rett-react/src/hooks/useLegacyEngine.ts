@@ -113,6 +113,22 @@ async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
     throw new Error('loadTaxData not on window after legacy bootstrap');
   }
 
+  // Drop the un-named draft slot before controls.js's restoreOnPageLoad
+  // runs. Upstream auto-saves the form to `rett_workingState` whenever no
+  // Client Name has been typed, so a stray refresh used to leave the form
+  // populated with the previous session's values. We clear it ONLY when
+  // there isn't an active named case — named cases (rett_currentCase +
+  // rett_cases[name]) are the production persistence path and still
+  // auto-restore as the upstream intends.
+  try {
+    const current = window.localStorage.getItem('rett_currentCase') || '';
+    if (!current.trim()) {
+      window.localStorage.removeItem('rett_workingState');
+    }
+  } catch {
+    /* private mode / quota / disabled storage — ignore */
+  }
+
   // Upstream `controls.js` registers `bindControls` and `_syncPmqNameFromCase`
   // unconditionally on `DOMContentLoaded` (lines 1187 + 1782). Every other
   // upstream module guards with `if (document.readyState === 'loading')` and
@@ -120,7 +136,12 @@ async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
   // injects scripts after the page is already loaded, those listeners are
   // dead on arrival. Call them by hand. They're top-level function
   // declarations in a classic (non-module) script, so they're global on
-  // window. Both are idempotent.
+  // window. Both are idempotent... ALMOST: bindControls re-attaches click
+  // listeners on every call, so calling it twice produces duplicate
+  // listeners (manifests as the "Reset Form" double-confirm bug). For that
+  // reason we deliberately do NOT also dispatch a synthetic DOMContentLoaded
+  // event — every other module has already self-initialized via the
+  // readyState check before its <script> finished evaluating.
   const w = window as unknown as Record<string, () => void>;
   if (typeof w.bindControls === 'function') {
     w.bindControls();
@@ -128,9 +149,6 @@ async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
   if (typeof w._syncPmqNameFromCase === 'function') {
     w._syncPmqNameFromCase();
   }
-  // Also fire a synthetic DOMContentLoaded so any future upstream modules
-  // that rely on the unguarded pattern get one chance to wake up.
-  document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: false, cancelable: false }));
 
   window.__rettEngineReady = true;
 }

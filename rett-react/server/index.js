@@ -97,12 +97,26 @@ const geminiLimiter = rateLimit({
 });
 app.use('/api/gemini/', geminiLimiter);
 
-// ---- Prompt: same schema the upstream pmq-handler.js uses, byte-for-byte
-// ---- so the client-side fallback path produces identical output.
+// ---- Prompt: extracts income-source fields from ANY supported tax document
+// ---- (W-2, 1040, 1099-NEC/MISC/INT/DIV/R/B, K-1, or a free-form client
+// ---- income summary sheet). Schema is the superset the upstream calculator
+// ---- expects for Section 01 (filing-status, state-code) and Section 02
+// ---- (the seven income inputs). The advisor uploads whichever document they
+// ---- have on hand; Gemini fills the fields it can actually find and
+// ---- returns null for everything else.
 const TAX_EXTRACT_PROMPT = [
-  'You are a tax-document parser. Extract the following fields from',
-  'this W-2 or 1040 document and return ONLY valid JSON — no',
-  'markdown, no prose — matching this exact schema:',
+  'You are a tax-document parser. The document you receive may be any of:',
+  '  - a W-2',
+  '  - a 1040 (any year, any schedule)',
+  '  - a 1099-NEC, 1099-MISC, 1099-INT, 1099-DIV, 1099-R, or 1099-B',
+  '  - a K-1 (1065 or 1120S)',
+  '  - a free-form income summary sheet that lists fields as',
+  '    "Label = Value" or "Label: Value" or "Label   $Value", where the',
+  '    label may be a tax-form name (e.g. "Self-Employment Income = 1099 NEC")',
+  '    OR a dollar amount (e.g. "W-2 Wages = 57000").',
+  '',
+  'Extract the fields below and return ONLY valid JSON — no markdown,',
+  'no prose, no code fences — matching this exact schema:',
   '{',
   '  "filingStatus":            "single"|"mfj"|"mfs"|"hoh"|null,',
   '  "wages":                   number|null,',
@@ -115,8 +129,45 @@ const TAX_EXTRACT_PROMPT = [
   '  "shortTermGain":           number|null,',
   '  "state":                   "two-letter state code"|null',
   '}',
-  'Use null for any field not found in the document.',
-  'All numeric values must be in whole dollars (no cents).',
+  '',
+  'Field-matching rules (apply in this order):',
+  '  - "wages" / "W-2 Wages" / Box 1 of a W-2 / line 1a or 1z of a 1040',
+  '    → wages',
+  '  - "Self-Employment Income" / "SE Income" / 1099-NEC box 1',
+  '    / Schedule C line 1 → seIncome',
+  '  - "Business Income" / K-1 (1065 or 1120S) ordinary business income',
+  '    → businessRevenue',
+  '  - "Rental Income" / 1099-MISC box 1 / Schedule E line 3',
+  '    → rentalIncome',
+  '  - "Dividend Income" / "Dividend/Interest" / "Interest" /',
+  '    1099-INT box 1 / 1099-DIV box 1a → dividendIncome (sum if both',
+  '    interest and dividends appear).',
+  '  - "Retirement Distributions" / "Pension" / 1099-R box 1 /',
+  '    1040 line 4b/5b → retirementDistributions',
+  '  - "Short-Term Capital Gain" / 1099-B short-term proceeds /',
+  '    Schedule D line 7 → shortTermGain',
+  '  - "Filing Status" (single / married filing jointly / married',
+  '    filing separately / head of household) → filingStatus, in the',
+  '    enum above (lowercase, e.g. "mfj").',
+  '  - State of residence (W-2 box 15, 1040 mailing address, etc.)',
+  '    → state, as a two-letter USPS code (uppercase).',
+  '',
+  'CRITICAL — DO NOT HALLUCINATE:',
+  '  - You must only return numbers that appear LITERALLY in the document',
+  '    text. Never estimate, infer, average, or "fill in" a value just',
+  '    because a field label exists.',
+  '  - If a label is followed by a tax-form NAME instead of a dollar',
+  '    amount (e.g. "Self-Employment Income = 1099 NEC", or',
+  '    "Rental Income = 1099 MISC"), the value is NOT in this document —',
+  '    return null. The form name is a pointer to where the value lives,',
+  '    not the value itself.',
+  '  - If a field label is present but has no number, no "$" amount, and',
+  '    no digit string anywhere near it, return null.',
+  '  - Strip "$" and commas from numbers you DO extract. Round to whole',
+  '    dollars.',
+  '  - Use null (not 0) for any field you cannot confidently extract from',
+  '    text actually present in the document.',
+  '  - Return ONLY the JSON object, nothing else.',
 ].join('\n');
 
 app.post('/api/gemini/extract-w2', upload.single('file'), async (req, res) => {
@@ -147,7 +198,18 @@ app.post('/api/gemini/extract-w2', upload.single('file'), async (req, res) => {
           },
         ],
       }],
-      generationConfig: { response_mime_type: 'application/json' },
+      generationConfig: {
+        response_mime_type: 'application/json',
+        // Deterministic extraction. Tax data is not a creative task and we
+        // never want the model to invent values for rows it cannot read.
+        temperature:       0,
+        topP:              0.1,
+        // Gemini 2.5 Flash defaults to "thinking" mode which produces run-to-
+        // run variance and, on short docs, occasionally hallucinates dollar
+        // amounts for rows that only list form names (e.g. "Self-Employment
+        // Income = 1099 NEC"). Disable thinking for stability + lower latency.
+        thinkingConfig:    { thinkingBudget: 0 },
+      },
     };
 
     const resp = await fetch(endpoint, {

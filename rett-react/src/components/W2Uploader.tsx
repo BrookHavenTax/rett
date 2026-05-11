@@ -124,11 +124,12 @@ export default function W2Uploader() {
       >
         <span className="w2-uploader__icon" aria-hidden="true">📄</span>
         <span className="w2-uploader__btn-text">
-          {busy ? 'Scanning…' : 'Upload W-2 to autofill'}
+          {busy ? 'Scanning…' : 'Upload tax document to autofill'}
         </span>
       </button>
       <span className="w2-uploader__hint">
-        PDF, JPEG, or PNG. The file is processed in memory and never stored.
+        W-2, 1040, 1099, K-1, or a client income summary sheet. PDF, JPEG, or PNG.
+        The file is processed in memory and never stored.
       </span>
       <input
         ref={inputRef}

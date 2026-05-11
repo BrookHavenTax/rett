@@ -10,6 +10,8 @@
     "dev:api": "node server/index.js",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "start": "node server/index.js",
+    "postinstall": "cd server && npm install --omit=dev",
     "sync:upstream": "bash scripts/sync-from-upstream.sh",
     "lint": "eslint . --ext .ts,.tsx"
   },
