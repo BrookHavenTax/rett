@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `0c01cee6bdc913465f836ce91cdd0c128213ab23` |
-| Upstream short SHA | `0c01cee` |
-| Upstream message | Allocate lower-bracket benefit to Y0 card so per-year nets sum to total |
-| Upstream committed | 2026-05-11 19:11 -0400 |
-| Synced to React on | 2026-05-11 (second pass) |
+| Upstream SHA | `deaeb6894cd5307bc55824b6ca9981a928a40f38` |
+| Upstream short SHA | `deaeb68` |
+| Upstream message | Run pipeline before strategy-summary render so hard refresh lands correct |
+| Upstream committed | 2026-05-12 14:42 -0400 |
+| Synced to React on | 2026-05-12 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  0c01cee6bdc913465f836ce91cdd0c128213ab23..origin/main
+  deaeb6894cd5307bc55824b6ca9981a928a40f38..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -110,7 +110,41 @@ what `npm run sync:upstream` will pull in next.
 Most recent first. Each entry: upstream short SHA, date, summary of what was
 applied, and which React files needed manual ports.
 
-### 2026-05-11 (evening) — `0c01cee` (current)
+### 2026-05-12 — `deaeb68` (current)
+
+Three upstream commits absorbed. No React-side HTML port needed — every
+`index.html` diff in this range was the cache-buster `?v=` increment.
+
+Commits, oldest first:
+
+- `e3a1987` AMT: add back standard deduction to AMTI per §55(b)(1)(A) /
+  Form 6251 line 2a. (Closes the $9,896 reconciliation gap the previous
+  sync's commit message flagged — engine now matches CPA software exactly
+  on the canonical scenario.) `tax-calc-federal.js`,
+  `engine-self-test.js`.
+- `88b4fc7` Return on Planning: render as percentage (net / fees), not
+  multiplier. (Display change on the Strategy Summary card.)
+  `strategy-summary-render.js`.
+- `deaeb68` Run pipeline before strategy-summary render so hard refresh
+  lands correct. (Ordering fix so the Strategy Summary doesn't render
+  stale numbers on a hard refresh.) `controls.js`.
+
+Files actually mirrored by the rsync (with content changes): four JS files
+under `public/legacy/js/02-tax-engine/` and `public/legacy/js/04-ui/`.
+
+React-side carries forward (unchanged by the sync):
+
+- `src/components/W2Uploader.tsx`
+- `server/index.js` Gemini prompt + deterministic `generationConfig`.
+- `src/hooks/useLegacyEngine.ts` explicit `bindControls()` call + drop-
+  un-named-draft on page load. (Note: `controls.js` was updated this
+  round; the explicit-bind workaround still applies since the upstream
+  change was an additive pipeline call inside `bindControls`, not a
+  refactor of when it runs.)
+- `src/components/pages/PageBaseline.tsx` four federal-tax sub-rows
+  (`bt-fed-ord`, `bt-fed-recap`, `bt-fed-lt`, `bt-amt`).
+
+### 2026-05-11 (evening) — `0c01cee`
 
 Six upstream commits absorbed in one pass. No React-side HTML port needed —
 only `tax-calc-federal.js` and `temp-page-render.js` changed content; all
