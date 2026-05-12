@@ -175,7 +175,12 @@
 
     // Funded supplementals — only those the master solver ranked as
     // funded after rivalry / availability checks. Same filter the
-    // Strategy Summary REVIEW panel uses.
+    // Strategy Summary REVIEW panel uses. This keeps the per-year supp
+    // contributions exactly equal to runMasterSolver's vetted total —
+    // critical for the bottom panel reconciliation to hold. Unfunded
+    // supps (rivalry-capped) carry stale lastResult numbers from
+    // upstream calc modules that would inflate the per-year sum without
+    // a corresponding increase in the aggregate, creating phantom gaps.
     var fundedSupps = [];
     if (typeof root.runMasterSolver === 'function') {
       var primaryNet = (entry.metrics && Number.isFinite(entry.metrics.net)) ? entry.metrics.net : 0;
@@ -323,7 +328,7 @@
   //     Aircraft, STR, Farm Equip, 401k, Augusta, Equipment Leasing).
   //     These are still single-year until the engine ships per-year
   //     shape for them too — see prompt drafted earlier.
-  function _renderActivityCell(row, displayedI, chosen, cfg, fundedSupps, feeScale) {
+  function _renderActivityCell(row, displayedI, chosen, cfg, fundedSupps, feeScale, lowerBracketBenefit) {
     var stLossBrooklyn = Math.max(0, Number(row && row.lossGenerated) || 0);
     var ordOffsetBrooklyn = 0;
     var withStrat = row && row.withStrategy;
@@ -505,21 +510,25 @@
     // sum-of-per-year may be smaller than bottom-panel total by the
     // timing-shift portion. That gap is footnoted on the panel.
     var brooklynSavings = 0;
-    if (row && row.withStrategy && (row.doNothingBaseline || row.baseline)) {
-      // Use doNothingBaseline (full-lump scenario) when available so the
-      // per-year savings ledger matches the Page-3 net-benefit KPI, which
-      // also uses doNothingBaseline.  For Strategy A and synthetic trailing
-      // rows the two are identical, so this change is no-op for those paths.
-      var _bnForSavings = row.doNothingBaseline || row.baseline;
-      brooklynSavings = Number((_bnForSavings && _bnForSavings.total) || 0) - Number(row.withStrategy.total || 0);
+    if (row && row.withStrategy && row.baseline) {
+      // Per-year savings use the MATCHED-TIMING baseline so each year's
+      // savings line is an apples-to-apples comparison for actions
+      // happening THAT year. The one-time "lower tax bracket" benefit
+      // (the gap between matched-timing and do-nothing aggregates) is
+      // allocated by render() to Y0 only via lowerBracketBenefit; that
+      // makes Σ year-card net benefits = Tab 6 hero net.
+      brooklynSavings = Number(row.baseline.total || 0) - Number(row.withStrategy.total || 0);
     }
+    var lbb = (displayedI === 0 && Number.isFinite(Number(lowerBracketBenefit)))
+      ? Math.round(Number(lowerBracketBenefit))
+      : 0;
     // Supp savings for the year — already NET of per-year supp mgmt fee
     // (see _computeSuppSavingsForYear's perYear branch). The mgmt fee
     // line above is informational, surfacing what was deducted.
     var suppSavings = _computeSuppSavingsForYear(displayedI, fundedSupps);
-    var grossBenefit = brooklynSavings + suppSavings;
+    var grossBenefit = brooklynSavings + lbb + suppSavings;
 
-    if (stLoss === 0 && ordOffset === 0 && ltGainAdded === 0 && other === 0 && grossBenefit === 0 && suppMgmtFee === 0) {
+    if (stLoss === 0 && ordOffset === 0 && ltGainAdded === 0 && other === 0 && grossBenefit === 0 && suppMgmtFee === 0 && lbb === 0) {
       return '<div class="temp-activity-empty">No strategy activity this year.</div>';
     }
 
@@ -564,6 +573,11 @@
     if (ordOffset > 0)   rows.push(['Ordinary income offset', _fmt(ordOffset)]);
     if (ltGainAdded > 0) rows.push(['LT gain added',          _fmt(ltGainAdded)]);
     if (other > 0)       rows.push(['Other tax savings (PTET, etc.)', _fmt(other)]);
+    // "Gain from lower tax bracket" — deferred-strategy timing benefit,
+    // allocated entirely to Y0. Shows what the client gains by recognizing
+    // gain in inflation-bumped later-year brackets (and, for Strategy C,
+    // splitting it across years for LTCG-bracket arbitrage).
+    if (lbb !== 0) rows.push(['Gain from lower tax bracket (deferred recognition)', _fmt(lbb)]);
 
     var grossRow = (grossBenefit !== 0)
       ? '<tr class="temp-gross-row"><td>Gross benefit (tax saved)</td><td class="temp-amt">' + _fmt(grossBenefit) + '</td></tr>'
@@ -697,6 +711,22 @@
     var brooklynGross = Math.round(
       (m.savings != null ? Number(m.savings) : Number(comp.totalSavings || 0)) || 0
     );
+    // Bridge the per-year cards (matched-timing baseline) to the engine's
+    // do-nothing aggregate. For deferred strategies B/C the per-year
+    // matched-timing sum will be SMALLER than brooklynGross by the
+    // tax-deferral / gain-timing benefit — the engine catches it in
+    // comp.totalSavings (via doNothingBaseline) but the per-year cards
+    // can't show it on any individual year. We split it out as its own
+    // line so the per-year cards + this row + supps + fees reconcile
+    // cleanly to the bottom-panel net.
+    var perYearBrooklynSum = 0;
+    (comp.rows || []).forEach(function (r) {
+      var b = (r && r.baseline) ? Number(r.baseline.total) || 0 : 0;
+      var w = (r && r.withStrategy) ? Number(r.withStrategy.total) || 0 : 0;
+      perYearBrooklynSum += (b - w);
+    });
+    perYearBrooklynSum = Math.round(perYearBrooklynSum);
+    var deferralBenefit = brooklynGross - perYearBrooklynSum;
     // Supplemental side: pull from the master solver's vetted
     // aggregate — that's what Strategy Summary uses for net = primaryNet
     // + supplementalBenefit. Summing individual s.netBenefit values
@@ -723,11 +753,23 @@
     var ssDisplayedNet = primaryNet + suppBenefit;
     var checkOk = Math.abs(net - ssDisplayedNet) <= 5;
 
+    // The lower-bracket benefit is now baked INTO Y0's per-year card
+    // (via the render() loop's lbbThisYear param), so Σ year cards already
+    // equals brooklynGross. The bottom panel just shows the rolled-up
+    // aggregate. A faint footnote calls out the deferred-strategy timing
+    // benefit so the CPA knows it's embedded in Y0.
+    var lbbFootnote = (Math.abs(deferralBenefit) > 5)
+      ? '<tr class="temp-fees-footnote"><td colspan="2" class="temp-fees-foot">&nbsp;&nbsp;&nbsp;&nbsp;<em>(includes ' + _fmt(deferralBenefit) + ' lower tax bracket benefit allocated to Year 0)</em></td></tr>'
+      : '';
+    var brooklynRows =
+      '<tr><td>Brooklyn gross savings (across all years)</td><td class="temp-amt">' + _fmt(brooklynGross) + '</td></tr>' +
+      lbbFootnote;
+
     return '' +
       '<div class="temp-fees-panel">' +
         '<div class="temp-fees-head">Fees &amp; Net Benefit Reconciliation</div>' +
         '<table class="temp-fees-table"><tbody>' +
-          '<tr><td>Brooklyn gross savings (across all years)</td><td class="temp-amt">' + _fmt(brooklynGross) + '</td></tr>' +
+          brooklynRows +
           '<tr><td>Supplemental tax savings (vetted total)</td><td class="temp-amt">' + _fmt(suppBenefit) + '</td></tr>' +
           '<tr class="temp-fees-subtotal"><td><strong>Total gross benefit</strong></td><td class="temp-amt temp-fees-gross"><strong>' + _fmt(totalGross) + '</strong></td></tr>' +
           '<tr><td>Asset Manager fees (across all years)</td><td class="temp-amt">&minus;' + _fmt(brooklynFees) + '</td></tr>' +
@@ -738,10 +780,13 @@
       '</div>';
   }
 
-  function _renderYearCard(row, i, chosen, cfg, fundedSupps, stateCode, carryIn, carryOut, feeScale) {
+  function _renderYearCard(row, i, chosen, cfg, fundedSupps, stateCode, carryIn, carryOut, feeScale, lowerBracketBenefit) {
     var year  = Number(row.year) || (i + 1);
     var label = 'Year ' + i + ' (' + year + ')';
     var rel   = _isRelevant(row, i, chosen, cfg);
+    // If lower-bracket benefit lands on Y0, the year is relevant even if
+    // there's no other Brooklyn/supp activity that year.
+    if (i === 0 && lowerBracketBenefit && Math.abs(lowerBracketBenefit) > 5) rel = true;
     var relClass = rel ? 'temp-rel-yes' : 'temp-rel-no';
     var relText  = rel ? 'Relevant' : 'Not relevant';
     var stateTag = stateCode ? ' &mdash; <span class="temp-state-tag">' + stateCode + '</span>' : '';
@@ -753,11 +798,11 @@
         '</div>' +
         '<div class="temp-year-baseline">' +
           '<div class="temp-year-head">Tax Baseline &mdash; ' + label + stateTag + '</div>' +
-          _renderBaselineCell(row.doNothingBaseline || row.baseline, carryIn, carryOut) +
+          _renderBaselineCell(row.baseline, carryIn, carryOut) +
         '</div>' +
         '<div class="temp-year-activity">' +
           '<div class="temp-year-head temp-year-head-muted">Strategy activity</div>' +
-          _renderActivityCell(row, i, chosen, cfg, fundedSupps, feeScale) +
+          _renderActivityCell(row, i, chosen, cfg, fundedSupps, feeScale, lowerBracketBenefit) +
         '</div>' +
       '</div>';
   }
@@ -876,6 +921,21 @@
       bh: _ctotalBh   > 0 ? _mBH / _ctotalBh   : 1
     };
 
+    // One-time "Gain from lower tax bracket" benefit — the gap between
+    // the engine's authoritative comp.totalSavings (which uses the
+    // do-nothing baseline) and the sum of per-year matched-timing deltas.
+    // Allocate the entire amount to Y0 so summing per-year card net
+    // benefits across all displayed years reconciles to Tab 6's hero
+    // net benefit exactly. For Strategy A and supplemental-only paths
+    // this is $0 (matched-timing = do-nothing).
+    var _perYearMatchedSum = 0;
+    engineRows.forEach(function (r) {
+      var b = r && r.baseline ? Number(r.baseline.total)||0 : 0;
+      var w = r && r.withStrategy ? Number(r.withStrategy.total)||0 : 0;
+      _perYearMatchedSum += (b - w);
+    });
+    var _lowerBracketBenefit = Math.round(Number(ctx.comp.totalSavings || 0) - _perYearMatchedSum);
+
     var totalCards = Math.max(TOTAL_YEARS, engineRows.length);
     for (var i = 0; i < totalCards; i++) {
       var yr = year0 + i;
@@ -903,7 +963,10 @@
         carryIn  = lastEngineCarry;
         carryOut = lastEngineCarry;
       }
-      html += _renderYearCard(row, i, ctx.chosen, ctx.entry.cfg, ctx.fundedSupps, stateCode, carryIn, carryOut, feeScale);
+      // Allocate the lower-bracket benefit to Y0 only; pass 0 for Y1+
+      // so it lands in exactly one card and the sum reconciles.
+      var lbbThisYear = (i === 0) ? _lowerBracketBenefit : 0;
+      html += _renderYearCard(row, i, ctx.chosen, ctx.entry.cfg, ctx.fundedSupps, stateCode, carryIn, carryOut, feeScale, lbbThisYear);
     }
     host.innerHTML = html + _renderFeesPanel(ctx);
   }

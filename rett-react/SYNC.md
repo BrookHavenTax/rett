@@ -10,6 +10,182 @@ single command:
 npm run sync:upstream
 ```
 
+## Currently synced to
+
+| Field | Value |
+| --- | --- |
+| Upstream SHA | `0c01cee6bdc913465f836ce91cdd0c128213ab23` |
+| Upstream short SHA | `0c01cee` |
+| Upstream message | Allocate lower-bracket benefit to Y0 card so per-year nets sum to total |
+| Upstream committed | 2026-05-11 19:11 -0400 |
+| Synced to React on | 2026-05-11 (second pass) |
+| Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
+
+To verify the sync state at any time:
+
+```bash
+git -C ../_original-source rev-parse HEAD
+# Should equal the "Upstream SHA" row above, until a new sync happens.
+```
+
+To see exactly which upstream commits are NEW since this sync (i.e. what
+the next `npm run sync:upstream` will absorb), run:
+
+```bash
+git -C ../_original-source fetch --quiet origin
+git -C ../_original-source --no-pager log --oneline \
+  0c01cee6bdc913465f836ce91cdd0c128213ab23..origin/main
+```
+
+If that prints nothing, you're up to date. If it prints commits, those are
+what `npm run sync:upstream` will pull in next.
+
+## Standard update workflow (do this every time upstream changes)
+
+1. **Check what's new.** Visit the commits page or run the `git log` command
+   above. Read each commit message; identify which touch `js/02-tax-engine/`,
+   `js/04-ui/*-render.js`, or `index.html`.
+
+2. **Pull the JS, CSS, data, assets.**
+
+   ```bash
+   cd ~/Desktop/Rett/rett-react
+   npm run sync:upstream
+   ```
+
+   The script prints the commit range that was absorbed and shows which
+   files actually changed (the `s`-flag in the rsync itemize output means
+   the file was modified; `t` only is just an mtime touch).
+
+3. **Port any HTML structure changes.** If upstream's `index.html` got a new
+   `<div id="...">`, new table row, new button, etc., add the equivalent JSX
+   to the matching React page in `src/components/pages/`:
+
+   | Upstream section | React file |
+   | --- | --- |
+   | `<section id="page-pmq">`         | `PagePMQ.tsx` |
+   | `<section id="page-inputs">`      | `PageInputs.tsx` |
+   | `<section id="page-baseline">`    | `PageBaseline.tsx` |
+   | `<section id="page-strategies">`  | `PageStrategies.tsx` |
+   | `<section id="page-projection">`  | `PageProjection.tsx` |
+   | `<section id="page-supplemental">`| `PageSupplemental.tsx` |
+   | `<section id="page-summary">`     | `PageSummary.tsx` |
+   | `<section id="page-temp">`        | `PageTemp.tsx` |
+
+   To diff upstream HTML against React JSX:
+
+   ```bash
+   diff -u <(cat ../_original-source/index.html) <(cat src/components/pages/*.tsx) | less
+   ```
+
+   Ignore differences in:
+   - `<head>`, `<script src="...">` blocks (we use Vite + `useLegacyEngine`)
+   - JSX-specific syntax (`className=` vs `class=`, `style={{}}` vs `style=""`)
+   - Em-dash encoding regressions (upstream sometimes saves with Windows-1252
+     mojibake like `â€"`; our TSX keeps real `—` characters)
+
+4. **TypeScript check + build.**
+
+   ```bash
+   npx tsc --noEmit
+   npm run build
+   ```
+
+5. **Update this file.** Edit the "Currently synced to" table and prepend
+   a new entry to the "Sync history" section below.
+
+6. **Commit + push + redeploy** (see `DEPLOYMENT.md`):
+
+   ```bash
+   git add public/legacy src/components/pages SYNC.md
+   git commit -m "Sync upstream <short-sha>: <one-line summary>"
+   git push
+   ssh -i ~/.ssh/rett.pem ubuntu@<ec2-ip> '
+     cd ~/rett-react/rett-react && git pull && npm run build && pm2 restart rett
+   '
+   ```
+
+## Sync history
+
+Most recent first. Each entry: upstream short SHA, date, summary of what was
+applied, and which React files needed manual ports.
+
+### 2026-05-11 (evening) — `0c01cee` (current)
+
+Six upstream commits absorbed in one pass. No React-side HTML port needed —
+only `tax-calc-federal.js` and `temp-page-render.js` changed content; all
+`index.html` diffs in this range were the cache-buster `?v=` increment plus
+blank-line whitespace shuffles.
+
+Commits, oldest first:
+
+- `99a9271` Revert AMT 25% recap carve-out; restore Tab 7 matched-timing
+  baseline. (Walked back the recap @ 25% AMT fix from `d4c51cc` after CPA
+  review said the original behavior was correct.) `tax-calc-federal.js`,
+  `temp-page-render.js`.
+- `3c609f2` Re-apply §1250 recap @ 25% inside AMT per Form 6251 Part III.
+  (Re-applied the carve-out after deeper CPA review against Form 6251.)
+  `tax-calc-federal.js`.
+- `f5f88a2` Fix 2026 AMT 26%/28% breakpoint: $244,000 → $244,500 per Rev.
+  Proc. 2025-32. `tax-calc-federal.js`.
+- `893f480` Reconcile Tab 7 per-year sum to bottom panel; show all
+  Interested supps. (Per-year cards now sum to Tab 6 hero number.)
+  `temp-page-render.js`.
+- `98fbc89` Tab 7: revert supp filter relax + rename to 'Gain from lower
+  tax bracket'. (Restored `s.rivalry.funded` gate; relabeled the deferred-
+  strategy gap row per CPA preference.) `temp-page-render.js`.
+- `0c01cee` Allocate lower-bracket benefit to Y0 card so per-year nets sum
+  to total. (Y0's activity card now shows an explicit "Gain from lower tax
+  bracket (deferred recognition)" row.) `temp-page-render.js`.
+
+React-side carries forward (unchanged by the sync):
+
+- `src/components/W2Uploader.tsx`
+- `server/index.js` Gemini prompt + deterministic `generationConfig`.
+- `src/hooks/useLegacyEngine.ts` `bindControls()` + drop-un-named-draft
+  on page load.
+- `src/components/pages/PageBaseline.tsx` four federal-tax sub-rows
+  (`bt-fed-ord`, `bt-fed-recap`, `bt-fed-lt`, `bt-amt`) from the previous
+  sync — still required by the upstream `baseline-table.js`.
+
+### 2026-05-11 (morning) — `b9ac0f6`
+
+Two upstream commits absorbed in one pass:
+
+- `d4c51cc` Fix AMT mis-trigger on recap-heavy returns; align Tab 7 NIIT
+  baseline with Page 3.
+  - `js/02-tax-engine/tax-calc-federal.js` — §1250 unrecaptured gain is now
+    charged at 25% inside AMT instead of riding the 26/28% band; eliminates
+    ~$38K spurious AMT on MFJ + $500K recap.
+  - `js/04-ui/temp-page-render.js` — Tab 7 reads `doNothingBaseline` so the
+    CPA audit card matches Page 3's net-benefit KPI; trailing rows inflate
+    investment income at 2%/yr.
+- `b9ac0f6` Align Page-2 baseline NIIT with engine; split federal tax
+  display.
+  - `js/04-ui/baseline-table.js` — NIIT base now includes §1250 recap per
+    §1411(c)(1)(A)(iii); fills the new federal-tax sub-rows.
+  - `index.html` (HTML structure change) — manually ported into
+    `src/components/pages/PageBaseline.tsx`: added four indented sub-rows
+    under "Federal Income Tax" (`bt-fed-ord`, `bt-fed-recap`, `bt-fed-lt`,
+    `bt-amt`), each hidden when zero.
+
+React-side carries forward (unchanged by the sync):
+
+- `src/components/W2Uploader.tsx` — the inline W-2 / 1099 / K-1 / income-
+  summary uploader in Section 02.
+- `server/index.js` — Express proxy; broadened Gemini prompt with
+  `temperature: 0`, `topP: 0.1`, `thinkingBudget: 0` so extraction is
+  deterministic and Gemini will not hallucinate dollar amounts for rows
+  that only list form names.
+- `src/hooks/useLegacyEngine.ts` — explicit `bindControls()` + drop-the-
+  un-named-draft on page load.
+
+### (Earlier syncs not retroactively logged.)
+
+The first-pass port of upstream was created before this log existed; see
+the README "Currently synced to" history in git if you need to find the
+exact starting commit.
+
 That runs `scripts/sync-from-upstream.sh`, which:
 
 1. `git pull`s the upstream repo into `../_original-source/` (cloning it

@@ -13,13 +13,15 @@
 
 // ---- Hard-coded AMT + Additional Medicare tables (per IRS) ----
 // Filing-status keys here use snake_case to match the JSON.
-// 2026 OBBB-amended AMT exemptions per IRS notice (single $90,100 /
-// MFJ $140,200; phaseout starts $500,000 / $1,000,000). Issue #54.
+// 2026 AMT figures per IRS Rev. Proc. 2025-32 (OBBB-amended inflation
+// adjustments). Exemption (single $90,100 / MFJ $140,200; phaseout
+// starts $500,000 / $1,000,000); 26%/28% rate breakpoint at $244,500
+// for single/MFJ/HoH and $122,250 for MFS. Issue #54.
 const FED_AMT_2026 = {
-          single:           { exemption: 90100,  phaseoutStart: 500000,   rate26Threshold: 244000, rate26: 0.26, rate28: 0.28 },
-          married_joint:    { exemption: 140200, phaseoutStart: 1000000,  rate26Threshold: 244000, rate26: 0.26, rate28: 0.28 },
-          married_separate: { exemption: 70100,  phaseoutStart: 500000,   rate26Threshold: 122000, rate26: 0.26, rate28: 0.28 },
-          head_household:   { exemption: 90100,  phaseoutStart: 500000,   rate26Threshold: 244000, rate26: 0.26, rate28: 0.28 }
+          single:           { exemption: 90100,  phaseoutStart: 500000,   rate26Threshold: 244500, rate26: 0.26, rate28: 0.28 },
+          married_joint:    { exemption: 140200, phaseoutStart: 1000000,  rate26Threshold: 244500, rate26: 0.26, rate28: 0.28 },
+          married_separate: { exemption: 70100,  phaseoutStart: 500000,   rate26Threshold: 122250, rate26: 0.26, rate28: 0.28 },
+          head_household:   { exemption: 90100,  phaseoutStart: 500000,   rate26Threshold: 244500, rate26: 0.26, rate28: 0.28 }
 };
 const FED_AMT_2025 = {
           single:           { exemption: 88100,  phaseoutStart: 626350,  rate26Threshold: 239100, rate26: 0.26, rate28: 0.28 },
@@ -85,12 +87,17 @@ function _computeAmt(amti, year, status, ltAmount, recapAmount) {
           exemption = Math.max(0, exemption - excess * 0.25);
           const taxable = Math.max(0, amti - exemption);
           if (taxable <= 0) return 0;
-          // Strip out LTCG — taxed separately at preferential rates.
-          const lt = Math.max(0, Number(ltAmount) || 0);
-          // §1(h)(1)(E): §1250 unrecaptured gain is capped at 25% even inside
-          // AMT — it is NOT subject to the 26%/28% ordinary AMT rate. Isolate
-          // the recap slice so it gets its own 25% charge instead of riding
-          // the 26/28 band (which would overstate AMT for recap-heavy returns).
+          // Form 6251 Part III preserves §1(h) preferential rates inside
+          // AMT for both LTCG (0/15/20%) AND §1250 unrecaptured gain
+          // (25% cap per §1(h)(1)(E)). Both buckets get carved out of
+          // the 26/28% AMT ordinary band so the AMT top-up reflects only
+          // the rate delta on TRUE ordinary income (W-2 + STG + non-recap
+          // ordinary, post-stdDed). The recap slice is held to 25% inside
+          // AMT just like it is in regular tax — Schedule D Tax Worksheet
+          // line 33 (25% × unrecap) is preserved through the AMT computation.
+          // Without the carve-out, recap rides 26-28% in AMT and falsely
+          // inflates the top-up by 1-3 cents per dollar of recap.
+          const lt   = Math.max(0, Number(ltAmount) || 0);
           const rcap = Math.max(0, Number(recapAmount) || 0);
           const recapInSlice = Math.min(rcap, Math.max(0, taxable - lt));
           const ordinarySlice = Math.max(0, taxable - lt - recapInSlice);
