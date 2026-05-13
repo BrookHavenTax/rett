@@ -131,3 +131,24 @@
 .w2-uploader__status--busy    { background: #eff6ff; color: #1a4a7a; }
 .w2-uploader__status--success { background: #e9f7ec; color: #1f5f33; }
 .w2-uploader__status--error   { background: #fdecea; color: #8a1f1f; }
+
+/* ---------- Tab 7 reveal toggle ----------
+   The "+" and "−" buttons carry `className="nav-tab nav-temp-toggle"` so
+   they inherit the upstream .nav-tab box exactly — same font, padding,
+   color, hover, and responsive sizing.
+
+   Right-edge separator:
+   Both toggles get a strong near-black right border so the toggle's edge
+   reads as a deliberate divider on the nav strip. The default
+   `var(--rule)` (#cfdae8) used between the upstream tabs is too faint
+   on its own; this deeper line makes the toggle unambiguous.
+
+   Note on `−`: the upstream rule `.nav-tab:last-of-type
+   { border-right: none; }` would normally strip the separator from the
+   final button (which is always `#nav-temp-hide`). We re-add `border-
+   right` explicitly here so the "−" carries the same dark divider as
+   the "+" once tab 7 is revealed. */
+#nav-temp-show,
+#nav-temp-hide {
+  border-right: 1px solid #0b0b0e;
+}
