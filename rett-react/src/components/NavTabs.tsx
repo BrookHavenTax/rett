@@ -51,7 +51,7 @@ export default function NavTabs() {
           reopens the Pre-Meeting tab. Wired in controls.js. */}
       <button id="nav-pmq-restore"  className="nav-pmq-restore" type="button" aria-label="Reopen Pre-Meeting" title="Reopen Pre-Meeting — leaves a small dash in the nav so you can reopen it" hidden>&minus;</button>
       <button id="nav-inputs"       className="nav-tab" role="tab" aria-selected="false" aria-controls="page-inputs"       type="button">1. Client Inputs</button>
-      <button id="nav-baseline"     className="nav-tab" role="tab" aria-selected="false" aria-controls="page-baseline"     type="button">2. Tax Baseline</button>
+      <button id="nav-baseline"     className="nav-tab" role="tab" aria-selected="false" aria-controls="page-baseline"     type="button">2. Tax Implications</button>
       <button id="nav-strategies"   className="nav-tab" role="tab" aria-selected="false" aria-controls="page-strategies"   type="button">3. Strategies</button>
       <button id="nav-projection"   className="nav-tab" role="tab" aria-selected="false" aria-controls="page-projection"   type="button">4. Projection</button>
       <button id="nav-supplemental" className="nav-tab" role="tab" aria-selected="false" aria-controls="page-supplemental" type="button">5. Supplemental Strategies</button>

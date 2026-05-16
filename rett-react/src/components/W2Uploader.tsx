@@ -9,8 +9,8 @@ import { useRef, useState } from 'react';
 // recomputes immediately — same handshake the upstream pmq-handler.js used.
 //
 // The first seven entries are the Section 02 (Income Sources) fields. The
-// last two (filing-status, state-code) belong to Section 01 but a W-2 /
-// 1040 reliably reveals them, so we autofill those too — same fields the
+// last two (filing-status, state-code) belong to Section 01 but a 1040
+// reliably reveals them, so we autofill those too — same fields the
 // upstream extractor populated.
 const FIELD_MAP: ReadonlyArray<{ id: string; key: string; label: string }> = [
   { id: 'w2-wages',                 key: 'wages',                   label: 'W-2 Wages' },
@@ -124,12 +124,12 @@ export default function W2Uploader() {
       >
         <span className="w2-uploader__icon" aria-hidden="true">📄</span>
         <span className="w2-uploader__btn-text">
-          {busy ? 'Scanning…' : 'Upload tax document to autofill'}
+          {busy ? 'Scanning…' : 'Upload 1040 to autofill'}
         </span>
       </button>
       <span className="w2-uploader__hint">
-        W-2, 1040, 1099, K-1, or a client income summary sheet. PDF, JPEG, or PNG.
-        The file is processed in memory and never stored.
+        Drop the client's 1040 (PDF, JPEG, or PNG). The file is processed in
+        memory and never stored.
       </span>
       <input
         ref={inputRef}

@@ -329,7 +329,11 @@
     // pies, so the green "Kept" slice difference reads as pure planning
     // value.
     var cfg = (result && result.config) || {};
-    var salePrice = cfg.salePrice || parseUSD((document.getElementById('sale-price') || {}).value) || 0;
+    var salePrice = cfg.salePrice || (
+      (typeof window.__rettSumPropertyField === 'function')
+        ? window.__rettSumPropertyField('sale-price')
+        : (parseUSD((document.getElementById('sale-price') || {}).value) || 0)
+    );
     var baseOrd = cfg.baseOrdinaryIncome || 0;
     var inflRate = (window.TAX_DATA && typeof window.TAX_DATA.inflationRate === 'number')
       ? window.TAX_DATA.inflationRate : 0.02;
@@ -574,20 +578,14 @@
     var mA = _scenarioMetrics(pickedA.cfg);
 
     // Scenario B: Delay close to Jan 1 of next year. Force gain into Y2
-    // ONLY (no further deferral). Only feasible when the sale is close
-    // to year-end — hide when impl date is before September.
-    var saleMonth0_b = -1;
-    if (currentCfg.implementationDate &&
-        typeof window !== 'undefined' &&
-        typeof window.parseLocalDate === 'function') {
-      var dB = window.parseLocalDate(currentCfg.implementationDate);
-      if (dB && !isNaN(dB.getTime())) saleMonth0_b = dB.getMonth();
-    }
-    var mB = null;
-    if (saleMonth0_b >= 8) {
-      var pickedB = _bestPickedCfg('B', currentCfg);
-      mB = _scenarioMetrics(pickedB.cfg);
-    }
+    // ONLY (no further deferral). Compute for ALL sale dates so the user
+    // can always compare A vs B vs C side-by-side. (Prior gating on
+    // saleMonth >= September hid B from early-year sales, which made
+    // the table show only A and C and prevented the A-vs-B comparison
+    // Blake explicitly asked for. Same fix already applied to the
+    // per-strategy cards at line ~2196.)
+    var pickedB = _bestPickedCfg('B', currentCfg);
+    var mB = _scenarioMetrics(pickedB.cfg);
 
     // Scenario C: Structured sale. Auto-pick searches horizon × leverage
     // × recognition year and returns the (h, lev, combo, bestRecC)
@@ -599,19 +597,19 @@
     var rows = [];
     if (mA) rows.push({
       type: 'A', rec: 1, maxRec: null,
-      label: 'Sell now (Year 1)',
+      label: 'Cash in Hand (Year 1)',
       sub: 'Close in current year, Brooklyn losses absorb gain immediately',
       metrics: mA
     });
     if (mB) rows.push({
       type: 'B', rec: 2, maxRec: 1,
-      label: 'Delay close to Jan 1 next year',
+      label: 'Installment Sale',
       sub: 'Gain hits Year 2 naturally — no structured-sale product needed',
       metrics: mB
     });
     if (bestC) rows.push({
       type: 'C', rec: bestRecC, maxRec: null,
-      label: 'Structured sale (' + userDuration + ' months)',
+      label: 'Structured Installment Sale (' + userDuration + ' months)',
       sub: 'Insurance product defers gain to Year ' + bestRecC + ' under the legal window',
       metrics: bestC
     });
@@ -826,7 +824,7 @@
     if (type === 'C') {
       return Object.assign({}, currentCfg, {
         recognitionStartYearIndex: (bestRecC || 2) - 1,
-        structuredSaleDurationMonths: userDuration || 18,
+        structuredSaleDurationMonths: userDuration || 36,
         maxRecognitionYearIndex: null
       });
     }
@@ -1840,7 +1838,10 @@
     var sale  = Math.max(0, Number(cfg.salePrice) || 0);
     var basis = Math.max(0, Number(cfg.costBasis) || 0);
     var depr  = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
-    var ltGain = Math.max(0, sale - basis - depr);
+    // Q2: subtract ST-held property gain (ordinary-taxed, not LT-flavored).
+    var _stPropGain = (typeof window.__rettShortTermPropertyGain === 'function')
+      ? window.__rettShortTermPropertyGain() : 0;
+    var ltGain = Math.max(0, sale - basis - depr - _stPropGain);
     // Total taxable from the sale. Cost basis is NOT income — it's
     // recovery of capital — so we exclude it. STG is independent
     // (Income Sources), not part of the property sale, so it's NOT
@@ -2004,8 +2005,12 @@
     // breakdown table. legendRows / feesCallout are still computed above
     // so the function can be reused if a legend variant is needed later.
     void legendRows; void feesCallout;
+    // viewBox widened from "-90 -10 400 240" to "-150 -10 520 240"
+    // so the right-side "Original income" leader label and left-side
+    // "Money gained" leader label both fit inside the SVG canvas
+    // (they were truncated at the SVG edge by `overflow: hidden`).
     return '<div class="rett-donut-wrap rett-donut-wrap-centered">' +
-      '<svg class="rett-donut" viewBox="-90 -10 400 240" role="img" aria-label="Sale tax breakdown">' +
+      '<svg class="rett-donut" viewBox="-150 -10 520 240" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Sale tax breakdown">' +
         slices +
         callouts +
         '<text x="110" y="120" text-anchor="middle" class="rett-donut-center-pct">' + pctKept + '</text>' +
@@ -2071,7 +2076,7 @@
       '<div class="rett-interested-net-label">Net Benefit</div>' +
       '<div class="rett-interested-net-value">' + _fmt(metrics.net) + '</div>' +
       '<div class="rett-interested-lockup">' +
-        '<span class="rett-interested-lockup-label">Lockup</span>' +
+        '<span class="rett-interested-lockup-label">Distribution Period</span>' +
         '<span class="rett-interested-lockup-value">' + lockupValue + '</span>' +
       '</div>' +
       '<details class="rett-interested-details">' +
@@ -2220,9 +2225,9 @@
     }
 
     var entries = [];
-    if (mA) entries.push({ type: 'A', num: '01', name: 'Sell Now',        picked: pickedA.picked, metrics: mA, loss: lossA, payments: '',        cfg: pickedA.cfg, visuals: visualsA });
-    if (mB) entries.push({ type: 'B', num: '02', name: 'Seller Finance',  picked: pickedB.picked, metrics: mB, loss: lossB, payments: '',        cfg: pickedB.cfg, visuals: visualsB });
-    if (mC) entries.push({ type: 'C', num: '03', name: 'Structured Sale', picked: pickedC.picked, metrics: mC, loss: lossC, payments: paymentsC, cfg: pickedC.cfg, visuals: visualsC });
+    if (mA) entries.push({ type: 'A', num: '01', name: 'Cash in Hand',                 picked: pickedA.picked, metrics: mA, loss: lossA, payments: '',        cfg: pickedA.cfg, visuals: visualsA });
+    if (mB) entries.push({ type: 'B', num: '02', name: 'Installment Sale',             picked: pickedB.picked, metrics: mB, loss: lossB, payments: '',        cfg: pickedB.cfg, visuals: visualsB });
+    if (mC) entries.push({ type: 'C', num: '03', name: 'Structured Installment Sale',  picked: pickedC.picked, metrics: mC, loss: lossC, payments: paymentsC, cfg: pickedC.cfg, visuals: visualsC });
 
     if (!entries.length) return null;
 
@@ -2334,6 +2339,36 @@
   // continues to render the auto-picked combo's positive net (F20).
   root._autoPickSection = _autoPickSection;
 
+  // Public helper for the Strategy-Selection page (controls.js
+  // _refreshCard3Visibility). Returns the same NET BENEFIT that
+  // projection-dashboard renders for a given strategy type.
+  //
+  // Routes through buildInterestedSummary so the result reflects the
+  // FULL pipeline — _autoPickSection (leverage/horizon/recognition) +
+  // _scenarioMetrics + runBrooklynOptimizer's dial-back. Previous
+  // implementation called only _scenarioMetrics, which omitted the
+  // optimizer pass and could drift ~$15K from the displayed value.
+  // Same rankings either way, so the ±5% visibility band was stable,
+  // but absolute parity is cleaner and lets us reuse the band check
+  // against the actual user-facing number.
+  //
+  // Returns null if compute fails (engine unavailable, malformed cfg,
+  // etc.) or if the type isn't an A/B/C primary strategy.
+  root._computeBestNetForStrategy = function (type) {
+    if (type !== 'A' && type !== 'B' && type !== 'C') return null;
+    if (typeof buildInterestedSummary !== 'function') return null;
+    try {
+      var summary = buildInterestedSummary();
+      if (!summary || !summary.entries) return null;
+      var entry = summary.entries.find(function (e) { return e.type === type; });
+      if (!entry || !entry.metrics) return null;
+      var net = Number(entry.metrics.net);
+      return Number.isFinite(net) ? net : null;
+    } catch (e) {
+      return null;
+    }
+  };
+
   function renderInterestedSnapshot() {
     var host = document.getElementById('interested-cards-host');
     if (!host) return;
@@ -2358,14 +2393,21 @@
     //     CTA back to Page 2 (P1-2) instead of a blank page.
     var interest = (typeof window !== 'undefined' && window.__rettStrategyInterest) || {};
 
-    // Tri-state filter: hide ONLY cards the user explicitly marked
-    // Not Interested (interest === false). Unmarked cards (null)
-    // stay visible — silently hiding them when at least one card was
-    // marked Interested was Bug #7. The recommended-type carve-out
-    // is no longer needed because null already passes through.
-    var filtered = entries.filter(function (e) {
-      return interest[e.type] !== false;
+    // Filter semantics per advisor 2026-05-16:
+    //   - If AT LEAST ONE strategy is marked Interested (=== true)
+    //     → show only those Interested cards (the user has narrowed
+    //     down their choices, respect that).
+    //   - Otherwise (no Interested clicks yet) → show every card the
+    //     user didn't explicitly opt out of (Not Interested).
+    // Previous behavior showed every non-opted-out card always, which
+    // surprised the advisor: clicking Interested on just Card 1 still
+    // surfaced Cards 2 and 3 on Page 4.
+    var anyInterested = ['A', 'B', 'C'].some(function (t) {
+      return interest[t] === true;
     });
+    var filtered = anyInterested
+      ? entries.filter(function (e) { return interest[e.type] === true; })
+      : entries.filter(function (e) { return interest[e.type] !== false; });
 
     // The legacy "Mark Interested / Not Interested on the Strategies
     // page to filter this view ..." hint was removed — the cards

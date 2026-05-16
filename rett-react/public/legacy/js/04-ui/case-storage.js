@@ -40,14 +40,24 @@
     // Page 1: Income
     'w2-wages', 'se-income', 'biz-revenue', 'rental-income',
     'dividend-income', 'retirement-distributions',
-    // Page 1: Appreciated Assets
+    // Page 1: Real Estate Sale Details — Property 1 (always visible)
     'sale-price', 'cost-basis', 'accelerated-depreciation', 'short-term-gain',
+    // Page 1: Real Estate Sale Details — Properties 2..5 (multi-property Q1).
+    // Per-property holding-period toggle (Q2) is persisted alongside each
+    // property's currency fields. Per-property visibility is restored
+    // post-load by checking if any of the block's fields have data.
+    'holding-period-1', 'personal-use-yes-no-1', 'personal-use-amount-1',
+    'sale-price-2', 'cost-basis-2', 'accelerated-depreciation-2', 'holding-period-2', 'implementation-date-2', 'strategy-implementation-date-2', 'personal-use-yes-no-2', 'personal-use-amount-2',
+    'sale-price-3', 'cost-basis-3', 'accelerated-depreciation-3', 'holding-period-3', 'implementation-date-3', 'strategy-implementation-date-3', 'personal-use-yes-no-3', 'personal-use-amount-3',
+    'sale-price-4', 'cost-basis-4', 'accelerated-depreciation-4', 'holding-period-4', 'implementation-date-4', 'strategy-implementation-date-4', 'personal-use-yes-no-4', 'personal-use-amount-4',
+    'sale-price-5', 'cost-basis-5', 'accelerated-depreciation-5', 'holding-period-5', 'implementation-date-5', 'strategy-implementation-date-5', 'personal-use-yes-no-5', 'personal-use-amount-5',
     // Page 1: Sale Proceeds questions (drive Available Capital)
     'withhold-yes-no', 'withhold-amount', 'cover-taxes-yes-no',
-    // Page 1: Future Appreciated Asset Sale (drives the optimizer's
-    // decision on whether to let loss carryforward roll forward).
-    'future-sale-yes-no', 'future-sale-date', 'future-sale-price',
-    'future-cost-basis', 'future-accelerated-depreciation',
+    // Page 1: Future Sale Loss Target (drives the optimizer's decision
+    // on whether to let loss carryforward roll forward to absorb a
+    // planned future gain). Simplified shape (2026-05-15): single
+    // estimated-gain field replaces prior 4-field breakdown.
+    'future-sale-yes-no', 'future-sale-date', 'future-estimated-gain',
     // Page 1: Implementation
     'implementation-date', 'strategy-implementation-date',
     'structured-sale-duration-months',
@@ -196,6 +206,32 @@
           ' (current: ' + SCHEMA_VERSION + '). Proceeding with field-only restore.');
       }
     }
+    // Migration (2026-05-15): legacy cases carry the 4-field future-sale
+    // breakdown (future-sale-price / future-cost-basis /
+    // future-accelerated-depreciation / future-long-term-gain). The new
+    // shape uses a single future-estimated-gain. If the legacy fields
+    // exist and the new field doesn't, compute the gain on the fly so
+    // the user doesn't lose their data on first load post-update.
+    if (state['future-estimated-gain'] == null &&
+        (state['future-sale-price'] != null ||
+         state['future-cost-basis'] != null ||
+         state['future-accelerated-depreciation'] != null)) {
+      var _parse = function (v) {
+        if (v == null) return 0;
+        if (typeof v === 'number') return v;
+        // Reuse parseUSD if available, else strip non-numeric.
+        if (typeof parseUSD === 'function') return parseUSD(String(v)) || 0;
+        var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+        return isFinite(n) ? n : 0;
+      };
+      var _sp = _parse(state['future-sale-price']);
+      var _cb = _parse(state['future-cost-basis']);
+      var _ad = _parse(state['future-accelerated-depreciation']);
+      var _eg = Math.max(0, _sp - _cb - _ad);
+      state['future-estimated-gain'] = (_eg > 0)
+        ? '$' + Math.round(_eg).toLocaleString('en-US')
+        : '';
+    }
     var ordered = ['custodian-select', 'projection-years'];
     var rest    = FIELD_IDS.filter(function (id) { return ordered.indexOf(id) === -1; });
     // Belt-and-suspenders flag for the auto-save listener. The
@@ -210,6 +246,13 @@
       if (!el) return;
       var v = state[id];
       var strV = (v == null) ? '' : String(v);
+      // Custodian special-case (2026-05-16): legacy cases saved before
+      // Schwab became the default have custodian-select: "". Applying
+      // that empty value blows away the auto-selected Schwab and lands
+      // the user in the no-custodian "variable" leverage path. Skip the
+      // restore when the saved value is empty AND the dropdown already
+      // has a non-empty selection — keeps the auto-default in place.
+      if (id === 'custodian-select' && strV === '' && el.value) return;
       if (el.type === 'checkbox' || el.type === 'radio') {
         el.checked = !!v;
       } else if (el.tagName === 'SELECT') {
@@ -256,6 +299,44 @@
       root.__rettChosenStrategy = state._chosenStrategy;
     } else if (state._chosenStrategy === null) {
       root.__rettChosenStrategy = null;
+    }
+
+    // Multi-property visibility restore (Q1): if a saved case has any
+    // P2-P5 fields populated, reveal that block. Each block is hidden
+    // by default in HTML; we un-hide based on saved data presence.
+    for (var pn = 2; pn <= 5; pn++) {
+      var spVal = state['sale-price-' + pn];
+      var cbVal = state['cost-basis-' + pn];
+      var adVal = state['accelerated-depreciation-' + pn];
+      var idVal = state['implementation-date-' + pn];
+      var sdVal = state['strategy-implementation-date-' + pn];
+      var puVal = state['personal-use-amount-' + pn];
+      var hasData = (spVal && String(spVal).trim()) ||
+                    (cbVal && String(cbVal).trim()) ||
+                    (adVal && String(adVal).trim()) ||
+                    (idVal && String(idVal).trim()) ||
+                    (sdVal && String(sdVal).trim()) ||
+                    (puVal && String(puVal).trim());
+      if (hasData) {
+        var block = document.getElementById('property-' + pn);
+        if (block) block.hidden = false;
+      }
+    }
+    // Update the "+ Additional Real Estate Sale" button visibility
+    // based on how many blocks are now revealed (hide when 5 reached).
+    var addBtn = document.getElementById('property-add-btn');
+    if (addBtn) {
+      var visible = 1;
+      for (var pn2 = 2; pn2 <= 5; pn2++) {
+        var blk = document.getElementById('property-' + pn2);
+        if (blk && !blk.hidden) visible++;
+      }
+      addBtn.hidden = (visible >= 5);
+    }
+    // Q4: also sync the body class + Property 1 header now that
+    // visibility is correct (case-load may have revealed P2-P5).
+    if (typeof root.__rettRefreshMultiPropertyMode === 'function') {
+      root.__rettRefreshMultiPropertyMode();
     }
 
     // Page-4 supplemental restore (v3+). Old saved cases without these

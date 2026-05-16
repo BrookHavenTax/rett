@@ -57,6 +57,35 @@ export default function PagePMQ() {
               <div id="pmq-client-status" className="pmq-client-status" aria-live="polite" />
             </div>
           </div>
+
+          {/* Case Management — moved here from Client Inputs Section 00 so the
+              saved-client dropdown never appears in front of the client. IDs are
+              identical because controls.js / case-storage.js wire onto them by id. */}
+          <div className="input-section pmq-client-section pmq-case-section">
+            <div className="section-heading">
+              <h2>Case Management</h2>
+              <span className="num">SECTION 00b</span>
+            </div>
+            <div className="section-body">
+              <div className="input-row">
+                <div className="label">Case Name</div>
+                <input type="text" id="case-name-input" placeholder="e.g. John Smith" autoComplete="off" maxLength={80} />
+              </div>
+              <div className="input-row">
+                <div className="label">Load Saved Client</div>
+                <select id="case-load-select" defaultValue="">
+                  <option value="">-- Select a saved client --</option>
+                </select>
+              </div>
+              <div className="input-row">
+                <div className="label">Case Actions</div>
+                <div className="case-actions-row">
+                  <button type="button" className="btn btn-primary" id="case-new-btn">New Client</button>
+                  <button type="button" className="btn btn-secondary" id="case-delete-btn">Delete</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

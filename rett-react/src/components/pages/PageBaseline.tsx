@@ -1,39 +1,50 @@
-// Tax Baseline. The bt-* table cells are populated by
-// js/04-ui/baseline-table.js whenever Section 02–05 inputs change.
+// Tax Implications (formerly "Tax Baseline"). The May 2026 sync replaced
+// the long tax-breakdown table with the "Blake delta trio" layout: three
+// tiles read left-to-right as the equation (without sale) + (from sale) =
+// (total). The advisor-only breakdown table is gone upstream (commit
+// 97ee7c9 "Tab 2: rename to 'Tax Baseline without Strategies' + drop
+// advisor breakdown"). The page header itself reads "Tax Baseline without
+// Strategies" — only the NAV TAB label is "2. Tax Implications".
+//
+// IDs (#bt-without, #bt-delta, #bt-total, etc.) are populated by
+// js/04-ui/baseline-table.js whenever the inputs change. The per-property
+// breakdown panel is revealed by double-clicking the middle tile when
+// 2+ properties are active; baseline-table.js controls the show/hide.
 export default function PageBaseline() {
   return (
     <section id="page-baseline" className="page" role="tabpanel" aria-labelledby="nav-baseline">
-      <h2 className="page-inputs-title">Tax Baseline</h2>
-      <div className="baseline-page-wrap">
-        <div className="baseline-table-wrapper" id="baseline-table-wrapper">
-          <div className="section-heading">
-            <h2>Total Tax If You Did Nothing</h2>
-            <span className="num" id="baseline-year-tag">2026 PROJECTION</span>
-          </div>
-          <table className="baseline-table">
-            <tbody>
-              <tr><td>Ordinary Income</td><td id="bt-ord">$0</td></tr>
-              <tr className="indent"><td>W-2 + SE + Business + Rental + Dividend + Retirement</td><td id="bt-ord-sub">$0</td></tr>
-              <tr><td>Short-Term Capital Gain</td><td id="bt-stg">$0</td></tr>
-              <tr><td>Long-Term Capital Gain</td><td id="bt-ltg">$0</td></tr>
-              <tr className="indent"><td>From the property sale (sale &minus; basis &minus; depr)</td><td id="bt-ltg-sub">$0</td></tr>
-              <tr><td>Depreciation Recapture</td><td id="bt-recap">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>&sect;1211(b) capital-loss offset (applied)</td><td id="bt-loss-off">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>Carried forward to next year</td><td id="bt-loss-cfy">$0</td></tr>
-              <tr className="subtotal"><td>Total Taxable Income</td><td id="bt-taxable">$0</td></tr>
-              <tr><td>Federal Income Tax</td><td id="bt-fed">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Ordinary Income Tax (W-2 + STG)</td><td id="bt-fed-ord">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Depreciation Recapture Tax (&sect;1250, capped at 25%)</td><td id="bt-fed-recap">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;Long-Term Capital Gains Tax</td><td id="bt-fed-lt">$0</td></tr>
-              <tr className="indent" style={{ display: 'none' }}><td>&nbsp;&nbsp;AMT Top-up (if applicable)</td><td id="bt-amt">$0</td></tr>
-              <tr><td>State Income Tax</td><td id="bt-state">$0</td></tr>
-              <tr><td>NIIT (3.8%)</td><td id="bt-niit">$0</td></tr>
-              <tr><td>Additional Medicare (0.9%)</td><td id="bt-addmed">$0</td></tr>
-              <tr style={{ display: 'none' }}><td>Self-Employment Tax (SECA)</td><td id="bt-setax">$0</td></tr>
-              <tr className="total"><td>Total Tax If You Did Nothing</td><td id="bt-tot">$0</td></tr>
-            </tbody>
-          </table>
+      <h2 className="page-inputs-title">Tax Baseline without Strategies</h2>
+
+      {/* Three-block delta display per Blake's spec: headline is the
+          additional tax due to the sale, not the total. Visual reads
+          left-to-right as an equation: (without sale) + (from sale) = (total).
+          Crescendo escalates to the right so the total has the most weight. */}
+      <div className="baseline-trio" aria-live="polite">
+        <div className="baseline-tile baseline-tile--without">
+          <div className="baseline-tile-label">Without the Sale</div>
+          <div className="baseline-tile-value" id="bt-without">$0</div>
+          <div className="baseline-tile-sub" id="bt-without-sub">Federal &middot; State &middot; NIIT</div>
         </div>
+        <div className="baseline-op" aria-hidden="true">+</div>
+        <div className="baseline-tile baseline-tile--delta">
+          <div className="baseline-tile-label">Tax Due to the Sale</div>
+          <div className="baseline-tile-value" id="bt-delta">$0</div>
+          <div className="baseline-tile-sub" id="bt-delta-sub">Recap &middot; LT &middot; NIIT &middot; State</div>
+        </div>
+        <div className="baseline-op" aria-hidden="true">=</div>
+        <div className="baseline-tile baseline-tile--total">
+          <div className="baseline-tile-label">Total Tax</div>
+          <div className="baseline-tile-value" id="bt-total">$0</div>
+          <div className="baseline-tile-sub" id="baseline-year-sub">Year 2026</div>
+        </div>
+      </div>
+
+      {/* Per-property tax breakdown panel — revealed by double-click on the
+          middle "Tax Due to the Sale" tile when 2+ properties are active.
+          Hidden by default; baseline-table.js populates the rows. */}
+      <div id="baseline-breakdown-panel" className="baseline-breakdown-panel" hidden>
+        <div className="baseline-breakdown-title">Tax Due — by Property</div>
+        <div id="baseline-breakdown-list" className="baseline-breakdown-list" />
       </div>
 
       <div className="page-actions">

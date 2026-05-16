@@ -18,10 +18,18 @@
     'w2-wages', 'se-income', 'biz-revenue', 'rental-income',
     'dividend-income', 'retirement-distributions',
     'sale-price', 'cost-basis', 'accelerated-depreciation',
-    'short-term-gain', 'withhold-amount', 'available-capital',
-    'payment-on-sale-date',
-    // Future Appreciated Asset Sale (Section 07).
-    'future-sale-price', 'future-cost-basis', 'future-accelerated-depreciation'
+    // Multi-property (Q1): Properties 2-5 currency fields.
+    'sale-price-2', 'cost-basis-2', 'accelerated-depreciation-2',
+    'sale-price-3', 'cost-basis-3', 'accelerated-depreciation-3',
+    'sale-price-4', 'cost-basis-4', 'accelerated-depreciation-4',
+    'sale-price-5', 'cost-basis-5', 'accelerated-depreciation-5',
+    'short-term-gain', 'long-term-gain',
+    'withhold-amount', 'available-capital',
+    // Per-property personal-use amounts (replaces the old single withhold-amount).
+    'personal-use-amount-1', 'personal-use-amount-2', 'personal-use-amount-3',
+    'personal-use-amount-4', 'personal-use-amount-5',
+    // Future Sale Loss Target (Section 05) — single estimated gain.
+    'future-estimated-gain'
   ];
 
   // Fields where negative values are nonsensical (W-2 / SE / dividend /
@@ -39,10 +47,15 @@
     'w2-wages': 1, 'se-income': 1,
     'dividend-income': 1, 'retirement-distributions': 1,
     'sale-price': 1, 'cost-basis': 1, 'accelerated-depreciation': 1,
-    'short-term-gain': 1,
+    'sale-price-2': 1, 'cost-basis-2': 1, 'accelerated-depreciation-2': 1,
+    'sale-price-3': 1, 'cost-basis-3': 1, 'accelerated-depreciation-3': 1,
+    'sale-price-4': 1, 'cost-basis-4': 1, 'accelerated-depreciation-4': 1,
+    'sale-price-5': 1, 'cost-basis-5': 1, 'accelerated-depreciation-5': 1,
+    'short-term-gain': 1, 'long-term-gain': 1,
     'withhold-amount': 1, 'available-capital': 1,
-    'payment-on-sale-date': 1,
-    'future-sale-price': 1, 'future-cost-basis': 1, 'future-accelerated-depreciation': 1
+    'personal-use-amount-1': 1, 'personal-use-amount-2': 1, 'personal-use-amount-3': 1,
+    'personal-use-amount-4': 1, 'personal-use-amount-5': 1,
+    'future-estimated-gain': 1
   };
 
   function _toNum(s) {

@@ -12,12 +12,13 @@ export default function PageStrategies() {
       </div>
 
       <div id="strategy-pick-list" className="strategy-pick-grid">
-        {/* Card 1 — Sell Now */}
+        {/* Card 1 — Proceeds at Sale (Cash in Hand is the keyaspect — the
+            thing the strategy delivers, kept in the highlighted box below). */}
         <div className="strategy-pick-card" data-strategy="A" id="strategy-pick-A">
           <div className="strategy-pick-card-header">
             <div className="strategy-pick-num">STRATEGY <span className="num-big">01</span></div>
           </div>
-          <h3 className="strategy-pick-name">Sell Now</h3>
+          <h3 className="strategy-pick-name">Proceeds at Sale</h3>
 
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">Cash In Hand</div>
@@ -45,18 +46,23 @@ export default function PageStrategies() {
             </div>
           </div>
 
+          {/* Empty placeholder — reserves the same row as Card 2's default-
+              risk toggle so the Interested/Not Interested button row lines
+              up horizontally across all three cards. */}
+          <div className="strategy-default-risk-row strategy-default-risk-row--spacer" aria-hidden="true" />
+
           <div className="strategy-pick-buttons">
             <button type="button" className="strategy-pick-btn" data-pick-action="interested"     data-pick-target="A">&#10003; Interested</button>
             <button type="button" className="strategy-pick-btn" data-pick-action="not-interested" data-pick-target="A">Not Interested</button>
           </div>
         </div>
 
-        {/* Card 2 — Seller Finance */}
+        {/* Card 2 — Installment Sale (payment January 1st — lump) */}
         <div className="strategy-pick-card" data-strategy="B" id="strategy-pick-B">
           <div className="strategy-pick-card-header">
             <div className="strategy-pick-num">STRATEGY <span className="num-big">02</span></div>
           </div>
-          <h3 className="strategy-pick-name">Seller Finance</h3>
+          <h3 className="strategy-pick-name">Installment Sale</h3>
 
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">More Time To Plan</div>
@@ -86,18 +92,45 @@ export default function PageStrategies() {
             </div>
           </div>
 
+          {/* Default-risk toggle — click to switch Yes/No. Yes reveals
+              Card 3 (Structured Installment Sale) which distributes the
+              payment across multiple years to mitigate the risk of buyer
+              default. The hidden <select id="default-risk-yes-no"> is the
+              original engine input; the toggle writes to it and dispatches
+              "change" so all listeners fire. Using <div role="button">
+              rather than <button> because a UA rule was beating every CSS
+              approach to color the <button> background. */}
+          <div className="strategy-default-risk-row">
+            <span className="strategy-default-risk-label">Is default risk a concern?</span>
+            <div role="button"
+                 tabIndex={0}
+                 id="default-risk-toggle"
+                 className="strategy-default-risk-toggle"
+                 data-state="no"
+                 aria-pressed="false">No</div>
+            <select id="default-risk-yes-no" className="yes-no" hidden aria-hidden="true" defaultValue="no">
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </div>
+
           <div className="strategy-pick-buttons">
             <button type="button" className="strategy-pick-btn" data-pick-action="interested"     data-pick-target="B">&#10003; Interested</button>
             <button type="button" className="strategy-pick-btn" data-pick-action="not-interested" data-pick-target="B">Not Interested</button>
           </div>
         </div>
 
-        {/* Card 3 — Structured Sale */}
-        <div className="strategy-pick-card" data-strategy="C" id="strategy-pick-C">
+        {/* Card 3 — Structured Installment Sale — hidden by default. Revealed
+            when EITHER:
+              - the default-risk-yes-no toggle on Card 2 is set to "yes", OR
+              - Card 3's net benefit is at least 5% higher than BOTH Card 1
+                and Card 2 (engine eval runs on page-strategies entry).
+            Layout shifts so Cards 1 + 2 center themselves when Card 3 is hidden. */}
+        <div className="strategy-pick-card" data-strategy="C" id="strategy-pick-C" hidden>
           <div className="strategy-pick-card-header">
             <div className="strategy-pick-num">STRATEGY <span className="num-big">03</span></div>
           </div>
-          <h3 className="strategy-pick-name">Structured Sale</h3>
+          <h3 className="strategy-pick-name">Structured Installment Sale</h3>
 
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">Maximum Tax Reduction</div>
@@ -117,9 +150,13 @@ export default function PageStrategies() {
               </svg>
             </span>
             <div className="strategy-lockup-text">
-              <span className="strategy-lockup-value" data-lockup-display="C">18 Month Lockup</span>
+              <span className="strategy-lockup-value" data-lockup-display="C">36 Month Distribution Period</span>
             </div>
           </div>
+
+          {/* Empty placeholder — same height as Card 2's default-risk
+              toggle so the buttons line up across all three cards. */}
+          <div className="strategy-default-risk-row strategy-default-risk-row--spacer" aria-hidden="true" />
 
           <div className="strategy-pick-buttons">
             <button type="button" className="strategy-pick-btn" data-pick-action="interested"     data-pick-target="C">&#10003; Interested</button>

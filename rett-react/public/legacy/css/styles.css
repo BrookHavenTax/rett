@@ -31,12 +31,14 @@
   --rett-blue-light: #DCE9FA;  /* tinted bullet boxes, selected tab fill */
   --rett-cyan:       #5BA9FF;  /* uppercase mono section tags, secondary accent */
   --rett-bg:         #F4F7FB;  /* page background gradient top */
-  /* Step-circle warning orange — booth uses this for the numbered
-     1-5 process circles. Keep --rett-amber as an alias so existing
-     rules pointing at amber resolve to the new orange automatically. */
-  --rett-warning:    #E07B2A;
+  /* Accent "pop" color — replaces the prior booth orange (#E07B2A).
+     Used for numbered step circles, selected strategy borders, the
+     Interested button, the donut "tax owed" slice, and the Tax
+     Baseline delta tile. --rett-amber + --bh-yellow are kept as
+     aliases so existing rules resolve without renaming class hooks. */
+  --rett-warning:    #5BA9FF;
   --rett-amber:      var(--rett-warning);
-  --rett-amber-soft: #f3a567;
+  --rett-amber-soft: #8fc6ff;
   --rett-success:    #1F8A4C;  /* green selected, savings deltas */
   --rett-danger:     #C0392B;  /* "no planning" walk-away figure */
 
@@ -970,6 +972,285 @@ select.input-error {
     .rett-hero-tile { padding: 20px 18px; }
     .rett-hero-value { font-size: 2.4em; }
     .rett-hero-sub { font-size: 0.85em; }
+}
+
+/* ============ Tax Baseline — three-block delta display ============
+   Reads left-to-right as a math equation:
+   [ Without the Sale ]  +  [ Tax Due to the Sale ]  =  [ Total Tax ]
+   Visual crescendo from muted (left) → accent (middle) → hero (right)
+   so the eye terminates on the total. The middle tile carries the
+   accent border because Blake's framing is "this is the new cost the
+   sale introduced — and the strategies are designed to reduce it." */
+.baseline-trio {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 12px;
+    margin: 12px 0 24px;
+    flex-wrap: nowrap;
+}
+.baseline-tile {
+    flex: 1 1 0;
+    min-width: 0;
+    background: linear-gradient(135deg, rgba(15, 76, 129, 0.30) 0%, rgba(13, 34, 64, 0.55) 100%);
+    border: 1px solid #1a3a6e;
+    border-left: 3px solid #2c4f86;
+    border-radius: 10px;
+    padding: 32px 20px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.baseline-tile--without {
+    /* Context: what they'd already owe. Slightly less saturated than
+       delta/total but readable — no opacity fade so text stays sharp. */
+    background: linear-gradient(135deg, rgba(15, 76, 129, 0.45) 0%, rgba(13, 34, 64, 0.65) 100%);
+}
+.baseline-tile--delta {
+    /* The new cost. Accent border draws the eye. */
+    border-left: 4px solid var(--rett-warning);
+    background: linear-gradient(135deg, rgba(15, 76, 129, 0.55) 0%, rgba(13, 34, 64, 0.75) 100%);
+}
+.baseline-tile--total {
+    /* The answer. Full hero treatment. */
+    background: linear-gradient(135deg, rgba(15, 76, 129, 0.65) 0%, rgba(13, 34, 64, 0.88) 100%);
+    border-left: 5px solid var(--rett-warning);
+    box-shadow: 0 4px 18px rgba(91, 169, 255, 0.18);
+}
+.baseline-tile-label {
+    font-size: 0.95em;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #ffffff;
+    margin-bottom: 16px;
+    font-weight: 800;
+}
+.baseline-tile-value {
+    /* Sized to fit ~10-character dollar values ("$1,535,026") within the
+       313px content area when 3 tiles are laid out side-by-side at typical
+       desktop widths. Tabular-nums + tight letter-spacing keep digit
+       columns aligned and compact. overflow:hidden guards against
+       overflow for $10M+ numbers — they will clip rather than spill. */
+    font-size: 2.8em;
+    font-weight: 800;
+    line-height: 1.05;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    overflow: hidden;
+}
+.baseline-tile--delta .baseline-tile-value {
+    font-size: 3.2em;
+    color: #ffffff;
+}
+.baseline-tile--total .baseline-tile-value {
+    font-size: 3.6em;
+    color: #ffffff;
+    /* Subtle black outline so the hero number reads as embossed
+       against the navy gradient — adds depth without looking cartoonish. */
+    text-shadow:
+        0 1px 3px rgba(0, 0, 0, 0.5),
+        0 0 1px rgba(0, 0, 0, 0.7);
+}
+/* Sublines hidden per spec — three numbers, no clutter. The values
+   are still computed and live in the DOM in case a future view wants
+   them; CSS-only hide keeps the JS render path unchanged. */
+.baseline-tile-sub {
+    display: none;
+}
+.baseline-op {
+    align-self: center;
+    font-size: 2.6em;
+    font-weight: 600;
+    color: #6b8bba;
+    padding: 0 4px;
+    user-select: none;
+}
+.baseline-table-details {
+    margin-top: 18px;
+}
+.baseline-table-details > summary {
+    cursor: pointer;
+    font-size: 0.88em;
+    color: #6b8bba;
+    padding: 8px 12px;
+    border: 1px dashed #2c4f86;
+    border-radius: 6px;
+    display: inline-block;
+    list-style: none;
+}
+.baseline-table-details > summary::-webkit-details-marker { display: none; }
+.baseline-table-details > summary::before { content: '▸ '; }
+.baseline-table-details[open] > summary::before { content: '▾ '; }
+.baseline-table-details > summary:hover { color: #8fb3e0; border-color: var(--rett-warning); }
+
+@media (max-width: 900px) {
+    .baseline-trio { flex-wrap: wrap; }
+    .baseline-tile { flex: 1 1 100%; padding: 26px 22px; }
+    .baseline-op { width: 100%; padding: 6px 0; font-size: 2.4em; }
+    .baseline-tile-value { font-size: 2.6em; }
+    .baseline-tile--delta .baseline-tile-value { font-size: 3.0em; }
+    .baseline-tile--total .baseline-tile-value { font-size: 3.4em; }
+}
+
+/* ============ Multi-property scaffold (Q1) ============
+   Each property is a self-contained block. Property 1 has no header
+   (looks like a single sale today); Properties 2-5 have a small
+   header with the property number + Remove button. The + Additional
+   Real Estate Sale button sits below all property blocks. The shared
+   Strategy Implementation Date sits below the + button. */
+.property-block {
+    margin: 0 0 14px;
+}
+.property-block + .property-block {
+    /* Visible separator between property blocks — subtle dashed line
+       so the advisor can see where one property ends and the next begins
+       without overpowering the form. */
+    border-top: 1px dashed #c4d2e8;
+    padding-top: 14px;
+}
+.property-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.property-block-title {
+    margin: 0;
+    font-size: 0.85em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #4a5e85;
+    font-weight: 700;
+}
+.property-remove-btn {
+    background: transparent;
+    border: 1px solid #c4d2e8;
+    color: #6b8bba;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+.property-remove-btn:hover {
+    border-color: var(--rett-warning);
+    color: var(--rett-warning);
+}
+.property-add-row {
+    margin: 16px 0 8px;
+}
+.property-add-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px dashed var(--rett-warning);
+    color: var(--rett-warning);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 0.9em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-style 0.15s;
+}
+.property-add-btn:hover {
+    background: rgba(91, 169, 255, 0.08);
+    border-style: solid;
+}
+/* Notice that surfaces when two or more property sales fall in
+   different calendar years. The strategy engine currently
+   aggregates all gain into the earliest year — this banner makes
+   the limitation visible to the advisor so they don't unknowingly
+   present a year-blind projection. controls.js toggles `hidden`
+   on the element based on the dates entered. */
+.multi-year-sale-notice {
+    margin-top: 14px;
+    padding: 12px 16px;
+    background: rgba(91, 169, 255, 0.08);
+    border: 1px solid rgba(91, 169, 255, 0.35);
+    border-left: 4px solid var(--rett-warning, #5BA9FF);
+    border-radius: 4px;
+    color: var(--ink);
+    font-size: 0.88em;
+    line-height: 1.45;
+}
+.multi-year-sale-notice strong { color: var(--rett-warning, #5BA9FF); }
+.property-strategy-date-row {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #e2e8f0;
+}
+/* Q6: Visual separator before the proceeds questions (withhold +
+   cover-tax) — sits below the property blocks + strategy impl date
+   inside the merged Section 03. */
+.property-proceeds-divider {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid #e2e8f0;
+}
+
+/* Q4: Hide Property 1 header by default (single-property scenario reads
+   like one sale with no numbered label). Shown only when 2+ properties
+   are active, set by baseline-table.js / controls.js when the user
+   clicks "+ Additional Real Estate Sale". */
+#property-1 .property-block-header { display: none; }
+body.rett-multi-property #property-1 .property-block-header { display: flex; }
+body.rett-multi-property #property-1 .property-remove-btn { display: none; }
+/* Q4: Insert a header into Property 1 dynamically when multi-property
+   mode activates. Defined here so the controls.js JS just injects the
+   element; CSS handles visibility. */
+
+/* Q3: Per-property tax breakdown panel — inline expand below the three
+   baseline tiles. Toggled by double-click on the middle delta tile. */
+.baseline-tile--has-breakdown {
+    cursor: pointer;
+    position: relative;
+}
+.baseline-tile--has-breakdown::after {
+    content: '▾';
+    position: absolute;
+    bottom: 6px;
+    right: 12px;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.85em;
+    pointer-events: none;
+}
+.baseline-breakdown-panel {
+    background: linear-gradient(135deg, rgba(15, 76, 129, 0.40) 0%, rgba(13, 34, 64, 0.62) 100%);
+    border: 1px solid #1a3a6e;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 0 0 24px;
+    max-width: 100%;
+}
+.baseline-breakdown-title {
+    font-size: 0.78em;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #b3d4ff;
+    margin-bottom: 10px;
+    font-weight: 700;
+}
+.baseline-breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.baseline-breakdown-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    color: #ffffff;
+    font-size: 0.95em;
+}
+.baseline-breakdown-label {
+    color: #d6e6f7;
+}
+.baseline-breakdown-amt {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
 .rett-strategy-card {
@@ -2215,8 +2496,8 @@ body {
     padding: 0 48px;
 }
 .nav-tab {
-    font-family: var(--font-display);
-    font-style: italic;
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: normal;
     font-weight: 500;
     font-size: 1.1em;
     color: var(--muted);
@@ -2361,6 +2642,18 @@ body { font-size: 16px; }
 .pmq-left-col .pmq-collapse-btn { align-self: flex-start; }
 .pmq-client-section {
     width: 100%;
+}
+/* Case Management — second card stacked under the Client identity
+   card on PMQ. Moved here from Client Inputs Section 00 so the saved-
+   clients dropdown never displays in front of a client. Spacing above
+   so the two cards read as related-but-distinct units. */
+.pmq-case-section {
+    margin-top: 18px;
+}
+.pmq-case-section .case-actions-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 /* Pack first/last on the same row inside .section-body. The default
    .input-row is a 2-column grid (label | input); the half variants
@@ -2730,6 +3023,13 @@ body { font-size: 16px; }
     gap: 18px;
     margin-bottom: 16px;
 }
+/* The hidden HTML attribute should fully hide the row. The .input-row
+   rule above sets display: grid with class-selector specificity, which
+   overrides the browser default [hidden] { display: none } rule. Force
+   the hidden behavior with attribute-selector + !important so any row
+   with the hidden attribute (conditional rows like the personal-use
+   amount input) actually disappears when JS toggles .hidden = true. */
+.input-row[hidden] { display: none !important; }
 .input-row:last-child { margin-bottom: 0; }
 .input-row .label {
     font-family: var(--font-body);
@@ -2908,6 +3208,19 @@ body { font-size: 16px; }
 .page-inputs-title {
     font-size: 2.4em;
     margin: 8px 0 22px;
+}
+/* Banner variant — applied after Section 00 ("Client") moved to the
+   Pre-Meeting tab. The page-inputs heading now acts as the page's
+   visual chapter break: bordered card with a left accent rule and
+   tinted background so the page lead reads as a section header for
+   everything below. */
+.page-inputs-title--banner {
+    padding: 18px 24px;
+    border: 1px solid var(--rule);
+    border-left: 6px solid var(--ink);
+    background: var(--paper-warm, #fafaf3);
+    border-radius: 4px;
+    margin: 8px 0 26px;
 }
 
 /* Page-1 actions row at the bottom */
@@ -3497,8 +3810,14 @@ body { font-size: 16px; }
     gap: 14px;
 }
 .rett-scenario-section-title-text {
-    font-family: var(--font-display);
-    font-style: italic;
+    /* Fraunces capital J — even in upright weight — has a distinctive
+       curled descender that reads as a "weird divot" in titles like
+       "Payment January 1st". Switch this specific title to Georgia
+       (which Fraunces stack falls back to anyway) so the J renders
+       conventionally. Other Fraunces elements (body display, etc.)
+       are unaffected. */
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: normal;
     font-weight: 500;
     font-size: 1.55em;
     color: var(--ink);
@@ -3521,8 +3840,10 @@ body { font-size: 16px; }
 /* DETAILS TABLES */
 .rett-details-section { margin-bottom: 32px; }
 .rett-details-section-title {
-    font-family: var(--font-display);
-    font-style: italic;
+    /* Same Fraunces J issue as .rett-scenario-section-title-text - swap
+       to Georgia so titles containing "January" render with a normal J. */
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: normal;
     font-weight: 500;
     color: var(--ink);
     font-size: 1.4em;
@@ -3586,29 +3907,135 @@ body { font-size: 16px; }
 
 /* The grid: three equal columns, big enough to take the screen.
    Wraps to a single column under ~1000px so phones / narrow windows
-   still read top-to-bottom. */
+   still read top-to-bottom.
+   .strategy-pick-grid--two-only: applied by controls.js when Card 3
+   (Structured Installment Sale) is hidden. Switches the grid to a
+   centered 2-column auto-width layout with slightly larger columns
+   so Cards 1 + 2 read as the "primary pair" rather than two leftover
+   cards from a 3-up grid. When Card 3 appears, the two existing cards
+   shrink to make room and the third joins them on the same row. */
 .strategy-pick-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 22px;
     align-items: stretch;
+    justify-content: center;
+}
+.strategy-pick-grid--two-only {
+    grid-template-columns: minmax(0, 460px) minmax(0, 460px);
+}
+/* Single-card mode — when Strategy A beats both B and C (and the user
+   hasn't flagged default-risk), Cards 2 and 3 collapse and Card 1
+   centers alone at a slightly larger width so it doesn't feel orphaned
+   in dead space. */
+.strategy-pick-grid--one-only {
+    grid-template-columns: minmax(0, 520px);
+}
+/* "Hide default-risk question" mode — applied by controls.js when
+   Card 3 is already shown (C won on its own merits) OR when C trails
+   the best of A/B by ≥10% (not worth considering even as a hedge).
+   Collapses the question row across ALL three cards together so the
+   Interested / Not Interested button row stays aligned horizontally. */
+.strategy-pick-grid--no-default-risk .strategy-default-risk-row {
+    display: none;
+}
+.strategy-pick-grid .strategy-pick-card {
+    /* min-width:0 lets the grid track shrink below the card's intrinsic
+       min-content width — keeps three cards on one row even when the
+       headline copy or strategy name is long. transition smooths the
+       resize when Card 3 toggles on/off. */
+    min-width: 0;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s, max-width 0.25s ease;
 }
 @media (max-width: 1000px) {
-    .strategy-pick-grid { grid-template-columns: 1fr; }
+    .strategy-pick-grid,
+    .strategy-pick-grid--two-only { grid-template-columns: 1fr; }
 }
 
+/* Default-risk question on Card 2 — sits above the Interested /
+   Not Interested buttons. Compact horizontal row with the label on
+   the left and the yes/no select on the right. */
+/* Default-risk row — sits between the lockup graphic and the
+   Interested/Not Interested buttons on Card 2. Cards 1 + 3 emit an
+   empty spacer of the same height so all three buttons rows line up
+   horizontally. */
+.strategy-default-risk-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0 6px;
+    margin-top: auto;   /* push down to sit just above the buttons */
+    min-height: 48px;
+}
+.strategy-default-risk-row--spacer {
+    visibility: hidden;
+    pointer-events: none;
+}
+.strategy-default-risk-label {
+    /* Match the lockup-sub typography so this row reads as part of
+       the same shaded-box family rather than a foreign UI element. */
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    flex: 1 1 auto;
+}
+/* Click toggle: default state is blank (No, unobtrusive); active
+   state shades blue and announces Yes. Two clear visual states the
+   advisor can read at a glance. */
+.strategy-default-risk-toggle {
+    flex: 0 0 auto;
+    min-width: 64px;
+    padding: 6px 14px;
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--muted);
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    cursor: pointer;
+    user-select: none;
+}
+.strategy-default-risk-toggle:hover {
+    border-color: var(--bh-blue-deep, #0B1B3A);
+}
+.strategy-default-risk-toggle.is-yes {
+    background: #1F6FEB;
+    color: #ffffff;
+    border-color: #1F6FEB;
+}
+
+/* When controls.js sets card.hidden = true on Card 3 (5% rule fails AND
+   default-risk = No), the user-agent `[hidden] { display: none }` rule
+   is normally enough. But the .strategy-pick-card rule below sets
+   display: grid with a higher-specificity class selector, which beats
+   the attribute selector and leaves the "hidden" card visible — it
+   falls under Cards 1+2 as an orphan 3rd grid item, breaking the
+   centered 2-card layout. This rule restores the intended hide
+   semantics with !important. */
+.strategy-pick-card[hidden] {
+    display: none !important;
+}
 .strategy-pick-card {
     background: var(--paper);
     border: 1px solid var(--rule);
     box-shadow: var(--shadow);
     padding: 26px 18px 22px;
-    /* Grid keeps the same rows in every card — header / name / tagline /
-       tradeoffs / buttons. Because the row template is identical and
-       the cards are stretched to the same height by the parent grid,
-       the Cash / Lockup / Default Risk rows inside each card line up
-       horizontally across the three cards. */
+    /* Six-row template so all three cards align horizontally:
+         1 header / 2 name / 3 keyaspect (shaded box) /
+         4 lockup graphic / 5 default-risk row / 6 buttons
+       Cards 1 + 3 emit an invisible spacer in row 5 so Card 2's
+       default-risk toggle doesn't push its buttons out of alignment
+       with the siblings. Row 5 uses `auto` height — Card 2 sets its
+       size, spacers match via min-height. */
     display: grid;
-    grid-template-rows: auto auto auto auto auto;
+    grid-template-rows: auto auto auto auto auto auto;
     gap: 16px;
     transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
     position: relative;
@@ -3717,6 +4144,19 @@ body { font-size: 16px; }
     letter-spacing: -0.01em;
     margin-bottom: 0;
     text-align: center;
+}
+/* "Structured Installment Sale" wraps to 2 lines while "Proceeds at
+   Sale" and "Installment Sale" are 1 line. Without a reserved 2-line
+   block the shorter titles let the keyaspect / lockup / button rows
+   shift up, and Card C sinks ~24px below the other two. Same fix as
+   the supplemental cards above (.supp-strategy-card .strategy-pick-name).
+   Scoped to the 3 main strategy cards via the grid container so the
+   supplemental cards keep their existing rule. */
+.strategy-pick-grid .strategy-pick-card .strategy-pick-name {
+    min-height: 2.3em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 /* Page 4 supplemental cards: "Oil & Gas Working Interest" wraps to two
    lines while "Delphi Fund" is one line; without a min-height the
@@ -5992,7 +6432,7 @@ body { font-size: 16px; }
     .print-rule {
         height: 3pt;
         border: none;
-        background: linear-gradient(90deg, #0a1d3d 0%, #0a1d3d 60%, #f29c2c 60%, #f29c2c 100%);
+        background: linear-gradient(90deg, #0a1d3d 0%, #0a1d3d 60%, #5BA9FF 60%, #5BA9FF 100%);
         margin-bottom: 7pt;
         border-radius: 1pt;
     }
@@ -6031,7 +6471,7 @@ body { font-size: 16px; }
        the eye as the takeaway number on the page. */
     .print-hero-net {
         background: #fdf3e3;
-        border-color: #f29c2c;
+        border-color: #5BA9FF;
         border-width: 1.2pt;
     }
     .print-hero-net .print-hero-value { color: #b06b08; }
@@ -6149,7 +6589,7 @@ body { font-size: 16px; }
     .print-footer {
         margin-top: 8pt;
         padding-top: 5pt;
-        border-top: 1.5pt solid #f29c2c;
+        border-top: 1.5pt solid #5BA9FF;
         font-size: 6.5pt;
         color: #555;
         line-height: 1.4;
@@ -7252,6 +7692,15 @@ body { font-size: 16px; }
     border-radius: 4px;
     box-shadow: var(--shadow);
 }
+/* Container variant — applied when the client elected to cover the
+   tax bill from sale proceeds. Adds a 4th track for the Trust
+   Withdrawal callout. All year cards adopt the wider layout so
+   alignment stays consistent across the column even when a given
+   year has zero tax (withdrawal cell self-suppresses if amount = 0,
+   leaving an empty 4th cell — still aligned with siblings above). */
+.temp-baselines--withdrawals .temp-year-card {
+    grid-template-columns: 160px 1fr 1fr 175px;
+}
 .temp-year-card.is-not-relevant { opacity: 0.55; }
 .temp-year-card.is-not-relevant .temp-year-baseline,
 .temp-year-card.is-not-relevant .temp-year-activity { filter: grayscale(0.4); }
@@ -7324,6 +7773,47 @@ body { font-size: 16px; }
     font-style: italic;
     font-size: 0.88em;
     padding: 4px 0;
+}
+
+/* Trust withdrawal callout — small card on the right of each year row
+   showing the April 1 cash outflow from the trust to settle the prior
+   year's tax bill. Only rendered when cfg.coverTaxesFromSale is true.
+   Visual: tinted box with a thin left accent rule so it reads as a
+   distinct "cash leaving the strategy" signal, not part of the activity
+   table. */
+.temp-year-withdrawal {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 12px 14px;
+    background: rgba(91, 169, 255, 0.06);
+    border: 1px solid rgba(91, 169, 255, 0.30);
+    border-left: 4px solid var(--rett-warning, #5BA9FF);
+    border-radius: 4px;
+}
+.temp-year-head-withdraw {
+    color: var(--rett-warning, #5BA9FF);
+    border-bottom-color: rgba(91, 169, 255, 0.30);
+    margin-bottom: 10px;
+}
+.temp-withdraw-amt {
+    font-family: var(--font-mono);
+    font-size: 1.25em;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.1;
+}
+.temp-withdraw-date {
+    font-size: 0.85em;
+    color: var(--ink);
+    margin-top: 6px;
+    font-weight: 600;
+}
+.temp-withdraw-note {
+    font-size: 0.75em;
+    color: var(--muted);
+    margin-top: 2px;
+    line-height: 1.3;
 }
 
 @media (max-width: 900px) {

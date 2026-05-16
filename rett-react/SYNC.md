@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `deaeb6894cd5307bc55824b6ca9981a928a40f38` |
-| Upstream short SHA | `deaeb68` |
-| Upstream message | Run pipeline before strategy-summary render so hard refresh lands correct |
-| Upstream committed | 2026-05-12 14:42 -0400 |
-| Synced to React on | 2026-05-12 |
+| Upstream SHA | `c9b9638a7de83f8a0bed2e00fae4d1f9333670aa` |
+| Upstream short SHA | `c9b9638` |
+| Upstream message | Two advisor fixes: protect Schwab default on case load + tighten Projection filter |
+| Upstream committed | 2026-05-16 13:17 -0400 |
+| Synced to React on | 2026-05-16 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  deaeb6894cd5307bc55824b6ca9981a928a40f38..origin/main
+  c9b9638a7de83f8a0bed2e00fae4d1f9333670aa..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -110,7 +110,216 @@ what `npm run sync:upstream` will pull in next.
 Most recent first. Each entry: upstream short SHA, date, summary of what was
 applied, and which React files needed manual ports.
 
-### 2026-05-12 — `deaeb68` (current)
+### 2026-05-16 — `c9b9638` (current)
+
+Largest sync to date: **26 upstream commits** absorbed in one pass. This was
+the "Vegas pre-booth" overhaul plus the post-Vegas refinements. Both the
+calculator engine AND the HTML structure changed significantly, so this
+sync required substantial React-side ports.
+
+Headline upstream features:
+- **Multi-property scaffold (Q1–Q7)**: Section 03 grew from a single sale
+  block to a 5-property scaffold (Property 1 always visible, Properties
+  2–5 hidden behind a `+ Additional Real Estate Sale` button). Each
+  property carries its own sale price, cost basis, accel depreciation,
+  holding-period flag, sale/closing date, strategy-implementation date,
+  personal-use yes/no, and personal-use amount. Property 1 keeps the
+  unsuffixed legacy IDs (`sale-price`, `cost-basis`,
+  `accelerated-depreciation`, `implementation-date`,
+  `strategy-implementation-date`) so legacy direct-DOM readers continue
+  to work; Properties 2–5 use suffixed IDs (`sale-price-2`, etc.).
+- **Per-property personal-use carve-out** replaces the old top-level
+  "Will the client be investing everything?" question. Section 04 "Sale
+  Proceeds" collapsed into Section 03; only the client-level "Cover any
+  tax bill from sale?" (`#cover-taxes-yes-no`) remains. The legacy
+  `#withhold-yes-no`, `#withhold-amount`, `#withhold-amount-group`,
+  `#withhold-error` elements are kept as HIDDEN MIRRORS that
+  `controls.js` aggregates from the per-property fields, so
+  `inputs-collector` + `_recomputeAvailableCapital` + the engine still
+  read consistent aggregate values.
+- **Multi-year sale notice** (`#multi-year-sale-notice`) shown by
+  `controls.js` when properties have closing dates in different
+  calendar years. `cfg.propertyGainSchedule` carries the per-year data
+  for downstream consumers when ready.
+- **Tax Implications (Tab 2 renamed)**: nav tab is now "2. Tax
+  Implications", page heading is "Tax Baseline without Strategies".
+  The old advisor breakdown table (`#bt-ord`, `#bt-stg`, `#bt-ltg`,
+  `#bt-recap`, etc.) is **gone** upstream. Replaced with Blake's
+  "delta trio" layout: three tiles read left-to-right as the equation
+  `(Without the Sale) + (Tax Due to the Sale) = (Total Tax)`. New IDs:
+  `bt-without`, `bt-without-sub`, `bt-delta`, `bt-delta-sub`,
+  `bt-total`, `baseline-year-sub`. Per-property breakdown panel
+  (`#baseline-breakdown-panel`, `#baseline-breakdown-list`) revealed by
+  double-clicking the middle tile when 2+ properties are active;
+  populated by `baseline-table.js`.
+- **Strategy cards**:
+  - Card 1 renamed "Sell Now" → **"Proceeds at Sale"**.
+  - Card 2 renamed "Seller Finance" → **"Installment Sale"** and gained
+    an inline default-risk toggle (`#default-risk-toggle` /
+    `#default-risk-yes-no`). The hidden select is the engine input;
+    the visible div-button writes to it and dispatches `change`.
+  - Card 3 renamed "Structured Sale" → **"Structured Installment Sale"**,
+    lockup text changed "18 Month Lockup" → "36 Month Distribution
+    Period", and the entire card is now **hidden by default**. It
+    reveals when either (a) the default-risk toggle is Yes, OR (b)
+    Card 3's net benefit is ≥5% higher than BOTH Card 1 and Card 2.
+  - Cards 1 + 3 gained spacer rows (`.strategy-default-risk-row--spacer`)
+    so the Interested/Not Interested button row lines up across all three.
+- **Section 05 rename**: "Future Appreciated Asset Sale" → **"Proactive
+  Tax Savings"**. The multi-field form (future-sale-price,
+  future-cost-basis, future-accelerated-depreciation,
+  future-long-term-gain) collapsed to a simpler pair: "How much gain?"
+  (`#future-estimated-gain`) and "When will it be recognized?"
+  (`#future-sale-date`). Legacy `#future-sale-yes-no` /
+  `#future-sale-fields-group` preserved.
+- **Q7 Long-Term Capital Gain**: new visible input in Section 02
+  Income Sources (`#long-term-gain`) for non-property LT gain (stocks,
+  crypto, partnership distributions). The legacy hidden mirror is
+  removed; engine reads the visible field directly.
+- **Case Management moved out of Client Inputs** and into the PMQ page
+  (Section 00b). The case-name-input, case-load-select, case-new-btn,
+  case-delete-btn IDs are unchanged so case-storage.js wires them
+  identically — they just live on the PMQ page now so the saved-client
+  dropdown never appears in front of the client on the Inputs page.
+- `#structured-sale-duration-months` hidden default value changed
+  from `""` to `"36"` (regulatory minimum + common product default).
+- Continue button text "Continue to Tax Baseline" → "Continue to Tax
+  Implications".
+- Engine fixes that are JS-only and required NO React-side port:
+  - AMT topup + Card 3 5% rule use full optimizer pipeline.
+  - Supplemental deductions cap yr1 at ordinary-income pool to prevent
+    NOL inflation.
+  - Vegas tighten-ups: Schwab-only custodian (no empty fallback,
+    donut labels fit), Card 3 5% rule, default-risk visibility logic.
+  - Two advisor fixes: protect Schwab default on case load + tighten
+    Projection filter.
+  - Trust-withdrawal callout on Tab 7 (rendered dynamically by
+    `temp-page-render.js` — no HTML host needed in React).
+
+Files mirrored by the rsync (with content changes): 20 JS files +
+`css/styles.css` (+536 LOC). Two new upstream docs
+(`MULTI_PROPERTY_VERIFICATION.md`, `VEGAS_FEEDBACK_FINDINGS.md`) live
+in the upstream clone but are not synced to React (they're project
+notes, not code).
+
+React-side ports applied this round:
+
+- `src/components/NavTabs.tsx` — Tab 2 label "2. Tax Baseline" →
+  "2. Tax Implications".
+- `src/components/pages/PagePMQ.tsx` — added Section 00b
+  Case Management card (case-name-input, case-load-select,
+  case-new-btn, case-delete-btn) inside `pmq-left-col`.
+- `src/components/pages/PageInputs.tsx` — major rewrite:
+  - Removed old Section 00 Client controls (moved to PMQ).
+  - Added `page-inputs-title--banner` class on the H2.
+  - Removed `"-- Select Custodian --"` placeholder option (engine
+    requires a non-empty custodian).
+  - Added Q7 visible Long-Term Capital Gain input in Section 02.
+  - Section 03 fully rewritten with `<PropertyBlock n={1..5}/>`
+    helper (~50 unique field IDs across 5 blocks), plus
+    `#property-add-btn`, `#multi-year-sale-notice`, hidden withhold
+    mirrors, and `#cover-taxes-yes-no`.
+  - Section 05 renamed "Proactive Tax Savings" with simplified
+    `#future-estimated-gain` + `#future-sale-date` form.
+  - Hidden `#structured-sale-duration-months` default `"36"`.
+  - Removed obsolete hidden `#long-term-gain` mirror.
+  - Continue button → "Continue to Tax Implications →".
+- `src/components/pages/PageBaseline.tsx` — full rewrite to the
+  3-tile delta layout (`#bt-without`, `#bt-delta`, `#bt-total`,
+  +subs, +`#baseline-breakdown-panel`). Old `bt-*` IDs (`bt-ord`,
+  `bt-stg`, `bt-ltg`, `bt-recap`, `bt-loss-off`, `bt-loss-cfy`,
+  `bt-taxable`, `bt-fed`, `bt-fed-ord`, `bt-fed-recap`, `bt-fed-lt`,
+  `bt-amt`, `bt-state`, `bt-niit`, `bt-addmed`, `bt-setax`, `bt-tot`,
+  `bt-ord-sub`, `bt-ltg-sub`) gone — confirmed upstream stripped them.
+  Page heading now reads "Tax Baseline without Strategies".
+- `src/components/pages/PageStrategies.tsx` — Card 1 rename
+  ("Proceeds at Sale"), Card 2 rename ("Installment Sale") + new
+  default-risk toggle row + `#default-risk-yes-no` hidden mirror,
+  Card 3 rename ("Structured Installment Sale") + `hidden` attribute
+  + lockup text "36 Month Distribution Period", spacer rows on
+  Cards 1 + 3 for button-row alignment.
+
+React-side carry-forwards (preserved through this sync, smoke-tested
+working):
+
+- `src/components/W2Uploader.tsx` — same-origin call to
+  `/api/gemini/extract-w2` for in-memory tax-document scan + autofill.
+- `server/index.js` — deterministic `generationConfig`
+  (`temperature: 0`, `topP: 0.1`, `thinkingConfig.thinkingBudget: 0`)
+  + no-hallucination prompt + static-dist serving for single-process
+  EC2 deploy.
+- `src/hooks/useLegacyEngine.ts` — explicit `bindControls()` /
+  `_syncPmqNameFromCase()` calls + drop-un-named-draft on page load.
+- `src/components/NavTabs.tsx` — Tab 7 reveal `+` / `−` toggle.
+- `src/styles/app.css` — near-black right border on the Tab 7
+  toggle buttons + W-2 uploader styling.
+
+Smoke-tested after sync (Playwright, against `npm run dev`):
+
+- All ~80 critical legacy DOM IDs render (zero missing).
+- Zero JavaScript / console errors on page load.
+- `+ Additional Real Estate Sale` button reveals Property 2 (legacy
+  `controls.js _showNextSlot` correctly finds the React-mounted DOM).
+- Sale price `$1,500,000` in Property 1 → Tax Implications page
+  renders `bt-delta = $400,688`, `bt-total = $400,688` (engine
+  picking up the new multi-property aggregate cleanly).
+- Card 3 hidden by default on entry to Strategies page.
+- Tab 7 `+` toggle reveals the tab and swaps in the `−` button.
+
+Commits, oldest first (26 total):
+
+- `eab89d3` Vegas pre-booth: Q1-Q7 multi-property + Tax Implications +
+  cosmetic palette swap.
+- `ca85471` Add Vegas feedback findings + multi-property verification
+  audit docs.
+- `b2d0129` Tax Implications: double tile size for stage presence.
+- `2c8e0a4` Projection italic J fix + relocate "+ Additional Real
+  Estate Sale" to bottom.
+- `6487f40` Per-property strategy dates + strategy renames + label
+  tweaks.
+- `799def7` Per-property personal-use carve-out (replaces top-level
+  investing question).
+- `35ef872` Section 05 rename: "Future Sale Loss Target" → "Proactive
+  Tax Savings".
+- `4837162` Fix conditional .input-row hidden — Amount box now hides
+  on No.
+- `1e9ee55` Tax Implications tiles: shrink fonts so 10-11 char dollar
+  values fit.
+- `a427053` Projection titles: swap Fraunces → Georgia so the J in
+  "January" renders normally.
+- `969bc6e` Conditional Card 3 (Structured Installment Sale) +
+  default-risk toggle.
+- `fc75a47` Card 3 5% rule: use full optimizer pipeline for accurate
+  net comparison.
+- `8f2e82a` Nav tabs: swap Fraunces italic → Georgia upright.
+- `38c572e` Strategy grid: 2-card mode 460px (bigger, centered),
+  3-card mode 1fr (single row).
+- `5451a94` Move Case Management to PMQ + banner header + Tab 7
+  trust-withdrawal callout.
+- `97ee7c9` Tab 2: rename to "Tax Baseline without Strategies" +
+  drop advisor breakdown.
+- `dce8391` Strategy Card 3 [hidden] now actually hides — was
+  overridden by `.grid` display.
+- `1c81962` Strategy cards: Card 1 → "Proceeds at Sale" +
+  click-toggle for default risk + row alignment.
+- `8835d80` Strategy cards: progressive visibility (1 / 1+2 / 1+2+3)
+  by which strategy wins.
+- `aae6152` Default-risk question: hide when C dominates or trails
+  by ≥10%; keep visible when user opts in.
+- `f43f139` Strategy cards: tighten thresholds — Card 3 5% rule +
+  toggle ±5% band.
+- `f0e0e83` Vegas tighten-up: Schwab-only custodian, no empty
+  fallback, donut labels fit.
+- `bc53e9e` Supplemental deductions: cap yr1 at ordinary income pool
+  to prevent NOL inflation.
+- `d45dde6` Helper/page parity + extend ord-pool cap to Cost Seg /
+  Equipment / Charitable.
+- `72cf891` Multi-property: plumb per-year gain schedule on cfg +
+  surface limitation banner.
+- `c9b9638` Two advisor fixes: protect Schwab default on case load +
+  tighten Projection filter.
+
+### 2026-05-12 — `deaeb68`
 
 Three upstream commits absorbed. No React-side HTML port needed — every
 `index.html` diff in this range was the cache-buster `?v=` increment.
