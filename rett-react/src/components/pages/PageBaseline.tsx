@@ -27,7 +27,7 @@ export default function PageBaseline() {
         </div>
         <div className="baseline-op" aria-hidden="true">+</div>
         <div className="baseline-tile baseline-tile--delta">
-          <div className="baseline-tile-label">Tax Due to the Sale</div>
+          <div className="baseline-tile-label">Tax Due from the Sale</div>
           <div className="baseline-tile-value" id="bt-delta">$0</div>
           <div className="baseline-tile-sub" id="bt-delta-sub">Recap &middot; LT &middot; NIIT &middot; State</div>
         </div>

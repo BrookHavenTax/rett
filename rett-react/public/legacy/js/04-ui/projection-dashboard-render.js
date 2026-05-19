@@ -597,7 +597,7 @@
     var rows = [];
     if (mA) rows.push({
       type: 'A', rec: 1, maxRec: null,
-      label: 'Cash in Hand (Year 1)',
+      label: 'Normal Sale (Year 1)',
       sub: 'Close in current year, Brooklyn losses absorb gain immediately',
       metrics: mA
     });
@@ -988,27 +988,17 @@
           comboId: p.comboId
         });
         if (type === 'C') {
-          // For C, sweep duration AND recognition year together. Each
-          // (duration, recognition) pair gets its own _scenarioMetrics
-          // call so the optimizer always lands on the globally best net,
-          // not just whichever duration the user (or fallback) seeded.
+          // For C, recognition ALWAYS starts at year1+1 (the next Jan 1
+          // after closing) per advisor 2026-05-18 — no 15-month hold,
+          // no recognition-year sweep. Auto-pick only varies duration
+          // (36/48/60/72) and Brooklyn leverage/horizon. bestRecC is
+          // fixed at 2 (= startIdx 1 = year1+1).
           var durationsThisHor = _durationsForHorizon(hor);
           durationsThisHor.forEach(function (durMo) {
-            var pickRec = 2;
-            var bestRecNet = -Infinity;
-            for (var r = 2; r <= Math.min(4, hor); r++) {
-              var cfgR = Object.assign({}, cfgSection, {
-                recognitionStartYearIndex: r - 1,
-                structuredSaleDurationMonths: durMo,
-                maxRecognitionYearIndex: null
-              });
-              var mr = _scenarioMetrics(cfgR);
-              if (mr && mr.net > bestRecNet) { bestRecNet = mr.net; pickRec = r; }
-            }
-            var typedCfg = _scenarioCfgFor(type, cfgSection, pickRec, durMo);
+            var typedCfg = _scenarioCfgFor(type, cfgSection, 2, durMo);
             var m = _scenarioMetrics(typedCfg);
             if (m && (!best || m.net > best.net)) {
-              best = { horizon: hor, shortPct: p.shortPct, comboId: p.comboId, bestRecC: pickRec, net: m.net, durationMonths: durMo };
+              best = { horizon: hor, shortPct: p.shortPct, comboId: p.comboId, bestRecC: 2, net: m.net, durationMonths: durMo };
             }
           });
         } else {
@@ -1746,7 +1736,17 @@
   function _buildPaymentScheduleHtml(cfg, comp, durationMonths) {
     if (!cfg || !comp) return '';
     var year1 = cfg.year1 || (new Date()).getFullYear();
+    // Closing-day cash = basis recovery + accelerated-depreciation
+    // proceeds. In a structured sale only the LTCG is parked inside
+    // the insurance product; the basis cash AND the depr-equivalent
+    // cash (representing the buyer's payment that corresponds to
+    // recaptured depreciation) both flow to the seller at closing.
+    // Recapture is recognized as Y1 ordinary income in the tax engine,
+    // but the cash itself is delivered up front — so the seller's
+    // closing-day check is basis + accel-depr, not basis alone.
     var basisCash = Math.max(0, Number(cfg.costBasis) || 0);
+    var accelDeprCash = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
+    var closingCash = basisCash + accelDeprCash;
     var sched = (comp.recognitionSchedule && comp.recognitionSchedule.length)
       ? comp.recognitionSchedule.slice()
       : [];
@@ -1767,10 +1767,16 @@
     var years = Object.keys(byYear).map(function (k) { return byYear[k]; })
       .sort(function (a, b) { return a.year - b.year; });
 
+    // Total gain in the structured product = sum of all recognized
+    // installments. Used to express each gain row as a % so the advisor
+    // can confirm the schedule against MetLife's canonical caps
+    // (3-yr: 40/40/20; 4-yr+: 50/30/10/10).
+    var totalGainInstallments = years.reduce(function (s, y) { return s + (y.gain || 0); }, 0);
+
     var rows = '';
     var totalCash = 0;
     years.forEach(function (yr) {
-      var cash = (yr.isClosing ? basisCash : 0) + yr.gain;
+      var cash = (yr.isClosing ? closingCash : 0) + yr.gain;
       // Suppress zero-cash rows so the table only shows years where the
       // seller actually receives money. Zero rows are honest engine
       // output (the recognitionSchedule pads to horizon) but they add
@@ -1779,34 +1785,49 @@
       if (cash <= 0) return;
       var dateLabel = yr.isClosing ? _fmtClosingDate(cfg.implementationDate, yr.year) : ('Jan 1, ' + yr.year);
       totalCash += cash;
+      var _closingNote = accelDeprCash > 0
+        ? 'Basis + depreciation cash at closing'
+        : 'Basis cash at closing';
+      var _closingPlusGainNote = accelDeprCash > 0
+        ? 'Basis + depreciation cash at closing + gain installment'
+        : 'Basis at closing + gain installment';
       var note = yr.isClosing && yr.gain === 0
-        ? 'Basis cash at closing'
+        ? _closingNote
         : yr.isClosing
-          ? 'Basis at closing + gain installment'
+          ? _closingPlusGainNote
           : 'Gain installment';
+      // % of gain column: only meaningful for gain installments. The
+      // closing-day basis + depr cash is principal recovery, not part of
+      // the structured-product gain pool, so it stays blank (em dash).
+      var pctCell;
+      if (yr.gain > 0 && totalGainInstallments > 0) {
+        pctCell = ((yr.gain / totalGainInstallments) * 100).toFixed(1) + '%';
+      } else {
+        pctCell = '<span class="muted">&mdash;</span>';
+      }
       rows += '<tr>' +
         '<td>' + yr.year + '</td>' +
         '<td>' + dateLabel + '</td>' +
         '<td>' + _fmt(cash) + '</td>' +
+        '<td>' + pctCell + '</td>' +
         '<td class="muted">' + note + '</td>' +
       '</tr>';
     });
     rows += '<tr class="rett-payments-total">' +
       '<td colspan="2">Total payments received</td>' +
       '<td>' + _fmt(totalCash) + '</td>' +
+      '<td>100.0%</td>' +
       '<td class="muted">Sum of all installments</td>' +
     '</tr>';
 
     var months = durationMonths || 36;
-    var atMinimum = months <= 18;
-    var termSubtitle = atMinimum
-      ? '<p class="rett-payments-subtitle muted">Sale term: <strong>' + months + ' months</strong> (the regulatory minimum). The engine will recommend a longer term if a transaction this size needs one to satisfy the safe-harbor schedule.</p>'
-      : '<p class="rett-payments-subtitle muted">Sale term: <strong>' + months + ' months</strong> — extended past the 36-month minimum for this transaction size.</p>';
+    var payments = Math.max(1, Math.round(months / 12));
+    var termSubtitle = '<p class="rett-payments-subtitle muted">Sale term: <strong>' + months + ' months</strong> &mdash; ' + payments + ' yearly Jan-1 gain installments.</p>';
     return '<div class="rett-interested-payments">' +
       '<h4>Payment Schedule</h4>' +
       termSubtitle +
       '<table class="rett-payments-table">' +
-        '<thead><tr><th>Year</th><th>Date</th><th>Cash Received</th><th>Notes</th></tr></thead>' +
+        '<thead><tr><th>Year</th><th>Date</th><th>Cash Received</th><th>% of Gain</th><th>Notes</th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
     '</div>';
@@ -2037,7 +2058,7 @@
     // the meeting, not auto-displayed on the card.
     var lockupValue;
     if (typeLabel === 'A') {
-      lockupValue = 'None';
+      lockupValue = 'None &ndash; Cash up front';
     } else if (typeLabel === 'B') {
       var bMonths = _bMonthsUntilJan1(currentCfg);
       lockupValue = (bMonths != null ? bMonths : '—') + ' months';
@@ -2225,7 +2246,7 @@
     }
 
     var entries = [];
-    if (mA) entries.push({ type: 'A', num: '01', name: 'Cash in Hand',                 picked: pickedA.picked, metrics: mA, loss: lossA, payments: '',        cfg: pickedA.cfg, visuals: visualsA });
+    if (mA) entries.push({ type: 'A', num: '01', name: 'Normal Sale',                  picked: pickedA.picked, metrics: mA, loss: lossA, payments: '',        cfg: pickedA.cfg, visuals: visualsA });
     if (mB) entries.push({ type: 'B', num: '02', name: 'Installment Sale',             picked: pickedB.picked, metrics: mB, loss: lossB, payments: '',        cfg: pickedB.cfg, visuals: visualsB });
     if (mC) entries.push({ type: 'C', num: '03', name: 'Structured Installment Sale',  picked: pickedC.picked, metrics: mC, loss: lossC, payments: paymentsC, cfg: pickedC.cfg, visuals: visualsC });
 

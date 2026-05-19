@@ -12,13 +12,16 @@ export default function PageStrategies() {
       </div>
 
       <div id="strategy-pick-list" className="strategy-pick-grid">
-        {/* Card 1 — Proceeds at Sale (Cash in Hand is the keyaspect — the
-            thing the strategy delivers, kept in the highlighted box below). */}
+        {/* Card 1 — Normal Sale (Cash in Hand is the keyaspect — the thing
+            the strategy delivers, kept in the highlighted box below).
+            Renamed from "Proceeds at Sale" -> "Normal Sale" upstream
+            (commit 80b7533, 2026-05-18) to match the baseline label
+            language Blake wanted advisors to use in front of clients. */}
         <div className="strategy-pick-card" data-strategy="A" id="strategy-pick-A">
           <div className="strategy-pick-card-header">
             <div className="strategy-pick-num">STRATEGY <span className="num-big">01</span></div>
           </div>
-          <h3 className="strategy-pick-name">Proceeds at Sale</h3>
+          <h3 className="strategy-pick-name">Normal Sale</h3>
 
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">Cash In Hand</div>

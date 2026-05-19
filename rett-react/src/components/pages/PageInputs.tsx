@@ -286,17 +286,31 @@ export default function PageInputs() {
                   bottom of Section 03 so clicking it reads as "add another
                   property to this section" rather than appearing to insert
                   something inside Property 1. The next hidden property
-                  block (P2-P5) is revealed by controls.js _showNextSlot. */}
-              <div className="property-add-row">
+                  block (P2-P5) is revealed by controls.js _showNextSlot.
+
+                  HIDDEN TEMPORARILY (upstream commit 8b6fe99, 2026-05-17)
+                  per advisor — the engine's per-property tranche routing
+                  isn't built out yet (sales collapse to the earliest date,
+                  Brooklyn opens at the earliest strategy date, minimum
+                  checks are aggregate-only). Future Sale Loss Target
+                  (Section 05) covers the "I'll have more gain later" case
+                  in the meantime. Re-enable by removing the `hidden`
+                  attribute below. The hidden property-2..5 blocks stay
+                  mounted so re-enabling is a one-attribute flip. */}
+              <div className="property-add-row" hidden>
                 <button type="button" id="property-add-btn" className="property-add-btn">+ Additional Real Estate Sale</button>
               </div>
 
-              {/* Multi-year-sale notice — shown by controls.js when the user
-                  enters properties closing in different calendar years. */}
+              {/* Multi-year-sale notice — only meaningful when multi-
+                  property is exposed. Kept in the DOM (hidden) for the
+                  future re-enable; controls.js's toggle logic still runs
+                  against it but with no property-2..5 visible it stays
+                  hidden permanently. */}
               <div id="multi-year-sale-notice" className="multi-year-sale-notice" hidden>
-                <strong>Heads up:</strong> two or more properties have sale dates in different calendar years.
-                The strategy engine still aggregates all gain into the earliest year for the projection cards.
-                Per-property year-of-sale routing is on the roadmap.
+                <strong>Heads up:</strong> two or more properties have sale or strategy implementation dates
+                in different calendar years. The engine treats the sale as one event at the EARLIEST sale date
+                and opens Brooklyn at the EARLIEST strategy date &mdash; per-property year routing and
+                per-tranche minimum checks are on the roadmap.
               </div>
             </div>
           </div>

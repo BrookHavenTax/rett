@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `c9b9638a7de83f8a0bed2e00fae4d1f9333670aa` |
-| Upstream short SHA | `c9b9638` |
-| Upstream message | Two advisor fixes: protect Schwab default on case load + tighten Projection filter |
-| Upstream committed | 2026-05-16 13:17 -0400 |
-| Synced to React on | 2026-05-16 |
+| Upstream SHA | `24b93fb73f9086f8289a39f3d0c49c219029e004` |
+| Upstream short SHA | `24b93fb` |
+| Upstream message | Hidden Card 3 also clears C interest + chosen-strategy |
+| Upstream committed | 2026-05-18 17:42 -0400 |
+| Synced to React on | 2026-05-19 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  c9b9638a7de83f8a0bed2e00fae4d1f9333670aa..origin/main
+  24b93fb73f9086f8289a39f3d0c49c219029e004..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -110,7 +110,145 @@ what `npm run sync:upstream` will pull in next.
 Most recent first. Each entry: upstream short SHA, date, summary of what was
 applied, and which React files needed manual ports.
 
-### 2026-05-16 — `c9b9638` (current)
+### 2026-05-19 — `24b93fb` (current)
+
+Fourteen upstream commits absorbed. Moderate sync — 200 lines of HTML diff
+(vs. 700+ in the previous Vegas overhaul). Focus this round was advisor
+feedback from Vegas: simplify the PMQ identity card, freeze the
+multi-property feature behind a hidden toggle until the engine's tranche
+routing catches up, and tighten the strategy-card naming + visibility
+heuristics.
+
+Files mirrored by rsync (with content changes): 6 JS files +
+`css/styles.css` (+36 lines). No upstream docs added this round.
+
+Headline upstream changes:
+
+- **PMQ consolidation**: The PMQ page's "Client" + "Case Management"
+  sections collapsed into one card titled "Client Information"
+  (SECTION 00). The split-name inputs (`pmq-first-name`,
+  `pmq-last-name`) are removed entirely; advisor uses `case-name-input`
+  as the single canonical name field. `case-load-select` switched from
+  `<select>` to an `<input list>` combobox backed by
+  `<datalist id="case-load-options">` so the advisor can either click
+  the dropdown or just type the name. All other IDs unchanged.
+- **Multi-property +Add button hidden temporarily** (commit `8b6fe99`):
+  Per advisor, the `+ Additional Real Estate Sale` button is hidden
+  behind a `hidden` attribute on its containing `.property-add-row`.
+  The engine's per-property tranche routing isn't built out yet (sales
+  collapse to earliest date, Brooklyn opens at earliest strategy date,
+  minimum checks are aggregate-only). Re-enable is one attribute flip —
+  the hidden Property 2–5 blocks stay mounted in the DOM. The
+  Future Sale Loss Target (Section 05) covers the "I'll have more gain
+  later" case in the meantime.
+- **Multi-year notice copy updated**: Now mentions BOTH sale dates AND
+  strategy implementation dates as triggers, and describes the engine
+  behavior more precisely (earliest sale + earliest strategy date,
+  aggregate minimums).
+- **Tax Implications tile rename**: "Tax Due to the Sale" → "Tax Due
+  from the Sale" (commit `80b7533`). Subtle but matches the equation
+  reading "Without + From = Total".
+- **Strategy Card 1 rename**: "Proceeds at Sale" → "Normal Sale"
+  (commit `80b7533`). Matches the baseline label language Blake wanted
+  advisors to use in front of clients.
+- **Default-risk toggle now also forces Card 3 visible** (commit
+  `0b21fb6`) and resets all downstream tabs whenever any input
+  changes. The hidden-Card-3 path additionally clears the C
+  interest + chosen-strategy state (commit `24b93fb`). Both are pure
+  JS — `controls.js` was re-mirrored and picks this up automatically.
+- **Strategy card visibility simplified + interest reset** (`d50fd04`):
+  the progressive-visibility rules consolidated; whenever inputs
+  change, prior strategy interest is cleared so the advisor restarts
+  selection cleanly. Pure JS.
+- **Structured Sale: remove 15-month hold + force N yearly payments
+  from year1+1** (`d7e3299`). Plus payment-schedule renders gained a
+  "% of gain" column and cleaner subtitle (`a28618c`). Closing-day
+  cash now includes accelerated depreciation (`320cc5f`). All JS — no
+  React-side port needed.
+- **Yes/No toggles app-wide** (`78db53c`): visible Yes/No selects get
+  swapped to pill-toggles by the JS auto-converter. Skip rule added
+  (`31a08cf`) so selects with a manual toggle (like the strategy
+  default-risk one) aren't double-toggled. Pure JS.
+- **Trust Withdrawal cleanup** on Tab 7 (`858b4c2`, `c526112`): only
+  shows sale-attributable tax, suppresses ghost `$0` cells. Pure JS
+  rendering in `temp-page-render.js`.
+- **Compliance line finalized**: footer placeholder text
+  `[ Compliance line goes here — final copy pending ]` replaced with
+  `Information provided should not be considered as tax advice.`
+- **Engine micro-fix** (`8a1c943`): `runBrooklynOptimizer` skips the
+  negative-net probe when `brooklynNetAtFull > 0` (perf + correctness).
+  Pure JS.
+
+React-side ports applied this round:
+
+- `src/components/pages/PagePMQ.tsx` — removed the old "Client"
+  + "Case Management" two-card layout. Single "Client Information"
+  card now holds: `case-name-input`, `pmq-email`, `pmq-phone`, the
+  new `case-load-select` combobox (`<input list>` + `<datalist
+  id="case-load-options"/>`), the case actions row, and
+  `pmq-client-status` (now last in the section body).
+- `src/components/pages/PageInputs.tsx` — added `hidden` to the
+  `.property-add-row` wrapper; updated the multi-year-sale notice
+  copy verbatim from upstream.
+- `src/components/pages/PageBaseline.tsx` — middle tile label
+  "Tax Due to the Sale" → "Tax Due from the Sale".
+- `src/components/pages/PageStrategies.tsx` — Card 1 name
+  "Proceeds at Sale" → "Normal Sale".
+- `src/components/Footer.tsx` — compliance line finalized.
+
+React-side carry-forwards (preserved + smoke-tested):
+
+- `src/components/W2Uploader.tsx` (1040 Upload Scanner with autofill).
+- `server/index.js` (deterministic Gemini config, in-memory only).
+- `src/hooks/useLegacyEngine.ts` (explicit `bindControls()` call +
+  drop-un-named-draft on page load).
+- `src/components/NavTabs.tsx` Tab 7 reveal `+`/`−` toggle.
+- `src/styles/app.css` Tab 7 toggle borders + W-2 uploader styling.
+
+Smoke-tested after sync (Playwright vs `npm run dev`):
+
+- All ~50 critical legacy DOM IDs present (zero missing).
+- Zero JavaScript / console errors on page load.
+- `pmq-first-name` / `pmq-last-name` cleanly gone (no orphan refs).
+- PMQ heading is "Client Information", SECTION 00 tag.
+- `#case-load-select` is now `<INPUT list="case-load-options">` —
+  accepts free-text typing (verified `'partial'` accepted).
+- `.property-add-row` carries `hidden`; `#property-add-btn` is
+  non-rendered (`offsetParent === null`); Property 1 still visible.
+- Baseline middle tile reads "Tax Due from the Sale".
+- Strategy Card 1 reads "Normal Sale".
+- Footer reads the finalized compliance line.
+
+Commits, oldest first (14 total):
+
+- `8a1c943` runBrooklynOptimizer: skip negative-net probe when
+  `brooklynNetAtFull > 0`.
+- `78db53c` Yes/No toggles app-wide + multi-year notice catches
+  strategy-date splits.
+- `8b6fe99` Hide multi-property `+ Additional Real Estate Sale`
+  button temporarily.
+- `31a08cf` Yes/No auto-converter: skip selects that already have a
+  manual toggle.
+- `858b4c2` Trust Withdrawal: only show sale-attributable tax, not
+  full tax bill.
+- `049d751` PMQ consolidation to single 'Client Information' section
+  + compliance line.
+- `c526112` Trust Withdrawal: suppress ghost `$0` cells (round before
+  threshold check).
+- `d50fd04` Card visibility simplified + reset interest when inputs
+  change.
+- `0b21fb6` Default-risk toggle forces Card 3 visible + input-change
+  reset covers all downstream tabs.
+- `80b7533` Rename Strategy A to "Normal Sale" + baseline label +
+  clarify A's lockup.
+- `320cc5f` Projection payment schedule: closing-day cash includes
+  accel depr.
+- `d7e3299` Structured sale: remove 15-month hold + force N yearly
+  payments from year1+1.
+- `a28618c` Payment schedule: add % of gain column + cleaner subtitle.
+- `24b93fb` Hidden Card 3 also clears C interest + chosen-strategy.
+
+### 2026-05-16 — `c9b9638`
 
 Largest sync to date: **26 upstream commits** absorbed in one pass. This was
 the "Vegas pre-booth" overhaul plus the post-Vegas refinements. Both the

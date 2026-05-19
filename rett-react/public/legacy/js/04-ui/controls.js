@@ -46,14 +46,33 @@ function _refreshCaseDropdown(selectName) {
   var store = _caseStore();
   if (!sel || !store) return;
   var names = store.listCases();
-  while (sel.options.length > 1) sel.remove(1);
-  names.forEach(function (n) {
-    var opt = document.createElement('option');
-    opt.value = n;
-    opt.textContent = n;
-    sel.appendChild(opt);
-  });
-  if (selectName != null) sel.value = selectName;
+  // case-load-select was rebuilt as a combobox (<input list> + <datalist>)
+  // per advisor 2026-05-17 so the advisor can either click open the
+  // saved-client dropdown OR type the name directly. Populate the
+  // datalist when the element is an input; fall back to the legacy
+  // <select> option-list behavior for any old layouts still on disk.
+  if (sel.tagName === 'INPUT') {
+    var listId = sel.getAttribute('list');
+    var dl = listId ? document.getElementById(listId) : null;
+    if (dl) {
+      while (dl.firstChild) dl.removeChild(dl.firstChild);
+      names.forEach(function (n) {
+        var opt = document.createElement('option');
+        opt.value = n;
+        dl.appendChild(opt);
+      });
+    }
+    if (selectName != null) sel.value = selectName;
+  } else {
+    while (sel.options.length > 1) sel.remove(1);
+    names.forEach(function (n) {
+      var opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = n;
+      sel.appendChild(opt);
+    });
+    if (selectName != null) sel.value = selectName;
+  }
 }
 
 function _refreshCaseStatus() {
@@ -469,36 +488,45 @@ function _refreshStrategyLockupDisplays() {
   }
 }
 
-// Strategy card visibility — per advisor spec the cards are progressive:
-//   Card 1 (Proceeds at Sale)     always visible — the baseline option
-//   Card 2 (Installment Sale)     shown when Strategy B beats A on net
-//                                  benefit (any margin), or when the
-//                                  default-risk toggle is Yes (so the
-//                                  toggle itself stays accessible to flip
-//                                  back off).
-//   Card 3 (Structured Installment Sale) shown when Strategy C beats
-//                                  BOTH A and B (any margin), or when
-//                                  default-risk toggle is Yes.
+// Strategy card visibility — simplified per advisor 2026-05-17.
+// Progressive layering, strict greater-than, no margin tolerance:
+//   Card 1 (Proceeds at Sale)            ALWAYS visible.
+//   Card 2 (Installment Sale)            visible when netB > netA.
+//   Card 3 (Structured Installment Sale) visible when card 2 is shown
+//                                        AND netC > netB. (Implies
+//                                        netC > netA too — by chain.)
+//   Default-risk toggle                  ALWAYS visible.
+//
+// "Better" means strictly greater net benefit; no ±5% band or other
+// thresholds. The previous logic gated Card 3 on a 5% margin and hid
+// the toggle outside a ±5% band — advisor wanted simpler: each card
+// shows up when it actually beats the prior one, and the default-risk
+// question is always on the table.
 //
 // Grid layout classes:
-//   .strategy-pick-grid--one-only  one centered card  (only A wins)
+//   .strategy-pick-grid--one-only  one centered card  (only A)
 //   .strategy-pick-grid--two-only  two centered cards (A + B)
 //   (no class)                     three-up           (A + B + C)
 //
 // Net benefits come from window._computeBestNetForStrategy (exposed by
 // projection-dashboard-render.js), which runs the same optimized
 // _autoPickSection -> _scenarioCfgFor -> _scenarioMetrics pipeline the
-// Page 4 dashboard uses. Earlier direct unifiedTaxComparison calls were
-// returning equal netB and netC for many scenarios because they
-// bypassed the optimizer.
+// Page 4 dashboard uses.
 function _refreshCard3Visibility() {
   var c2 = document.getElementById('strategy-pick-B');
   var c3 = document.getElementById('strategy-pick-C');
   var grid = document.getElementById('strategy-pick-list');
   if (!c2 || !c3 || !grid) return;
 
-  var defaultRiskEl = document.getElementById('default-risk-yes-no');
-  var defaultRiskYes = !!(defaultRiskEl && defaultRiskEl.value === 'yes');
+  // Default-risk toggle: when Yes, force Card 2 AND Card 3 visible
+  // regardless of math. Without this short-circuit, the simplified
+  // strict greater-than visibility logic (netB > netA / netC > netB)
+  // would leave Card 3 hidden when the user clicks the toggle on a
+  // B-wins scenario — defeating the toggle's whole purpose, which is
+  // to let the advisor explicitly elect the multi-year-spread option
+  // even when C's math doesn't already beat B.
+  var drEl = document.getElementById('default-risk-yes-no');
+  var defaultRiskYes = !!(drEl && drEl.value === 'yes');
 
   var netA = NaN, netB = NaN, netC = NaN;
   try {
@@ -518,61 +546,44 @@ function _refreshCard3Visibility() {
 
   var allFinite = Number.isFinite(netA) && Number.isFinite(netB) && Number.isFinite(netC);
 
-  // Card 2: B beats A on net benefit, OR user flagged default-risk concern.
-  // If we couldn't compute nets (no sale price yet, engine error, etc.),
-  // fall back to showing Card 2 so the advisor isn't stuck on Card 1
-  // without other options.
-  var card2Visible = defaultRiskYes
-    || !allFinite
-    || (netB > netA);
-
-  // Card 3: C beats BOTH A and B by at least 5%, OR user flagged
-  // default-risk concern. The 5% margin keeps Card 3 from popping in
-  // for trivial wins (where C edges B by a fraction of a percent and
-  // the difference is dominated by rounding / optimizer noise). Without
-  // finite nets we default to hiding C.
-  var card3Visible = defaultRiskYes
-    || (allFinite && netC > netA * 1.05 && netC > netB * 1.05);
-
-  // Hide C first so it can't sit beside Card 2 in a weird "C visible but
-  // 2 hidden" state. Visible-list math below handles the layout class.
-  if (!card2Visible && card3Visible) card2Visible = true;
+  // Card 2: B better than A, OR default-risk toggled Yes.
+  // Without finite nets (no sale price yet), default to showing Card 2
+  // so the advisor isn't stuck on Card 1 with no comparison.
+  var card2Visible = defaultRiskYes || !allFinite || (netB > netA);
+  // Card 3: C better than B (with Card 2 already shown), OR
+  // default-risk toggled Yes. Skipping Card 2 to show Card 3 would
+  // look like a layout gap.
+  var card3Visible = defaultRiskYes || (card2Visible && allFinite && (netC > netB));
 
   c2.hidden = !card2Visible;
   c3.hidden = !card3Visible;
 
-  // Default-risk question visibility — the question is only useful
-  // when C is a *latent* option the user could surface manually. The
-  // toggle lives in a 10% window around the best of A/B: bestAB±5%.
-  //   - defaultRiskYes (user opted in)   → KEEP visible so they can
-  //                                         toggle back off; hiding it
-  //                                         would be a dead-end.
-  //   - C dominates by 5%+               → hide (Card 3 already up on
-  //                                         its own merit, no need
-  //                                         to ask).
-  //   - C is within bestAB ±5%           → show — the band where C is
-  //                                         a meaningful default-risk
-  //                                         hedge without giving up
-  //                                         much net.
-  //   - C trails by >5%                  → hide (gap too large to be
-  //                                         worth considering as a
-  //                                         hedge).
-  var hideDefaultRiskQ;
-  if (defaultRiskYes) {
-    hideDefaultRiskQ = false;
-  } else if (allFinite) {
-    var bestAB = Math.max(netA, netB);
-    if (bestAB > 0 && netC > bestAB * 1.05) {
-      hideDefaultRiskQ = true;          // C dominates → hide
-    } else if (bestAB > 0 && netC >= bestAB * 0.95) {
-      hideDefaultRiskQ = false;         // within ±5% band → show
-    } else {
-      hideDefaultRiskQ = true;          // C trails by >5% → hide
+  // When Card 3 is hidden (default-risk = No AND netC not better than
+  // netB), any pre-existing Interested mark on Strategy C is cleared
+  // so a stale selection from an earlier scenario doesn't carry
+  // forward into Tab 4 / Tab 5 while the card itself is invisible.
+  // Suppressed during case-load (__rettApplyingState) so opening a
+  // saved client doesn't blow away its persisted C selection.
+  // Same scrub applied to __rettChosenStrategy when it points to C —
+  // a hidden card can't be the chosen strategy.
+  if (!card3Visible && !window.__rettApplyingState) {
+    if (window.__rettStrategyInterest && window.__rettStrategyInterest.C != null) {
+      window.__rettStrategyInterest.C = null;
+      try { localStorage.setItem('_strategyInterest', JSON.stringify(window.__rettStrategyInterest)); } catch (e) { /* */ }
+      // Re-paint Card 3's chip state so an Interested button isn't left
+      // pressed when the card flips back into view later.
+      if (typeof _refreshStrategyPickCards === 'function') {
+        try { _refreshStrategyPickCards(); } catch (e) { /* */ }
+      }
     }
-  } else {
-    hideDefaultRiskQ = false;
+    if (window.__rettChosenStrategy === 'C') {
+      window.__rettChosenStrategy = null;
+      try { localStorage.removeItem('_chosenStrategy'); } catch (e) { /* */ }
+    }
   }
-  grid.classList.toggle('strategy-pick-grid--no-default-risk', hideDefaultRiskQ);
+
+  // Default-risk question — ALWAYS visible per advisor spec.
+  grid.classList.remove('strategy-pick-grid--no-default-risk');
 
   grid.classList.toggle('strategy-pick-grid--one-only', card2Visible === false);
   grid.classList.toggle('strategy-pick-grid--two-only',
@@ -646,6 +657,15 @@ function showPage(id) {
       if (typeof window.renderTempPage === 'function') window.renderTempPage();
     } catch(e) { (window.reportFailure || console.warn)('Temporary page render failed', e); }
   }
+  // After every page change, sweep for newly-rendered yes-no selects
+  // (Tab 5 supplemental cards inject their own; Tab 1 +property
+  // reveals add more). Idempotent: already-converted selects are
+  // skipped via data-yes-no-converted="1".
+  try {
+    if (typeof window.__rettConvertYesNoSelects === 'function') {
+      window.__rettConvertYesNoSelects();
+    }
+  } catch (e) { /* */ }
   if (id === 'page-baseline') {
     // Fresh render on entry so the table reflects the latest inputs.
     // Otherwise an edit on Client Inputs followed by an immediate jump
@@ -1221,12 +1241,13 @@ function bindControls() {
     });
   }
 
-  // Pre-Meeting "Reset Form" button — clears the four PMQ fields
-  // and the status line. Does NOT touch saved cases.
+  // Pre-Meeting "Reset Form" button — clears the contact fields
+  // and the status line. Does NOT touch saved cases or the client
+  // name field (use New Client to detach the active case).
   var pmqResetBtn = document.getElementById('pmq-reset-btn');
   if (pmqResetBtn) {
     pmqResetBtn.addEventListener('click', function () {
-      ['pmq-first-name','pmq-last-name','pmq-email','pmq-phone'].forEach(function (id) {
+      ['pmq-email','pmq-phone'].forEach(function (id) {
         var el = document.getElementById(id);
         if (el) el.value = '';
       });
@@ -1237,22 +1258,21 @@ function bindControls() {
     });
   }
 
-  // Pre-Meeting "Continue" button — combines first/last name into a
-  // case key, then either loads an existing case with that name or
+  // Pre-Meeting "Continue" button — reads the consolidated Client Name
+  // field (was first+last; now single case-name-input per advisor
+  // 2026-05-17) and either loads an existing case with that name or
   // creates a new one. Email + phone are stashed on window for the
   // print-view to pick up; persistence will follow once those fields
   // exist in case-storage's FIELD_IDS.
   var pmqContinueBtn = document.getElementById('pmq-continue-btn');
   if (pmqContinueBtn) {
     pmqContinueBtn.addEventListener('click', function () {
-      var first = ((document.getElementById('pmq-first-name') || {}).value || '').trim();
-      var last  = ((document.getElementById('pmq-last-name')  || {}).value || '').trim();
-      var email = ((document.getElementById('pmq-email')      || {}).value || '').trim();
-      var phone = ((document.getElementById('pmq-phone')      || {}).value || '').trim();
-      var fullName = (first + ' ' + last).replace(/\s+/g, ' ').trim();
+      var rawName = ((document.getElementById('case-name-input') || {}).value || '').trim();
+      var email   = ((document.getElementById('pmq-email')       || {}).value || '').trim();
+      var phone   = ((document.getElementById('pmq-phone')       || {}).value || '').trim();
       // Apply the same sanitization the case-name input uses so the
       // key we look up matches what would be saved by the input.
-      fullName = fullName.replace(/[^A-Za-z0-9 ,.'\-]/g, '').slice(0, 80);
+      var fullName = rawName.replace(/\s+/g, ' ').replace(/[^A-Za-z0-9 ,.'\-]/g, '').slice(0, 80);
 
       window.__rettCaseEmail = email;
       window.__rettCasePhone = phone;
@@ -1318,22 +1338,9 @@ function bindControls() {
     });
   }
 
-  // When the user revisits an existing case from Client Inputs, mirror
-  // the name back into the PMQ first/last fields so the top-left card
-  // reflects the active client. Best-effort: split on the first space.
-  function _syncPmqNameFromCase() {
-    var nameInput = document.getElementById('case-name-input');
-    var first = document.getElementById('pmq-first-name');
-    var last  = document.getElementById('pmq-last-name');
-    if (!nameInput || !first || !last) return;
-    var v = (nameInput.value || '').trim();
-    if (!v) return;
-    if (first.value || last.value) return; // don't clobber user input
-    var sp = v.indexOf(' ');
-    if (sp > 0) { first.value = v.slice(0, sp); last.value = v.slice(sp + 1); }
-    else { first.value = v; }
-  }
-  document.addEventListener('DOMContentLoaded', _syncPmqNameFromCase);
+  // Note: _syncPmqNameFromCase was removed when PMQ consolidated to a
+  // single Client Name field (2026-05-17). The case-name-input IS the
+  // canonical name now — no separate first/last to sync.
   if (navInputs)       navInputs.addEventListener('click', () => showPage('page-inputs'));
   var navBaseline = document.getElementById('nav-baseline');
   if (navBaseline)     navBaseline.addEventListener('click', () => showPage('page-baseline'));
@@ -1473,11 +1480,15 @@ function bindControls() {
   _perPropertyDateClamp('implementation-date-5', 'strategy-implementation-date-5');
 
   // Multi-year-sale notice: re-evaluate whenever any property's sale
-  // date or sale price changes. The notice is hidden by default and
-  // shows only when two or more visible properties have sale dates
-  // in DIFFERENT calendar years.
+  // date, sale price, OR strategy-implementation date changes. The
+  // notice fires when two or more visible properties have sale OR
+  // strategy dates falling in different calendar years (both timing
+  // collapses are limitations of the current engine).
   ['implementation-date', 'implementation-date-2', 'implementation-date-3',
    'implementation-date-4', 'implementation-date-5',
+   'strategy-implementation-date',   'strategy-implementation-date-2',
+   'strategy-implementation-date-3', 'strategy-implementation-date-4',
+   'strategy-implementation-date-5',
    'sale-price', 'sale-price-2', 'sale-price-3', 'sale-price-4', 'sale-price-5'
   ].forEach(function (id) {
     var el = document.getElementById(id);
@@ -1533,23 +1544,28 @@ function bindControls() {
           p1.insertBefore(hdr, p1.firstChild);
         }
       }
-      // Multi-year notice: visible only when two or more visible property
-      // blocks have implementation-date values that fall in DIFFERENT
-      // calendar years. cfg.propertyGainSchedule carries the per-year
-      // data; the engine still aggregates to the earliest year so we
-      // surface the limitation here.
+      // Multi-year notice: visible when two or more visible properties
+      // have EITHER sale dates OR strategy-implementation dates falling
+      // in DIFFERENT calendar years. The strategy engine aggregates all
+      // property gain to the earliest sale year AND aggregates all
+      // Brooklyn deployment to the earliest strategy date — both
+      // collapses are surfaced by this banner so the advisor knows
+      // per-tranche routing isn't yet honored. cfg.propertyGainSchedule
+      // carries the per-year data for the eventual engine consumer.
       var notice = document.getElementById('multi-year-sale-notice');
       if (notice) {
-        var years = {};
+        var saleYears = {};
+        var strategyYears = {};
         _visibleSlots().forEach(function (n) {
-          var dEl = document.getElementById((n === 1) ? 'implementation-date' : ('implementation-date-' + n));
-          var spEl = document.getElementById((n === 1) ? 'sale-price' : ('sale-price-' + n));
+          var dEl  = document.getElementById((n === 1) ? 'implementation-date'          : ('implementation-date-' + n));
+          var sdEl = document.getElementById((n === 1) ? 'strategy-implementation-date' : ('strategy-implementation-date-' + n));
+          var spEl = document.getElementById((n === 1) ? 'sale-price'                   : ('sale-price-' + n));
           var sp = spEl ? (parseFloat(String(spEl.value).replace(/[^\d.-]/g, '')) || 0) : 0;
-          if (sp <= 0 || !dEl || !dEl.value) return;
-          var yr = dEl.value.slice(0, 4);
-          if (yr) years[yr] = true;
+          if (sp <= 0) return;
+          if (dEl  && dEl.value)  { var sy = dEl.value.slice(0, 4);  if (sy) saleYears[sy] = true; }
+          if (sdEl && sdEl.value) { var ty = sdEl.value.slice(0, 4); if (ty) strategyYears[ty] = true; }
         });
-        notice.hidden = Object.keys(years).length < 2;
+        notice.hidden = (Object.keys(saleYears).length < 2 && Object.keys(strategyYears).length < 2);
       }
     }
     function _showNextSlot() {
@@ -1564,6 +1580,13 @@ function bindControls() {
           // fills, but listeners need to know the block exists).
           if (typeof _recomputeAvailableCapital === 'function') {
             _recomputeAvailableCapital();
+          }
+          // The newly-revealed property block contains its own
+          // <select class="yes-no"> elements (holding-period-N,
+          // personal-use-yes-no-N). Convert them to click-toggles now
+          // that they're visible.
+          if (typeof window.__rettConvertYesNoSelects === 'function') {
+            window.__rettConvertYesNoSelects();
           }
           return;
         }
@@ -1836,6 +1859,101 @@ function bindControls() {
       }
     });
   }
+
+  // ===================================================================
+  // Yes/No click-toggle auto-converter (advisor 2026-05-17)
+  // -------------------------------------------------------------------
+  // Find every <select class="yes-no"> in the app, hide it, and insert
+  // a <div role="button"> click-toggle next to it that mirrors the
+  // default-risk-toggle pattern: shaded grey + "No" by default, shaded
+  // BrookHaven blue + "Yes" when active. Click flips state, writes
+  // through to the hidden select.value, and dispatches a synthetic
+  // change event so every downstream listener (engine, conditional
+  // visibility, available-capital recompute) sees the new value.
+  //
+  // Selects that already have a sibling .yes-no-toggle are skipped, so
+  // a New Client / Tab navigation re-init won't double-wire.
+  // The hidden <select> stays in the DOM for case-storage capture/
+  // restore + back-compat with any code that reads the value directly.
+  // ===================================================================
+  function _wireYesNoToggle(sel) {
+    if (!sel) return;
+    if (sel.dataset.yesNoConverted === '1') return;
+
+    // Skip selects that already have a custom toggle wired manually
+    // (default-risk-yes-no is wrapped by .strategy-default-risk-toggle
+    // on Card 2). Detect via: select was pre-hidden in the static HTML
+    // OR a previous sibling is already a button/toggle. Without this
+    // skip the auto-converter inserts a second "No"/"Yes" box next to
+    // the existing manual one — advisor caught two "No" boxes on Card 2.
+    if (sel.getAttribute('hidden') !== null || sel.getAttribute('aria-hidden') === 'true') {
+      sel.dataset.yesNoConverted = '1';
+      return;
+    }
+    var prev = sel.previousElementSibling;
+    if (prev && (prev.classList.contains('yes-no-toggle') || prev.classList.contains('strategy-default-risk-toggle'))) {
+      sel.dataset.yesNoConverted = '1';
+      return;
+    }
+
+    sel.dataset.yesNoConverted = '1';
+
+    // Hide the original select. Use both .hidden and inline display so
+    // any parent CSS that overrides [hidden] (we've seen this on
+    // .input-row and .strategy-pick-card) can't bring it back.
+    sel.hidden = true;
+    sel.style.display = 'none';
+    sel.setAttribute('aria-hidden', 'true');
+
+    var btn = document.createElement('div');
+    btn.className = 'yes-no-toggle';
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('tabindex', '0');
+
+    function _syncFromSelect() {
+      var v = (sel.value === 'yes') ? 'yes' : 'no';
+      btn.setAttribute('data-state', v);
+      btn.setAttribute('aria-pressed', v === 'yes' ? 'true' : 'false');
+      btn.classList.toggle('is-yes', v === 'yes');
+      btn.textContent = v === 'yes' ? 'Yes' : 'No';
+    }
+    function _flip() {
+      var next = (sel.value === 'yes') ? 'no' : 'yes';
+      sel.value = next;
+      _syncFromSelect();
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      sel.dispatchEvent(new Event('input',  { bubbles: true }));
+    }
+    btn.addEventListener('click', _flip);
+    btn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        _flip();
+      }
+    });
+
+    // If the select's value changes from elsewhere (case load, JS
+    // setVal, programmatic restore), keep the toggle visual in sync.
+    sel.addEventListener('change', _syncFromSelect);
+    sel.parentNode.insertBefore(btn, sel);
+    _syncFromSelect();
+  }
+
+  function _convertAllYesNoSelects() {
+    var selects = document.querySelectorAll('select.yes-no');
+    Array.prototype.forEach.call(selects, function (sel) {
+      try { _wireYesNoToggle(sel); } catch (e) { /* defensive — one bad select shouldn't block the others */ }
+    });
+  }
+  // Expose FIRST so any caller (showPage, +property reveal) can run it
+  // even if the initial pass below throws on an edge-case element.
+  window.__rettConvertYesNoSelects = _convertAllYesNoSelects;
+  // Run an initial pass against whatever yes-no selects exist in the
+  // static HTML. Tab 5 (Supplemental) injects more yes-no selects when
+  // supplemental-render builds the cards — those get converted on the
+  // showPage('page-supplemental') hook.
+  try { _convertAllYesNoSelects(); } catch (e) { /* */ }
+
   if (strategiesBack) strategiesBack.addEventListener('click', function () { showPage('page-inputs'); });
   var strategiesContinue = document.getElementById('strategies-continue');
   if (strategiesContinue) strategiesContinue.addEventListener('click', function () { showPage('page-projection'); });
@@ -1985,6 +2103,88 @@ function bindControls() {
   // so changes to those fields must re-trigger Available Capital.
   // Multi-property (Q1) + Q2 holding-period: include Property 2-5 IDs +
   // holding-period toggles so changes anywhere re-derive Available Capital.
+  // Strategy-impacting inputs — changes to any of these invalidate the
+  // user's prior selections on Tabs 3/4/5/6/7. Per advisor 2026-05-17
+  // (extended 2026-05-18 to cover supplementals + default-risk toggle):
+  // when inputs change mid-test, the user's prior picks across every
+  // downstream tab clear so they can re-evaluate cleanly. Re-renders
+  // Tab 3 chips, Page 4 cards, and Tab 5 supp cards so the user sees
+  // the reset immediately rather than on next nav.
+  function _resetStrategySelection() {
+    var primaryDirty =
+      (window.__rettStrategyInterest && (
+        window.__rettStrategyInterest.A === true ||
+        window.__rettStrategyInterest.A === false ||
+        window.__rettStrategyInterest.B === true ||
+        window.__rettStrategyInterest.B === false ||
+        window.__rettStrategyInterest.C === true ||
+        window.__rettStrategyInterest.C === false
+      )) || window.__rettChosenStrategy != null;
+    // Any supplemental marked interested or not-interested.
+    var suppDirty = false;
+    if (window.__rettSupplementalInterest) {
+      var keys = Object.keys(window.__rettSupplementalInterest);
+      for (var i = 0; i < keys.length; i++) {
+        var v = window.__rettSupplementalInterest[keys[i]];
+        if (v === true || v === false) { suppDirty = true; break; }
+      }
+    }
+    var drEl = document.getElementById('default-risk-yes-no');
+    var drDirty = !!(drEl && drEl.value === 'yes');
+    var absorbDirty = !!window.__rettAbsorbFutureSale;
+    if (!primaryDirty && !suppDirty && !drDirty && !absorbDirty) return;
+
+    // Reset primary strategy state.
+    window.__rettStrategyInterest = { A: null, B: null, C: null };
+    window.__rettChosenStrategy   = null;
+    window.__rettCheckedScenarios = null;
+    // Reset supplemental state. Keep config defaults intact (don't
+    // wipe maxInvestment / depreciationPct overrides on the cards) —
+    // just clear the Interested / Not-Interested marks so Tab 5 starts
+    // fresh.
+    if (window.__rettSupplementalInterest) {
+      Object.keys(window.__rettSupplementalInterest).forEach(function (k) {
+        window.__rettSupplementalInterest[k] = null;
+      });
+    }
+    // Reset default-risk toggle to "no" — both the hidden select and
+    // its visible button widget. Without this the toggle would stay
+    // blue/Yes after an inputs change while Cards 2+3 visibility re-
+    // evaluates, leaving the UI inconsistent.
+    if (drEl && drEl.value !== 'no') {
+      drEl.value = 'no';
+      drEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    var drBtn = document.getElementById('default-risk-toggle');
+    if (drBtn) {
+      drBtn.setAttribute('data-state', 'no');
+      drBtn.setAttribute('aria-pressed', 'false');
+      drBtn.classList.remove('is-yes');
+      drBtn.textContent = 'No';
+    }
+    // Reset future-sale absorb flag (user must re-click Apply on Page 5).
+    window.__rettAbsorbFutureSale = false;
+
+    // Re-render every downstream surface that reflects these picks.
+    if (typeof _refreshStrategyPickCards === 'function') {
+      try { _refreshStrategyPickCards(); } catch (e) { /* */ }
+    }
+    if (typeof _refreshCard3Visibility === 'function') {
+      try { _refreshCard3Visibility(); } catch (e) { /* */ }
+    }
+    if (typeof window.renderInterestedSnapshot === 'function') {
+      try { window.renderInterestedSnapshot(); } catch (e) { /* */ }
+    }
+    // Tab 5 supplemental cards' Interested/Not-Interested chips read
+    // window.__rettSupplementalInterest on render. Force a re-render
+    // if supplemental-render exposes a refresh hook.
+    if (typeof window.renderSupplementalPage === 'function') {
+      try { window.renderSupplementalPage(); } catch (e) { /* */ }
+    } else if (typeof window.refreshSupplementalCards === 'function') {
+      try { window.refreshSupplementalCards(); } catch (e) { /* */ }
+    }
+  }
+
   [
    'sale-price',   'cost-basis',   'accelerated-depreciation',   'holding-period-1',
    'sale-price-2', 'cost-basis-2', 'accelerated-depreciation-2', 'holding-period-2',
@@ -2002,11 +2202,27 @@ function bindControls() {
    'personal-use-yes-no-5', 'personal-use-amount-5',
    'filing-status', 'state-code', 'year1',
    'w2-wages', 'se-income', 'biz-revenue', 'rental-income',
-   'dividend-income', 'retirement-distributions'].forEach(function (id) {
+   'dividend-income', 'retirement-distributions',
+   // Per-property strategy implementation dates also affect outcomes.
+   'implementation-date', 'implementation-date-2', 'implementation-date-3',
+   'implementation-date-4', 'implementation-date-5',
+   'strategy-implementation-date', 'strategy-implementation-date-2',
+   'strategy-implementation-date-3', 'strategy-implementation-date-4',
+   'strategy-implementation-date-5',
+   // Future-sale toggle + fields rebalance the optimizer.
+   'future-sale-yes-no', 'future-estimated-gain', 'future-sale-date'
+  ].forEach(function (id) {
     const el = document.getElementById(id);
     if (!el) return;
     const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
     el.addEventListener(evt, _recomputeAvailableCapital);
+    // Reset the user's strategy pick on any change — but suppress during
+    // case-load / programmatic restore (__rettApplyingState) so loading
+    // a saved client doesn't wipe their persisted strategy choice.
+    el.addEventListener(evt, function () {
+      if (window.__rettApplyingState) return;
+      _resetStrategySelection();
+    });
   });
   // Initial call so the available-capital is set on first paint when a
   // case-load restored sale-price.

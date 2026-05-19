@@ -48,7 +48,7 @@ export default function Footer() {
           </li>
         </ul>
       </div>
-      <p className="compliance-line">[ Compliance line goes here &mdash; final copy pending ]</p>
+      <p className="compliance-line">Information provided should not be considered as tax advice.</p>
       <p className="compliance-attrib">
         RETT&trade; &middot; Real Estate Transition Trust &middot; Trust Company South Dakota (Coming Soon)
       </p>

@@ -32,19 +32,27 @@ export default function PagePMQ() {
           >
             Collapse &mdash;
           </button>
-          <div className="input-section pmq-client-section">
+          {/* Client Information — consolidated per advisor 2026-05-17 (upstream
+              commit 049d751). Previously two sections (Client identity +
+              Case Management). Now one card holds the canonical name,
+              contact info, the load-client combobox, and case actions.
+              The legacy split-name inputs (pmq-first-name/pmq-last-name)
+              are gone upstream; controls.js no longer reads them.
+              All other IDs preserved (case-name-input, pmq-email,
+              pmq-phone, case-load-select, case-new-btn, case-delete-btn)
+              so controls.js / case-storage.js wiring stays intact.
+              case-load-select is now an `<input list>` combobox backed by
+              `<datalist id="case-load-options">` — the advisor can either
+              click open the saved-client dropdown or just type the name. */}
+          <div className="input-section pmq-client-section pmq-case-section">
             <div className="section-heading">
-              <h2>Client</h2>
+              <h2>Client Information</h2>
               <span className="num">SECTION 00</span>
             </div>
             <div className="section-body">
-              <div className="input-row pmq-input-row-half">
-                <div className="label">First name</div>
-                <input type="text" id="pmq-first-name" autoComplete="given-name" maxLength={40} placeholder="Jane" />
-              </div>
-              <div className="input-row pmq-input-row-half">
-                <div className="label">Last name</div>
-                <input type="text" id="pmq-last-name" autoComplete="family-name" maxLength={40} placeholder="Smith" />
+              <div className="input-row">
+                <div className="label">Client Name</div>
+                <input type="text" id="case-name-input" placeholder="e.g. John Smith" autoComplete="off" maxLength={80} />
               </div>
               <div className="input-row">
                 <div className="label">Email</div>
@@ -54,28 +62,10 @@ export default function PagePMQ() {
                 <div className="label">Phone</div>
                 <input type="tel" id="pmq-phone" autoComplete="tel" maxLength={32} placeholder="(555) 555-1234" />
               </div>
-              <div id="pmq-client-status" className="pmq-client-status" aria-live="polite" />
-            </div>
-          </div>
-
-          {/* Case Management — moved here from Client Inputs Section 00 so the
-              saved-client dropdown never appears in front of the client. IDs are
-              identical because controls.js / case-storage.js wire onto them by id. */}
-          <div className="input-section pmq-client-section pmq-case-section">
-            <div className="section-heading">
-              <h2>Case Management</h2>
-              <span className="num">SECTION 00b</span>
-            </div>
-            <div className="section-body">
               <div className="input-row">
-                <div className="label">Case Name</div>
-                <input type="text" id="case-name-input" placeholder="e.g. John Smith" autoComplete="off" maxLength={80} />
-              </div>
-              <div className="input-row">
-                <div className="label">Load Saved Client</div>
-                <select id="case-load-select" defaultValue="">
-                  <option value="">-- Select a saved client --</option>
-                </select>
+                <div className="label">Load Client</div>
+                <input type="text" id="case-load-select" list="case-load-options" placeholder="Type or pick a saved client" autoComplete="off" maxLength={80} />
+                <datalist id="case-load-options" />
               </div>
               <div className="input-row">
                 <div className="label">Case Actions</div>
@@ -84,6 +74,7 @@ export default function PagePMQ() {
                   <button type="button" className="btn btn-secondary" id="case-delete-btn">Delete</button>
                 </div>
               </div>
+              <div id="pmq-client-status" className="pmq-client-status" aria-live="polite" />
             </div>
           </div>
         </div>
