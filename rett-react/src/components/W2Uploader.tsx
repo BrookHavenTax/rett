@@ -20,6 +20,7 @@ const FIELD_MAP: ReadonlyArray<{ id: string; key: string; label: string }> = [
   { id: 'dividend-income',          key: 'dividendIncome',          label: 'Dividend / Interest' },
   { id: 'retirement-distributions', key: 'retirementDistributions', label: 'Retirement Distributions' },
   { id: 'short-term-gain',          key: 'shortTermGain',           label: 'Short-Term Capital Gain' },
+  { id: 'long-term-gain',           key: 'longTermGain',            label: 'Long-Term Capital Gain' },
   { id: 'filing-status',            key: 'filingStatus',            label: 'Filing Status' },
   { id: 'state-code',               key: 'state',                   label: 'State' },
 ];
