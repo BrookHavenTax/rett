@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `24b93fb73f9086f8289a39f3d0c49c219029e004` |
-| Upstream short SHA | `24b93fb` |
-| Upstream message | Hidden Card 3 also clears C interest + chosen-strategy |
-| Upstream committed | 2026-05-18 17:42 -0400 |
-| Synced to React on | 2026-05-19 |
+| Upstream SHA | `4efeb0fcfd896c20841d0710b96287c9f0670704` |
+| Upstream short SHA | `4efeb0f` |
+| Upstream message | Optimizer: dial-back-aware combo selection for B/C |
+| Upstream committed | 2026-05-29 |
+| Synced to React on | 2026-05-29 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  24b93fb73f9086f8289a39f3d0c49c219029e004..origin/main
+  4efeb0fcfd896c20841d0710b96287c9f0670704..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -91,13 +91,59 @@ what `npm run sync:upstream` will pull in next.
    npm run build
    ```
 
+## ⚠️ The brand theme & how it survives syncs (READ BEFORE SYNCING UI)
+
+As of 2026-05-29 the app carries a full **BrookHaven brand re-theme** (modern
+UX, brand-bible colors + fonts) that is **deliberately decoupled from the
+upstream stylesheet** so `sync to latest` keeps working for BOTH the engine
+and the UI. The mechanism:
+
+- **`public/legacy/css/styles.css`** is the upstream stylesheet, mirrored
+  verbatim by `npm run sync:upstream` (rsync `--delete`). **NEVER edit it** —
+  a sync overwrites it.
+- **`src/styles/brand-theme.css`** is OUR theme. Vite bundles it and injects
+  it AFTER the legacy `<link>` (verified in `dist/index.html`), so it wins the
+  cascade. It works by:
+    1. Overriding the upstream `:root` design tokens (`--rett-navy`,
+       `--rett-blue`, `--rett-cyan`, `--rett-amber`, `--font-*`, …). Because
+       the whole upstream sheet is token-driven, this recolors/retypesets the
+       ENTIRE app automatically — including the `--bh-*` aliases (they're
+       `var(--rett-*)` references resolved at use-time).
+    2. Layering modern "chrome" on a focused set of high-impact class hooks
+       (`.header`, `.nav`, `.nav-tab`, `.rett-hero`, `.input-section`,
+       `.section-heading`, `.btn`, `.strategy-pick-card`, `.baseline-*`,
+       `.footer`, etc.).
+- **`src/styles/app.css`** holds React-only widget styles (engine overlay,
+  W2 uploader, Tab-7 toggles). `brand-theme.css` is imported AFTER it.
+- **Fonts** are loaded in `index.html` (Hanken Grotesk = Aktiv Grotesk
+  substitute; Source Serif 4 = Adobe Text Pro substitute). `index.html` is a
+  React-app file rsync never touches.
+
+**What this means for a UI sync:** when upstream restructures a page, port the
+HTML structure into the React components (step 3 above) AS USUAL. The theme
+rides on top automatically as long as:
+  - the upstream `:root` token NAMES survive (they have been stable for
+    months), and
+  - the class hooks the theme targets still exist.
+If upstream renames a token or a class, only the affected rule in
+`brand-theme.css` needs a touch-up — caught immediately by a visual smoke
+pass (load the dev server, eyeball each tab). A token/class rename does NOT
+break the build or the engine; it just falls back to upstream styling for
+that one element until you re-point the override.
+
+**Things the theme intentionally does NOT touch (stay sync-safe):**
+  - Donut slice colors in `baseline-table.js` are hardcoded (`#2563eb` /
+    `#dc2626`). We leave them — editing synced JS is not sync-safe and the
+    blue/red reads fine.
+  - Any element ID the engine reads/writes — untouched, only styled.
+
 5. **Update this file.** Edit the "Currently synced to" table and prepend
    a new entry to the "Sync history" section below.
 
 6. **Commit + push + redeploy** (see `DEPLOYMENT.md`):
 
    ```bash
-   git add public/legacy src/components/pages SYNC.md
+   git add public/legacy public/rett-react-only src/components src/styles src/hooks index.html SYNC.md
    git commit -m "Sync upstream <short-sha>: <one-line summary>"
    git push
    ssh -i ~/.ssh/rett.pem ubuntu@<ec2-ip> '
@@ -107,10 +153,103 @@ what `npm run sync:upstream` will pull in next.
 
 ## Sync history
 
+### 2026-05-29 — `4efeb0f` (current)
+
+**Huge sync.** Absorbed **130 upstream commits** across ~10 days
+(`24b93fb..4efeb0f`): 49 files changed, 8,487 insertions, 867 deletions.
+Three brand-new upstream subsystems plus a Tab 0/1 / Tab 2 / Tab 3 / Tab 4
+restructure. Two passes are still pending (carry-forward notes inline).
+
+**New upstream files mirrored (rsync):**
+
+| File | Purpose |
+| --- | --- |
+| `js/03-solver/additional-funds.js` | Optimizer for the new Additional Funds (Section 03) auto-populate. Exposes `window.rettSuggestAdditionalFunds()`. |
+| `js/04-ui/us-states.js` | Populates `<select id="state-code">` at runtime + helpers. |
+| `js/04-ui/admin-math-panel.js` | Host + lock/unlock + storage for the triple-click-logo "admin reveal mode". |
+| `js/04-ui/admin-math-page-inputs.js` | Tab 1 admin reveal panel. |
+| `js/04-ui/admin-math-page-baseline.js` | Tab 2 admin reveal panel. |
+| `js/04-ui/admin-math-page-strategies.js` | Tab 3 admin reveal panel. |
+| `js/04-ui/admin-math-page-projection.js` | Tab 4 admin reveal panel. |
+| `js/04-ui/admin-math-page-supplemental.js` | Tab 5 admin reveal panel. |
+| `js/04-ui/admin-math-page-allocator.js` | Tab 6 admin reveal panel. |
+| `js/04-ui/admin-math-page-temp.js` | Tab 7 admin reveal panel. |
+
+**Loader updates (`src/hooks/useLegacyEngine.ts`):**
+
+- Inserted `04-ui/us-states.js` between `number-animator.js` and
+  `case-storage.js` (must run before `case-storage.js` because the latter
+  reads the populated state list).
+- Inserted `03-solver/additional-funds.js` after `master-solver.js`.
+- Appended the eight `04-ui/admin-math-*.js` modules (panel host first,
+  then page modules) after `temp-page-render.js` and before the
+  `01-brooklyn/defaults.js` finale, matching upstream's order.
+- Dropped `04-ui/pmq-questions.js` from the load list — upstream
+  removed it from `index.html` when it retired the lone "Do you own
+  or run a business?" question. The file is still on disk; just not
+  loaded.
+- Added a new `REACT_ONLY_SCRIPTS` step that loads
+  `/rett-react-only/additional-funds-ui.js` after upstream bootstrap
+  completes (see "React-only port" below).
+
+**React component ports:**
+
+| Page | What changed |
+| --- | --- |
+| `Header.tsx` | Added `<button id="rett-admin-badge">` next to BrookHaven mark (hidden; toggled by `admin-math-panel.js`). |
+| `PagePMQ.tsx` | Added Custodian dropdown to the existing Client Information card (`#custodian-select`). Added a new "Filing Information" card (SECTION 01) with `#year1`, `#filing-status`, `#state-code`. State options are no longer hardcoded — `us-states.js` populates them. Gutted the PMQ question host — now just `<div id="pmq-question-host" hidden />` because upstream retired the questionnaire. |
+| `PageInputs.tsx` | Major rewrite. **Section 01** (was 02) is now Income Sources, reordered to 1040 line order with three new visible fields: `#interest-income`, `#social-security`, `#business-income-amount`. Hidden mirrors `#qualified-dividends`, `#se-income`, `#biz-revenue` preserved at 0 for any engine wiring still reading them. **Section 02** (was 03) is Real Estate Sale Proceeds — "Cost Basis (Original Sale Price)" label collapsed to just "Cost Basis" across all 5 property blocks. **NEW Section 03 — Additional Funds.** Yes/No gate reveals a taxable-account block with account value, LT/ST gain, derived cost basis (readonly), Additional Funds amount with auto-note, and a proportional-realized-gain breakdown. **Section 04** (was 05) — "Proactive Tax Savings" renamed back to "Future Sale"; Yes/No question reads "Do you have a large real estate, stock, or business sale in the future?". Underlying field IDs unchanged. Old Section 01 (Custodian & Filing) entirely removed (moved to PMQ). |
+| `PageBaseline.tsx` | Replaced the 3-tile "without + delta = total" equation row with the new 3-card layout: red **Tax Due from the Sale** hero (`#bt-delta`), blue **Cash Kept from Sale** tile (`#bt-cash-kept`), and a SVG donut card with `#bt-pie-slices`, `#bt-pie-leaders`, `#bt-pie-center` populated by `baseline-table.js`. Legacy IDs (`#bt-without`, `#bt-without-sub`, `#bt-total`, `#baseline-year-sub`, `#bt-pie-keep-amt`, `#bt-pie-tax-amt`, `#bt-pie-keep-pct`, `#bt-pie-tax-pct`) preserved as hidden spans so legacy `_set(...)` writes don't error. |
+| `PageStrategies.tsx` | Strategy A renamed **Normal Sale → Traditional Sale**. Card 1/2/3 keyaspect bodies trimmed to a single short sentence (upstream commit 864fb7f). Card 3 keyaspect label **Maximum Tax Reduction → 3rd Party Payment Schedule**. |
+| `PageProjection.tsx` | Wrapped the `<h2>Projection</h2>` in a new `.page-projection-head` row that also hosts the **Additional Funds toggle** (`<input id="additional-funds-toggle">`) — UI-only; engine wiring TBD. |
+| `PageSupplemental.tsx`, `PageSummary.tsx`, `PageTemp.tsx` | No structural HTML changes in this range — internal renderers (admin panels, payment schedule trimming, etc.) all live in JS files that rsync mirrored. |
+
+**React-only port — `additional-funds-ui.js`:**
+
+Upstream embeds a ~120-line inline `<script>` IIFE at the bottom of
+`index.html` that wires the Additional Funds Yes/No gate, derived cost
+basis, proportional-realized-gain breakdown, and the
+`rettSuggestAdditionalFunds` auto-populate hook. Vite can't host inline
+`<script>`s the same way upstream does, so the IIFE was copied verbatim
+into `public/rett-react-only/additional-funds-ui.js`. **Two adjustments:**
+
+1. The inner `document.addEventListener('DOMContentLoaded', _init)` was
+   rewrapped with a `readyState === 'loading'` guard so it self-inits when
+   our loader injects the script after the document is already loaded.
+2. Lives **outside `public/legacy/js/`** because the sync-from-upstream
+   rsync mirror uses `--delete` on those subfolders and would wipe the
+   file every sync. The new `public/rett-react-only/` folder is left
+   untouched by sync.
+
+**Known carry-forward gaps (documented, not fixed in this pass):**
+
+- `W2Uploader.tsx` `FIELD_MAP` still writes Self-Employment Income / Business
+  Revenue to `#se-income` / `#biz-revenue`, which are now HIDDEN MIRRORS
+  the engine no longer reads. The new live target is
+  `#business-income-amount` (which subsumes both). Until the FIELD_MAP is
+  rerouted (and likely extended with `interest-income` + `social-security`
+  for the new fields), autofilled SE / Biz dollars sit in dead inputs.
+- The Gemini extraction prompt in `server/index.js` doesn't currently
+  emit `interestIncome` or `socialSecurity` — the schema needs extension
+  before the W2Uploader can autofill those new income lines.
+
+**Smoke verification (50 checks, all pass):**
+
+All new IDs present; `us-states.js` populates 51 state options;
+`controls.js` populates the custodian dropdown; the Additional Funds
+Yes/No gate reveals the field group; derived cost basis computes
+`$500,000 − $100,000 − $50,000 = $350,000`; the W2 uploader is still
+embedded in Income Sources; Tab 7 `+/−` toggle still works; admin badge
+starts hidden; `window.rettSuggestAdditionalFunds` is exposed (proves
+`additional-funds.js` loaded); engine bootstrap reaches
+`window.__rettEngineReady === true`.
+
+
+
 Most recent first. Each entry: upstream short SHA, date, summary of what was
 applied, and which React files needed manual ports.
 
-### 2026-05-19 — `24b93fb` (current)
+### 2026-05-19 — `24b93fb`
 
 Fourteen upstream commits absorbed. Moderate sync — 200 lines of HTML diff
 (vs. 700+ in the previous Vegas overhaul). Focus this round was advisor

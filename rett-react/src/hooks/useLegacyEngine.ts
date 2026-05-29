@@ -3,8 +3,21 @@ import { useEffect, useState } from 'react';
 // Mirrors the upstream `<script>` tags from index.html (the "Subsystem load
 // order: 00 -> 01 -> 02 -> 03 -> 05 -> 04" block) byte-for-byte. Every
 // upstream module is loaded so the React app behaves identically to the
-// upstream HTML site — including pmq-handler.js (the W-2 / 1040 Gemini
-// autofill) and pmq-questions.js (the Pre-Meeting Questionnaire).
+// upstream HTML site.
+//
+// 2026-05-29 sync notes:
+// - Added 03-solver/additional-funds.js (new Section 03 optimizer).
+// - Added 04-ui/us-states.js (state list + helpers, used by Tab 0 state
+//   selector now that filing info moved to PMQ).
+// - Added 8 new admin-math-page-*.js modules + admin-math-panel.js for
+//   the triple-click-logo "admin reveal mode".
+// - pmq-questions.js was dropped from upstream's script list this round
+//   (the PMQ host is now populated by pmq-handler.js + admin-math hooks
+//   instead). We drop it from our loader to match.
+// - pmq-handler.js stays NOT loaded — it runs upstream's <details>-buried
+//   "TAX DOC" Gemini dropzone, which required the advisor to paste their
+//   own Gemini key. Replaced by the React `W2Uploader` component which
+//   calls /api/gemini/extract-w2 on our same-origin Express proxy.
 const LEGACY_SCRIPTS: ReadonlyArray<string> = [
   // 01 (date-utils first so 00-data can use parseLocalDate)
   '01-brooklyn/date-utils.js',
@@ -36,6 +49,7 @@ const LEGACY_SCRIPTS: ReadonlyArray<string> = [
   '03-solver/calc-supplemental-extra.js',
   '03-solver/decision-engine.js',
   '03-solver/master-solver.js',
+  '03-solver/additional-funds.js',
   '03-solver/supplemental-defaults.js',
   '03-solver/supplemental-extra-registry.js',
   '03-solver/supplemental-investment-shims.js',
@@ -47,6 +61,7 @@ const LEGACY_SCRIPTS: ReadonlyArray<string> = [
   '04-ui/money-format.js',
   '04-ui/banner.js',
   '04-ui/number-animator.js',
+  '04-ui/us-states.js',
   '04-ui/case-storage.js',
   '04-ui/pill-toggles.js',
   '04-ui/variable-leverage-ui.js',
@@ -62,15 +77,19 @@ const LEGACY_SCRIPTS: ReadonlyArray<string> = [
   '04-ui/baseline-table.js',
   '04-ui/supplemental-render.js',
   '04-ui/supplemental-extra-render.js',
-  // pmq-handler.js is intentionally NOT loaded — it ran the upstream's
-  // <details>-buried "TAX DOC" Gemini dropzone, which was hard to discover
-  // and required the advisor to paste their own Gemini key. Replaced by
-  // the React `W2Uploader` component embedded directly inside Section 02
-  // (Income Sources). The new component calls /api/gemini/extract-w2 on
-  // the same-origin Express proxy, so the Gemini key stays server-side
-  // and the advisor never has to think about it.
-  '04-ui/pmq-questions.js',
   '04-ui/temp-page-render.js',
+  // Admin math reveal mode — triple-click logo to unlock, then per-tab
+  // hidden math panels populate from each renderer. admin-math-panel.js
+  // is the host + lock/unlock + storage; the 7 admin-math-page-*.js
+  // modules each render one tab's reveal panel.
+  '04-ui/admin-math-panel.js',
+  '04-ui/admin-math-page-inputs.js',
+  '04-ui/admin-math-page-baseline.js',
+  '04-ui/admin-math-page-strategies.js',
+  '04-ui/admin-math-page-projection.js',
+  '04-ui/admin-math-page-supplemental.js',
+  '04-ui/admin-math-page-allocator.js',
+  '04-ui/admin-math-page-temp.js',
   // defaults LAST per upstream comment
   '01-brooklyn/defaults.js',
 ];
@@ -100,6 +119,32 @@ function loadOne(src: string): Promise<void> {
   });
 }
 
+// React-only legacy mirrors — files that upstream embeds as INLINE
+// <script> blocks in index.html, which we can't host the same way in
+// a Vite build. Each one is a verbatim copy of the inline script body
+// with the inner DOMContentLoaded handler rewrapped behind a
+// readyState-guard. They live OUTSIDE public/legacy/js/ on purpose —
+// the sync-from-upstream rsync mirror uses --delete on those subfolders.
+const REACT_ONLY_SCRIPTS: ReadonlyArray<string> = [
+  '/rett-react-only/additional-funds-ui.js',
+];
+
+function loadReactOnly(absSrc: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[data-rett-react-only="${absSrc}"]`)) {
+      resolve();
+      return;
+    }
+    const el = document.createElement('script');
+    el.src = absSrc + `?v=${import.meta.env.MODE === 'development' ? Date.now() : '1'}`;
+    el.async = false;
+    el.dataset.rettReactOnly = absSrc;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error('Failed to load ' + absSrc));
+    document.head.appendChild(el);
+  });
+}
+
 async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
   for (let i = 0; i < LEGACY_SCRIPTS.length; i++) {
     await loadOne(LEGACY_SCRIPTS[i]);
@@ -111,6 +156,13 @@ async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
     await window.loadTaxData('/data/taxBrackets.json');
   } else {
     throw new Error('loadTaxData not on window after legacy bootstrap');
+  }
+
+  // React-only inline-script mirrors (Additional Funds UI etc.). Loaded
+  // AFTER tax data + all upstream modules so they can call back into
+  // window.rettSuggestAdditionalFunds (defined in additional-funds.js).
+  for (const src of REACT_ONLY_SCRIPTS) {
+    await loadReactOnly(src);
   }
 
   // Drop the un-named draft slot before controls.js's restoreOnPageLoad

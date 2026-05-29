@@ -1,0 +1,559 @@
+/* ============================================================================
+   BrookHaven RETT — Brand Theme & Modern UX Layer
+   ----------------------------------------------------------------------------
+   WHY THIS FILE EXISTS / HOW IT STAYS SYNC-SAFE
+
+   The upstream calculator ships its own stylesheet, mirrored verbatim into
+   public/legacy/css/styles.css by `npm run sync:upstream` (rsync --delete).
+   We must NEVER edit that file — a sync would wipe our changes.
+
+   Instead, this file is bundled by Vite and (verified in dist/index.html)
+   injected AFTER the legacy <link rel="stylesheet" href="/legacy/css/
+   styles.css">. Because it loads last, equal-specificity rules here win the
+   cascade, and our :root token overrides re-resolve every var() in the
+   upstream sheet. So a full re-theme is achieved WITHOUT touching upstream
+   CSS or any element IDs the calculator engine reads/writes.
+
+   This means: future `sync to latest` keeps working for BOTH the tax engine
+   AND the UI. Upstream can restructure pages freely; as long as their class
+   hooks (.input-section, .btn, .nav-tab, etc.) and the token names
+   (--rett-navy, --rett-blue, …) survive, this theme rides on top. If upstream
+   ever renames a token or class, only the affected rule here needs a touch-up
+   (caught immediately by a visual smoke pass).
+
+   COLOR SOURCE — Brookhaven Brand Bible (Identity ▸ Colors, p.64):
+     Brookhaven Blue  #41B9EA   (vibrant cyan-blue — primary accent / CTA)
+     Trusted Blue     #231F55   (deep indigo navy — anchor / dark surfaces)
+     Powder Blue      #8ED4F0   (light accent)
+     Yellow           #F0CA17   (energetic "pop" — youthful brand trait)
+     White            #FFFFFF
+   TYPE — Aktiv Grotesk (sans) → Hanken Grotesk substitute;
+          Adobe Text Pro (serif) → Source Serif 4 substitute.
+   MOTIF — 45° diagonal (brand pattern + gradient direction, p.67/p.75).
+   ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+   1. DESIGN TOKENS — override the upstream :root palette + fonts.
+   Every downstream var() (including the --bh-* aliases, which are themselves
+   var(--rett-*) references resolved at use-time) updates automatically.
+   -------------------------------------------------------------------------- */
+:root {
+  /* Core brand palette */
+  --bh-brookhaven-blue: #41B9EA;
+  --bh-trusted-blue:    #231F55;
+  --bh-powder-blue:     #8ED4F0;
+  --bh-brand-yellow:    #F0CA17;
+
+  /* Remap upstream tokens → brand */
+  --rett-navy:       #231F55;   /* Trusted Blue: headers, dark surfaces, primary btn */
+  --rett-navy-2:     #322a82;   /* lighter pair for 45° gradients */
+  --rett-navy-soft:  #2c2670;   /* hover/highlight tier */
+  --rett-blue:       #41B9EA;   /* Brookhaven Blue: accents, links, focus, icons */
+  --rett-blue-soft:  #5fc7f2;
+  --rett-blue-light: #E4F4FC;   /* powder-tinted fills, selected tab */
+  --rett-cyan:       #8ED4F0;   /* Powder Blue: mono section tags, secondary accent */
+  --rett-bg:         #F2F6FC;   /* page background gradient top */
+
+  /* "Pop" accent → brand Yellow (energetic / youthful brand personality) */
+  --rett-warning:    #F0CA17;
+  --rett-amber:      #F0CA17;
+  --rett-amber-soft: #F7DE63;
+
+  /* Semantic financial colors kept meaningful (savings green / tax red) but
+     tuned to sit beside the brand blues. */
+  --rett-success:    #1F9D57;
+  --rett-danger:     #E1483B;
+
+  /* Neutral system */
+  --ink:        #231F55;
+  --ink-soft:   #423c7a;
+  --paper:      #ffffff;
+  --paper-cool: #f3f7fc;
+  --paper-warm: #eef4fb;
+  --rule:       #dce6f3;
+  --rule-soft:  #eaf1f9;
+  --muted:      #6b7392;
+  --green:      #1F9D57;
+  --green-soft: #46b87c;
+  --red:        #E1483B;
+
+  /* Softer, more layered shadows for depth (big-tech card feel) */
+  --shadow:     0 1px 2px rgba(35,31,85,0.05), 0 6px 18px rgba(35,31,85,0.07);
+  --shadow-lg:  0 6px 18px rgba(35,31,85,0.10), 0 28px 64px rgba(35,31,85,0.16);
+
+  /* Brand glow rings for hover/focus */
+  --bh-glow:        0 0 0 4px rgba(65,185,234,0.18);
+  --bh-glow-strong: 0 0 0 4px rgba(65,185,234,0.30);
+
+  /* Fonts — brand-bible substitutes */
+  --font-body:    'Hanken Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif:   'Source Serif 4', Georgia, "Times New Roman", serif;
+  --font-mono:    'JetBrains Mono', "SF Mono", Monaco, Consolas, monospace;
+
+  /* 45° brand pattern — faint diagonal hairlines, used as a subtle overlay
+     on dark brand surfaces (header / hero / footer). */
+  --bh-diagonal: repeating-linear-gradient(
+      45deg,
+      rgba(255,255,255,0.05) 0px,
+      rgba(255,255,255,0.05) 1px,
+      transparent 1px,
+      transparent 11px);
+}
+
+/* ----------------------------------------------------------------------------
+   2. GLOBAL — typography baseline + page background.
+   -------------------------------------------------------------------------- */
+body {
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 12% -8%, rgba(65,185,234,0.10), transparent 60%),
+    radial-gradient(1000px 560px at 100% 0%, rgba(142,212,240,0.14), transparent 55%),
+    linear-gradient(180deg, var(--rett-bg) 0%, #ffffff 70%);
+  background-attachment: fixed;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* App fills the viewport with a faint diagonal brand watermark behind content. */
+#root { position: relative; }
+
+/* Modern, clean headings — drop the upstream serif-italic for a crisp
+   grotesque on all PAGE-LEVEL titles (matches the brand's Aktiv-Grotesk-
+   first hierarchy). Serif is reserved for editorial accents only: the hero
+   tagline, the header wordmark/tagline, and product card names. */
+.page > h2,
+.section-title,
+.strategy-pick-page-header h2,
+.temp-page-header h2,
+.page-projection-head h2,
+.page-supplemental-header h2,
+.page > .page-header h2 {
+  font-family: var(--font-display);
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.section-title { border-bottom-color: var(--rule); }
+
+/* ----------------------------------------------------------------------------
+   3. HEADER — sticky, glassy Trusted-Blue bar with 45° brand pattern.
+   -------------------------------------------------------------------------- */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  background:
+    var(--bh-diagonal),
+    linear-gradient(120deg, #1b1745 0%, var(--rett-navy) 45%, #2c2670 100%);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(11,12,40,0.28);
+  padding: 16px 48px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.header h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+.header h1 .rett-tm { color: var(--bh-brookhaven-blue); }
+/* Editorial serif accent on the wordmark + hero tagline (brand sans+serif pairing) */
+.header-line-1,
+.header-bh-mark {
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+.header-bh-sub { color: var(--bh-powder-blue); }
+
+/* ADMIN badge — brand yellow pill, unmistakable when unlocked. */
+.rett-admin-badge {
+  align-self: center;
+  margin-bottom: 4px;
+  padding: 3px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bh-brand-yellow);
+  color: #2a2410;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(240,202,23,0.4);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.rett-admin-badge:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(240,202,23,0.55); }
+
+/* ----------------------------------------------------------------------------
+   4. NAV — sticky pill tab strip with animated Brookhaven-Blue indicator.
+   -------------------------------------------------------------------------- */
+.nav {
+  position: sticky;
+  top: 70px;
+  z-index: 150;
+  background: rgba(255,255,255,0.82);
+  backdrop-filter: saturate(150%) blur(12px);
+  -webkit-backdrop-filter: saturate(150%) blur(12px);
+  border-bottom: 1px solid var(--rule);
+  padding: 8px 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.nav-tab {
+  font-family: var(--font-display);
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--muted);
+  border: 0;
+  border-right: 0;
+  border-radius: 10px;
+  padding: 10px 16px;
+  background: transparent;
+  transition: color 0.18s ease, background 0.18s ease, transform 0.06s ease;
+}
+.nav-tab:last-of-type { border-right: 0; }
+.nav-tab:hover {
+  color: var(--ink);
+  background: var(--rett-blue-light);
+}
+.nav-tab.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--rett-blue) 0%, #2f9fd6 100%);
+  box-shadow: 0 6px 16px rgba(65,185,234,0.35);
+}
+/* Kill the upstream underline indicator — the filled pill is the indicator now. */
+.nav-tab.active::after { display: none; }
+
+/* Tab 7 +/− toggles: round brand-blue ghost buttons (override the old dark
+   right-border treatment from app.css). */
+#nav-temp-show,
+#nav-temp-hide {
+  border-right: 0 !important;
+  min-width: 38px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--rett-blue);
+  background: var(--rett-blue-light);
+}
+#nav-temp-show:hover,
+#nav-temp-hide:hover {
+  color: #fff;
+  background: var(--rett-blue);
+}
+
+/* ----------------------------------------------------------------------------
+   5. HERO — bold 45° brand gradient with diagonal pattern + glow.
+   -------------------------------------------------------------------------- */
+.rett-hero {
+  position: relative;
+  overflow: hidden;
+  margin: 8px 0 28px;
+  padding: 40px 40px 38px;
+  border-radius: 22px;
+  border-left: 0;
+  background:
+    var(--bh-diagonal),
+    linear-gradient(45deg, #1a1640 0%, var(--rett-navy) 50%, #34299a 100%);
+  box-shadow: var(--shadow-lg);
+}
+/* Glow orb top-right (brand Brookhaven/Powder bloom) */
+.rett-hero::after {
+  content: "";
+  position: absolute;
+  top: -120px;
+  right: -80px;
+  width: 360px;
+  height: 360px;
+  background: radial-gradient(circle, rgba(65,185,234,0.55) 0%, transparent 70%);
+  filter: blur(10px);
+  pointer-events: none;
+}
+.rett-hero-tag {
+  position: relative;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(30px, 4vw, 52px);
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+}
+.rett-hero-tag-em {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 500;
+  color: var(--bh-powder-blue);
+  text-transform: none;
+}
+.rett-hero-sub {
+  position: relative;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: clamp(15px, 1.5vw, 20px);
+  color: rgba(255,255,255,0.86);
+}
+
+/* ----------------------------------------------------------------------------
+   6. CARDS — rounded, elevated, hover-lift with brand glow.
+   Applies to input sections, strategy cards, baseline tiles, etc.
+   -------------------------------------------------------------------------- */
+.input-section {
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+.input-section:hover {
+  box-shadow: var(--shadow-lg);
+  border-color: rgba(65,185,234,0.45);
+}
+.section-heading {
+  background: linear-gradient(120deg, var(--rett-navy) 0%, #2f2880 100%);
+  padding: 16px 24px;
+}
+.section-heading h2 {
+  font-family: var(--font-display);
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.section-heading .num {
+  color: var(--bh-powder-blue);
+  font-family: var(--font-mono);
+  letter-spacing: 0.18em;
+}
+
+/* ----------------------------------------------------------------------------
+   7. FORM FIELDS — modern rounded inputs with Brookhaven-Blue focus glow.
+   -------------------------------------------------------------------------- */
+.input-row input[type="text"],
+.input-row input[type="email"],
+.input-row input[type="tel"],
+.input-row input[type="date"],
+.input-row input[type="number"],
+.input-row select,
+.currency-input input,
+.input-group input,
+.input-group select,
+.input-group textarea,
+.pmq-client-section input,
+.pmq-client-section select {
+  border-radius: 10px;
+  border: 1px solid var(--rule);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.input-row input:focus,
+.input-row select:focus,
+.currency-input input:focus,
+.input-group input:focus,
+.input-group select:focus,
+.input-group textarea:focus,
+.pmq-client-section input:focus,
+.pmq-client-section select:focus {
+  outline: none;
+  border-color: var(--rett-blue);
+  box-shadow: var(--bh-glow);
+  background: #fff;
+}
+
+/* ----------------------------------------------------------------------------
+   8. BUTTONS — modern pill CTAs with hover lift + brand gradient.
+   -------------------------------------------------------------------------- */
+.btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  border-radius: 11px;
+  padding: 12px 24px;
+  transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--rett-blue) 0%, #2f9fd6 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(65,185,234,0.32);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #54c4f0 0%, var(--rett-blue) 100%);
+  border-color: transparent;
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(65,185,234,0.42);
+}
+.btn-primary:active { transform: translateY(0); }
+.btn-secondary {
+  background: #fff;
+  border-color: var(--rule);
+  color: var(--ink);
+}
+.btn-secondary:hover {
+  border-color: var(--rett-blue);
+  color: var(--rett-blue);
+  background: var(--rett-blue-light);
+  transform: translateY(-1px);
+}
+
+/* ----------------------------------------------------------------------------
+   9. PAGE TITLE BANNER — brand-tinted chapter header.
+   -------------------------------------------------------------------------- */
+.page-inputs-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+.page-inputs-title--banner {
+  border: 1px solid var(--rule);
+  border-left: 6px solid var(--rett-blue);
+  border-radius: 16px;
+  background:
+    linear-gradient(120deg, rgba(228,244,252,0.9) 0%, rgba(255,255,255,0.6) 100%);
+  box-shadow: var(--shadow);
+}
+
+/* ----------------------------------------------------------------------------
+   10. STRATEGY CARDS — rounded, lift on hover, brand-blue selection.
+   -------------------------------------------------------------------------- */
+.strategy-pick-card {
+  border-radius: 18px;
+  transition: border-color 0.18s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.strategy-pick-card:hover {
+  border: 3px solid var(--rett-blue);
+  margin: -2px;
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-3px);
+}
+.strategy-pick-card.is-interested:not(.is-recommended) {
+  border-color: var(--rett-blue);
+  box-shadow: var(--bh-glow), var(--shadow);
+}
+
+/* ----------------------------------------------------------------------------
+   11. BASELINE TILES + DONUT — brand color coding.
+   Tax-due hero stays red (semantic), cash-kept goes brand blue.
+   -------------------------------------------------------------------------- */
+.baseline-tile {
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+.baseline-tile--cash-kept {
+  background: linear-gradient(135deg, var(--rett-blue-light) 0%, #ffffff 100%);
+  border: 1px solid rgba(65,185,234,0.35);
+}
+.baseline-pie-card {
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+/* ----------------------------------------------------------------------------
+   12. ADDITIONAL-FUNDS auto-note + breakdown — brand accents.
+   -------------------------------------------------------------------------- */
+.addfunds-auto-note {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--rett-blue-light);
+  color: #1d6f93;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.addfunds-breakdown {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+}
+.addfunds-breakdown-title { font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.addfunds-bd-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  color: var(--ink-soft);
+  font-size: 0.92em;
+}
+
+/* Projection head row — headline + the include-additional-funds toggle. */
+.page-projection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.proj-addfunds-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--rett-blue-light);
+  border: 1px solid rgba(65,185,234,0.4);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.proj-addfunds-toggle input { accent-color: var(--rett-blue); }
+
+/* ----------------------------------------------------------------------------
+   13. FOOTER — dark Trusted-Blue with diagonal brand pattern.
+   -------------------------------------------------------------------------- */
+.footer,
+.compliance-footer {
+  background:
+    var(--bh-diagonal),
+    linear-gradient(120deg, #1a1640 0%, var(--rett-navy) 100%);
+}
+
+/* ----------------------------------------------------------------------------
+   14. ENGINE LOADING OVERLAY — rebrand (overrides app.css defaults).
+   -------------------------------------------------------------------------- */
+.engine-overlay {
+  background:
+    radial-gradient(900px 500px at 50% 0%, rgba(65,185,234,0.10), transparent 60%),
+    rgba(242,246,252,0.94);
+}
+.engine-overlay__card {
+  border-radius: 20px;
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow-lg);
+}
+.engine-overlay__title { font-family: var(--font-display); font-weight: 700; color: var(--ink); }
+.engine-overlay__bar > div { background: linear-gradient(90deg, var(--rett-blue), var(--bh-trusted-blue)); }
+.engine-overlay--error .engine-overlay__title { color: var(--red); }
+
+/* ----------------------------------------------------------------------------
+   15. W-2 / 1040 UPLOADER — rebrand to Brookhaven Blue (overrides app.css).
+   -------------------------------------------------------------------------- */
+.w2-uploader {
+  border: 1px dashed rgba(65,185,234,0.5);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--rett-blue-light) 0%, #ffffff 100%);
+}
+.w2-uploader__btn {
+  background: linear-gradient(135deg, var(--rett-blue) 0%, #2f9fd6 100%);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(65,185,234,0.3);
+}
+.w2-uploader__btn:hover { background: linear-gradient(135deg, #54c4f0 0%, var(--rett-blue) 100%); }
+.w2-uploader__status--busy    { background: var(--rett-blue-light); color: #1d6f93; }
+
+/* ----------------------------------------------------------------------------
+   16. RESPONSIVE — keep sticky offsets sane on small screens.
+   -------------------------------------------------------------------------- */
+@media (max-width: 820px) {
+  .header { position: static; padding: 14px 20px; }
+  .nav { position: static; top: auto; padding: 8px 14px; }
+  .rett-hero { padding: 26px 22px; border-radius: 16px; }
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

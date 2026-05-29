@@ -220,23 +220,45 @@ function _signedIncome(id) {
 }
 
 function _sumIncomeSources() {
-      // Positive-only sources: wages, SE earnings, dividends, retirement.
-      const posIds = ['w2-wages', 'se-income', 'dividend-income', 'retirement-distributions'];
-      // Signed sources: business and rental — real-world losses allowed.
-      const signedIds = ['biz-revenue', 'rental-income'];
+      // Positive-only sources: wages, dividends, retirement, taxable
+      // interest. Business income flows through the new
+      // #business-income-amount block (any type goes to ordinary
+      // brackets — SE-tax routing happens separately based on the
+      // type radio). Legacy IDs se-income and biz-revenue are hidden
+      // inputs that read 0 and are no longer summed here (replaced by
+      // the new business-income block 2026-05-27).
+      const posIds = ['w2-wages', 'dividend-income', 'retirement-distributions', 'interest-income', 'business-income-amount'];
+      // Signed sources: rental — real-world losses allowed.
+      const signedIds = ['rental-income'];
       let sum = 0;
       for (const id of posIds) sum += _safeIncome(id);
       for (const id of signedIds) sum += _signedIncome(id);
       return sum;
 }
 
+// Returns true when the selected business-income type triggers
+// self-employment tax (IRC §1401). Per §1402(a)(13), limited
+// partners are exempt; S-corp distributions are also exempt
+// (the S-corp owner-employee pays FICA on reasonable W-2 comp
+// separately, which goes through #w2-wages).
+function _businessTypeTriggersSE() {
+      var el = document.querySelector('input[name="business-income-type"]:checked');
+      var t = el ? el.value : null;
+      return t === 'se' || t === 'k1-partnership-gp';
+}
+
+function _businessIncomeForSE() {
+      return _businessTypeTriggersSE() ? _safeIncome('business-income-amount') : 0;
+}
+
 // Wage base used for Additional Medicare (0.9% over $200K single /
 // $250K MFJ). Per IRC §3101(b)(2) this applies to W-2 wages and
 // self-employment earnings only — NOT to rental, dividend, biz, or
-// retirement income. Keeping this carve-out prevents over-charging
-// the surtax on real-estate clients with no W-2.
+// retirement income. The federal engine adds (seIncome × 0.9235)
+// to this on top — so we pass W-2 only here and let the engine
+// fold in the SE portion via opts.seIncome.
 function _wageIncomeForAddlMedicare() {
-      return _safeIncome('w2-wages') + _safeIncome('se-income');
+      return _safeIncome('w2-wages');
 }
 
 // Passive / portfolio income that's part of the §1411 NIIT base —
@@ -248,7 +270,10 @@ function _wageIncomeForAddlMedicare() {
 // SE earnings, business distributions, and retirement distributions
 // are NOT in the NIIT base.
 function _ordinaryInvestmentIncome() {
-      return _safeIncome('rental-income') + _safeIncome('dividend-income');
+      // Per IRC §1411(c)(1)(A)(i) — "interest, dividends, annuities,
+      // royalties, and rents." Taxable interest (1040 Line 2b) is in
+      // the NIIT base alongside rental and non-qualified dividends.
+      return _safeIncome('rental-income') + _safeIncome('dividend-income') + _safeIncome('interest-income');
 }
 
 function collectInputs() {
@@ -284,6 +309,40 @@ function collectInputs() {
                 // rental/dividend/retirement income.
                 wages:               _wageIncomeForAddlMedicare(),
                 investmentIncomeOrdinary: _ordinaryInvestmentIncome(),
+                // Qualified dividends (1040 Line 3a). Taxed at LTCG
+                // preferential rates per IRC §1(h)(11); also in §1411
+                // NIIT base. Stacks on top of ordinary income for
+                // bracket placement, same as LT capital gain. Engine
+                // path: scenario.qualifiedDividend → computeFederalTax-
+                // Breakdown opts.qualifiedDividend → ltAmount in the
+                // bracket walk. Wired 2026-05-27.
+                qualifiedDividend:   _safeIncome('qualified-dividends'),
+                // Gross Social Security benefits (1040 Line 6a). Engine
+                // applies IRC §86 provisional-income worksheet inside
+                // _baseScenarioForYear to derive the taxable portion
+                // (0% / up to 50% / up to 85%) which is added to
+                // ordinary income. NOT in NIIT base, NOT in Additional
+                // Medicare wage base. State exemption varies; not
+                // modeled per-state. Wired 2026-05-27.
+                socialSecurityBenefits: _safeIncome('social-security'),
+                // Business income — total amount + type. Amount is
+                // always in baseOrdinaryIncome (ordinary brackets) via
+                // _sumIncomeSources. seIncome below is the SE-eligible
+                // portion that triggers §1401 SE tax (12.4% SS capped
+                // at wage base + 2.9% Medicare uncapped) and adds to
+                // the Additional Medicare wage base. Only fires for
+                // type='se' (Sch C / sole prop / 1099) and type=
+                // 'k1-partnership-gp' (general partner / active).
+                // k1-scorp and k1-partnership-lp are exempt per
+                // §1402(a)(13). Wired 2026-05-27. Half-SE deduction
+                // (§164(f)) is a P1 follow-up - currently engine
+                // does NOT subtract half of SE tax from AGI.
+                businessIncomeAmount: _safeIncome('business-income-amount'),
+                businessIncomeType: (function () {
+                      var el = document.querySelector('input[name="business-income-type"]:checked');
+                      return el ? el.value : null;
+                })(),
+                seIncome: _businessIncomeForSE(),
                 baseShortTermGain:   parseUSD(_val('short-term-gain')),
                 // Q7: non-property LT cap gain income (stocks, crypto, etc.).
                 // Recurs annually; engine adds it to the LT bucket each year
@@ -457,6 +516,41 @@ function collectInputs() {
             delete cfg.leverageLabel;
           }
         }
+      }
+
+      // ---- Additional Funds (Tab 1 Section 03), gated on the Projection
+      // tab's "Include Additional Funds" toggle ----------------------------
+      // When ON, the client liquidates `additional-funds` dollars from a
+      // taxable account (value AV, unrealized LT/ST gain). That cash becomes
+      // extra Brooklyn capital, and the liquidation realizes gain PRO-RATA
+      // to the account's composition:
+      //   ltRealized = liq * (acctLT / AV)   (signed — LT can be a loss)
+      //   stRealized = liq * (acctST / AV)   (signed — ST can be a loss)
+      // Those realized amounts are new taxable income this year, folded into
+      // baseLongTermGain / baseShortTermGain (which now accept negatives as
+      // §1211 capital losses). Toggle OFF ⇒ zero impact (cfg identical to
+      // pre-feature). See ADDITIONAL_FUNDS_OPTIMIZER_SPEC.md §2.
+      var _addFundsToggle = document.getElementById('additional-funds-toggle');
+      if (_addFundsToggle && _addFundsToggle.checked) {
+            var _addFunds = parseUSD(_val('additional-funds')) || 0;
+            var _acctVal  = parseUSD(_val('additional-account-value')) || 0;
+            var _acctLT   = parseUSD(_val('additional-lt-gain')) || 0;   // signed
+            var _acctST   = parseUSD(_val('additional-st-gain')) || 0;   // signed
+            if (_addFunds > 0 && _acctVal > 0) {
+                  var _liq = Math.min(_addFunds, _acctVal);   // can't liquidate more than exists
+                  cfg.availableCapital = (Number(cfg.availableCapital) || 0) + _liq;
+                  cfg.investment       = (Number(cfg.investment) || 0) + _liq;
+                  // The triggered gains are a ONE-TIME Y0 event (the
+                  // liquidation happens once). Route them through Y0-only
+                  // channels — NOT baseLongTermGain / baseShortTermGain,
+                  // which RECUR every projection year in
+                  // _baseScenarioForYear (they model recurring annual
+                  // stock/crypto income). Folding a one-time sale into them
+                  // taxed the gain every year.
+                  cfg.additionalY0LongGain  = _liq * (_acctLT / _acctVal);   // signed (loss ok)
+                  cfg.additionalY0ShortGain = _liq * (_acctST / _acctVal);   // signed (loss ok)
+                  cfg.additionalFundsApplied = _liq;   // breadcrumb for admin/debug
+            }
       }
 
       return cfg;

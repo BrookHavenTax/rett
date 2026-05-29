@@ -67,6 +67,13 @@ export default function PagePMQ() {
                 <input type="text" id="case-load-select" list="case-load-options" placeholder="Type or pick a saved client" autoComplete="off" maxLength={80} />
                 <datalist id="case-load-options" />
               </div>
+              {/* Custodian moved here from Tab 1 Section 01 per advisor
+                  2026-05-26 (upstream commit ad2b96c). Options populated by
+                  controls.js _populateCustodian() from custodians.js. */}
+              <div className="input-row">
+                <div className="label">Custodian</div>
+                <select id="custodian-select" required aria-required="true" defaultValue="" />
+              </div>
               <div className="input-row">
                 <div className="label">Case Actions</div>
                 <div className="case-actions-row">
@@ -77,23 +84,53 @@ export default function PagePMQ() {
               <div id="pmq-client-status" className="pmq-client-status" aria-live="polite" />
             </div>
           </div>
+
+          {/* Filing Information — moved from Tab 1 Section 01 to Tab 0 per
+              advisor 2026-05-27 (upstream commit 8064456). The canonical IDs
+              year1, filing-status, state-code now live here. The State
+              <option> list is populated at runtime by us-states.js — DO
+              NOT hardcode it. */}
+          <div className="input-section pmq-client-section">
+            <div className="section-heading">
+              <h2>Filing Information</h2>
+              <span className="num">SECTION 01</span>
+            </div>
+            <div className="section-body">
+              <div className="input-row">
+                <div className="label">Tax Year</div>
+                <select id="year1" defaultValue="2026">
+                  <option value="2026">2026</option>
+                  <option value="2027">2027</option>
+                  <option value="2025">2025</option>
+                </select>
+              </div>
+              <div className="input-row">
+                <div className="label">Filing Status</div>
+                <select id="filing-status" defaultValue="mfj">
+                  <option value="single">Single</option>
+                  <option value="mfj">Married Filing Jointly</option>
+                  <option value="mfs">Married Filing Separately</option>
+                  <option value="hoh">Head of Household</option>
+                </select>
+              </div>
+              <div className="input-row">
+                <div className="label">State</div>
+                {/* Populated at runtime by us-states.js (upstream wires it
+                    inline in index.html). Leaving children empty matches
+                    upstream's bare `<select id="state-code"></select>`. */}
+                <select id="state-code" defaultValue="" />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Pre-Meeting Questionnaire host — js/04-ui/pmq-questions.js renders
-          its question set into this container. The slim hint card is the
-          empty-state placeholder shown until the renderer hot-swaps in. */}
-      <div id="pmq-question-host" className="pmq-question-host" aria-live="polite">
-        <aside className="pmq-hint">
-          <span className="pmq-hint-eyebrow">Pre-Meeting Questionnaire</span>
-          <p className="pmq-hint-body">
-            Answer the questions below to filter which supplemental strategies
-            surface on the Strategy Summary, or move to <strong>Client Inputs</strong>{' '}
-            to enter the case manually &mdash; the Tax Doc Import there
-            pre-populates from a 1040.
-          </p>
-        </aside>
-      </div>
+      {/* PMQ question host — upstream 2026-05-27 (commit fa0f000-ish) gutted
+          the question host: the sole question ("Do you own or run a
+          business?") is retired. Element kept (hidden) so any
+          renderPMQQuestions() probes by case-storage.js / controls.js no-op
+          cleanly. */}
+      <div id="pmq-question-host" className="pmq-question-host" hidden />
 
       <div className="page-actions">
         <div className="actions-left">

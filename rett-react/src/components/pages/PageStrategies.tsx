@@ -12,22 +12,20 @@ export default function PageStrategies() {
       </div>
 
       <div id="strategy-pick-list" className="strategy-pick-grid">
-        {/* Card 1 — Normal Sale (Cash in Hand is the keyaspect — the thing
-            the strategy delivers, kept in the highlighted box below).
-            Renamed from "Proceeds at Sale" -> "Normal Sale" upstream
-            (commit 80b7533, 2026-05-18) to match the baseline label
-            language Blake wanted advisors to use in front of clients. */}
+        {/* Card 1 — Traditional Sale (renamed from "Normal Sale" upstream
+            2026-05-27, commit fb52725). Card-copy refresh trimmed the
+            keyaspect bodies on all three cards to a single short
+            sentence (commit 864fb7f). */}
         <div className="strategy-pick-card" data-strategy="A" id="strategy-pick-A">
           <div className="strategy-pick-card-header">
             <div className="strategy-pick-num">STRATEGY <span className="num-big">01</span></div>
           </div>
-          <h3 className="strategy-pick-name">Normal Sale</h3>
+          <h3 className="strategy-pick-name">Traditional Sale</h3>
 
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">Cash In Hand</div>
             <p className="strategy-keyaspect-body">
-              Receive the full sale proceeds &mdash; the cash is in your hand,
-              with less time to plan.
+              Receive full sale proceeds at sale date.
             </p>
           </div>
 
@@ -70,8 +68,7 @@ export default function PageStrategies() {
           <div className="strategy-keyaspect">
             <div className="strategy-keyaspect-label">More Time To Plan</div>
             <p className="strategy-keyaspect-body">
-              Negotiate with the buyer to receive payment on January 1 &mdash;
-              more time to implement strategies, generating better returns.
+              We&rsquo;ll negotiate a multi-year payment schedule with the buyer.
             </p>
           </div>
 
@@ -136,10 +133,9 @@ export default function PageStrategies() {
           <h3 className="strategy-pick-name">Structured Installment Sale</h3>
 
           <div className="strategy-keyaspect">
-            <div className="strategy-keyaspect-label">Maximum Tax Reduction</div>
+            <div className="strategy-keyaspect-label">3rd Party Payment Schedule</div>
             <p className="strategy-keyaspect-body">
-              Spread the recognized gain across multiple tax years &mdash;
-              offers the highest flexibility.
+              Spread the recognized gain across multiple tax years.
             </p>
           </div>
 

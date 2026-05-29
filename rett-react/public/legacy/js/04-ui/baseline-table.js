@@ -39,91 +39,84 @@
   }
 
   function render() {
-    var year = parseInt(_val('year1'), 10) || (new Date()).getFullYear();
-    var status = _val('filing-status') || 'mfj';
-    var state = _val('state-code') || 'NONE';
+    // Canonical Y0 snapshot from the engine (handles all the new
+    // income fields: interest, qualified-div, §86 SS, business +
+    // SE-tax routing). Falls back to direct DOM reads when the
+    // engine helper isn't loaded yet (boot timing race).
+    var snap = (typeof window.rettY0BaselineSnapshot === 'function')
+      ? window.rettY0BaselineSnapshot() : null;
+    var year   = snap ? snap.year   : (parseInt(_val('year1'), 10) || (new Date()).getFullYear());
+    var status = snap ? snap.status : (_val('filing-status') || 'mfj');
+    var state  = snap ? snap.state  : (_val('state-code') || 'NONE');
 
     // Year tag in the section heading
     _set('baseline-year-tag', year + ' PROJECTION');
 
-    // Sum ordinary income sources. Positive-only fields (W-2, SE,
-    // dividend, retirement) clamp at $0; biz-revenue and rental-income
-    // pass through SIGNED so Schedule C / Schedule E losses can offset
-    // other ordinary income. (Bug #14.)
-    var ordSourcesPos    = ['w2-wages', 'se-income', 'dividend-income',
-                            'retirement-distributions'];
-    var ordSourcesSigned = ['biz-revenue', 'rental-income'];
-    var ordTotal = 0;
-    ordSourcesPos.forEach(function (id)    { ordTotal += Math.max(0, _num(id)); });
-    ordSourcesSigned.forEach(function (id) { ordTotal += _num(id); });
-
-    // Multi-property aggregation (Q1): sum across all active property blocks.
+    // Property-sale-derived gains (kept separate for the visible
+    // breakdown rows). Multi-property aggregation honored.
     var sumProp = (typeof window.__rettSumPropertyField === 'function')
       ? window.__rettSumPropertyField
       : function (id) { return Math.max(0, _num(id)); };
     var sale  = Math.max(0, sumProp('sale-price'));
     var basis = Math.max(0, sumProp('cost-basis'));
     var depr  = Math.max(0, sumProp('accelerated-depreciation'));
-    // Q2: ST-held property gain is taxed as ordinary (added to STG bucket
-    // below) and removed from the LT bucket via the formula below.
-    // Separate stGainSec02 (Section 02 non-property STG) from stPropGain
-    // (sale-derived ST) so the "without sale" counterfactual can correctly
-    // exclude the property portion.
     var stPropGain = (typeof window.__rettShortTermPropertyGain === 'function')
       ? window.__rettShortTermPropertyGain()
       : 0;
-    var stGainSec02 = Math.max(0, _num('short-term-gain'));
-    var stGain = stGainSec02 + stPropGain;
-    // Q7: non-property Long-Term Capital Gain (stocks, crypto, etc.).
-    // Adds to the LT bucket alongside any property LT gain. Persists
-    // even in the "without sale" counterfactual (it's annual income,
-    // not sale-derived).
-    var ltGainIncome = Math.max(0, _num('long-term-gain'));
-    // Long-term gain is SIGNED — a property sale at a loss (sale < basis)
-    // yields a negative number, which IRC §1211(b) lets us offset against
-    // ordinary income up to $3,000 ($1,500 MFS). Previously the UI
-    // clamped to 0 and silently dropped the loss. (P0-4.)
-    // STG is NO LONGER subtracted from the property LT gain — it's now
-    // an independent income item under "Income Sources" representing
-    // ANY short-term capital gain the client recognized this year
-    // (stock sales, crypto, etc.), not a slice of the property sale.
-    // Q2: subtract ST-held property gain — it lives in stGain bucket.
-    // Q7: add non-property LT-gain income (stocks/crypto >1yr).
-    var ltGainSigned = (sale - basis - depr - stPropGain) + ltGainIncome;
-    // For the displayed "Long-Term Capital Gain" row, show the signed
-    // value so users see the loss explicitly. The bracket math will
-    // clamp at 0 internally and surface the offset on a separate row.
-    var ltGain = ltGainSigned;
-    var recap  = depr;  // recapture treated as ordinary
 
-    // Wage base for Additional Medicare = W-2 + SE × 0.9235.
-    var wages = Math.max(0, _num('w2-wages'));
-    var seInc = Math.max(0, _num('se-income'));
-    // NIIT base = LT (clamped to 0 — losses don't add to investment
-    // income) + ST + §1250 unrecaptured gain + investment-flavored
-    // ordinary (rental + dividend). Per §1411, depreciation recapture
-    // from a property sale IS net investment income (gain from
-    // disposition of property held in a passive activity / investment),
-    // so it belongs in the NIIT base. Previously omitted, which under-
-    // reported NIIT on recapture-heavy scenarios — and made the Page-1
-    // "did nothing" baseline disagree with the Tab-7 (engine) baseline
-    // by $20K+ for a typical $500K-recap client.
-    var nIIT_base = Math.max(0, ltGain) + stGain + recap
-                  + Math.max(0, _num('rental-income'))
-                  + Math.max(0, _num('dividend-income'));
+    var ordTotal, stGain, ltGain, qualDiv, wages, seInc, nIIT_base, recap;
+    if (snap) {
+      // Use the engine snapshot. Pulls in §86 taxable SS (already in
+      // scenario.ordinaryIncome), business-income (in baseOrdinaryIncome
+      // upstream), interest (in baseOrdinaryIncome + investmentIncome),
+      // qualified-div (separate field for LTCG bracket routing), SE
+      // (wages stays W-2 only; engine folds SE × 0.9235 internally).
+      ordTotal = snap.ordTotal;
+      stGain   = snap.stGain;
+      ltGain   = snap.ltGain;
+      qualDiv  = snap.qualifiedDividend;
+      wages    = snap.wages;
+      seInc    = snap.seInc;
+      nIIT_base = snap.niitBase;
+      recap    = snap.recap;
+    } else {
+      // Legacy direct-DOM fallback. Mirrors the prior behavior for
+      // safety - missing the new income fields but never crashes.
+      var ordSourcesPos    = ['w2-wages', 'dividend-income',
+                              'retirement-distributions', 'interest-income',
+                              'business-income-amount'];
+      var ordSourcesSigned = ['rental-income'];
+      ordTotal = 0;
+      ordSourcesPos.forEach(function (id)    { ordTotal += Math.max(0, _num(id)); });
+      ordSourcesSigned.forEach(function (id) { ordTotal += _num(id); });
+      stGain = Math.max(0, _num('short-term-gain')) + stPropGain;
+      var ltGainIncome = Math.max(0, _num('long-term-gain'));
+      ltGain = (sale - basis - depr - stPropGain) + ltGainIncome;
+      qualDiv = Math.max(0, _num('qualified-dividends'));
+      wages = Math.max(0, _num('w2-wages'));
+      // Fallback derives SE from business-income radio if available.
+      var biRad = document.querySelector('input[name="business-income-type"]:checked');
+      var biType = biRad ? biRad.value : null;
+      seInc = (biType === 'se' || biType === 'k1-partnership-gp')
+        ? Math.max(0, _num('business-income-amount')) : 0;
+      recap = depr;
+      nIIT_base = Math.max(0, ltGain) + stGain + recap + qualDiv
+                + Math.max(0, _num('rental-income'))
+                + Math.max(0, _num('dividend-income'))
+                + Math.max(0, _num('interest-income'));
+    }
 
     // Federal tax via the engine's breakdown. STG and depreciation
     // recapture both go through opts so the engine can apply special
     // treatment (recap caps at §1250 25%; STG folds into the ordinary
-    // stack). Earlier this fn pre-stacked recap into 'ord', which
-    // silently bypassed the §1250 cap — high-bracket clients were
-    // taxed on recapture at full marginal rates up to 37%.
+    // stack).
     var ord = ordTotal;
     var fedB = (typeof computeFederalTaxBreakdown === 'function')
       ? computeFederalTaxBreakdown(ord, year, status, {
-          longTermGain: ltGain,        // signed — loss flows through to §1211(b) offset
+          longTermGain: ltGain,
           shortTermGain: stGain,
           depreciationRecapture: recap,
+          qualifiedDividend: qualDiv,
           investmentIncome: nIIT_base,
           wages: wages,
           seIncome: seInc
@@ -202,14 +195,33 @@
     // property-derived ST gain (stPropGain) doesn't exist without the sale.
     // Q7: non-property LT income (ltGainIncome) persists in the without-
     // sale scenario since it's recurring income, not sale-derived.
-    var niitBase_nosale = stGainSec02 + ltGainIncome
-                                      + Math.max(0, _num('rental-income'))
-                                      + Math.max(0, _num('dividend-income'));
+    // Re-derived from form (snapshot only carries the with-sale totals).
+    // NOT clamped to >=0: a Section 02 short-term capital LOSS is
+    // independent of the property sale, so the no-sale baseline must
+    // still honor it — net it against any LT income, then take the
+    // §1211(b) $3K ordinary offset on the remainder. Mirrors the
+    // with-sale path, which passes the signed STG through unclamped.
+    var stGainSec02 = _num('short-term-gain');
+    // Not clamped to >=0: a non-property long-term capital LOSS is also
+    // independent of the sale and must flow through the no-sale baseline
+    // (nets against any LT income, then §1211(b) $3K ordinary offset),
+    // same as the short-term field. The federal breakdown + the capped
+    // state base below handle the netting.
+    var ltGainIncome = _num('long-term-gain');
+    // NIIT base sans-sale = recurring portfolio income only (interest +
+    // ord div + qualified div + rental + recurring LT/ST). No property
+    // gain, no recapture. Mirrors what the engine would set if cfg had
+    // sale=basis (zero gain).
+    var niitBase_nosale = stGainSec02 + ltGainIncome + qualDiv
+                        + Math.max(0, _num('rental-income'))
+                        + Math.max(0, _num('dividend-income'))
+                        + Math.max(0, _num('interest-income'));
     var fedB_nosale = (typeof computeFederalTaxBreakdown === 'function')
       ? computeFederalTaxBreakdown(ord, year, status, {
           longTermGain: ltGainIncome,
           shortTermGain: stGainSec02,
           depreciationRecapture: 0,
+          qualifiedDividend: qualDiv,
           investmentIncome: niitBase_nosale,
           wages: wages,
           seIncome: seInc
@@ -222,9 +234,21 @@
     var niit_nosale    = fedB_nosale ? Number(fedB_nosale.niit)        || 0 : 0;
     var addmed_nosale  = fedB_nosale ? Number(fedB_nosale.addlMedicare)|| 0 : 0;
     var fedTotal_nosale = fedOrd_nosale + fedLt_nosale + amt_nosale; // no recap without sale
+    // State base must mirror federal AGI. GA and most states start from
+    // federal AGI, which already §1211-caps a net capital loss at
+    // $3K/$1.5K before it reduces ordinary income. So the state base
+    // uses the breakdown's POST-netting gains (>=0) and subtracts only
+    // the CAPPED loss offset — NOT the raw signed loss. Folding the raw
+    // -$100K loss here would deduct the full $100K from state income
+    // instead of $3K. Post-netting values come straight from
+    // computeFederalTaxBreakdown (exposed for exactly this purpose).
+    var _ns_netLt   = fedB_nosale ? (Number(fedB_nosale.netLongTermGain)  || 0) : Math.max(0, ltGainIncome);
+    var _ns_netSt   = fedB_nosale ? (Number(fedB_nosale.netShortTermGain) || 0) : Math.max(0, stGainSec02);
+    var _ns_lossOff = fedB_nosale ? (Number(fedB_nosale.lossOrdOffsetApplied) || 0) : 0;
+    var _ns_stateBase = ord + _ns_netSt + _ns_netLt - _ns_lossOff;
     var stateTax_nosale = (typeof computeStateTax === 'function')
-      ? (computeStateTax(ord + stGainSec02 + ltGainIncome, year, state, status,
-            { longTermGain: ltGainIncome, shortTermGain: stGainSec02 }) || 0)
+      ? (computeStateTax(_ns_stateBase, year, state, status,
+            { longTermGain: _ns_netLt, shortTermGain: _ns_netSt }) || 0)
       : 0;
     var total_nosale = fedTotal_nosale + niit_nosale + addmed_nosale + seTax_nosale + stateTax_nosale;
 
@@ -258,6 +282,15 @@
     if (Math.abs(delta_amt)      > 0.5) deltaParts.push('AMT ' + _fmt(delta_amt));
     if (Math.abs(delta_fedOrd)   > 0.5) deltaParts.push('Ord ' + _fmt(delta_fedOrd));
     _set('bt-delta-sub', deltaParts.length ? deltaParts.join(' · ') : 'No sale entered');
+
+    // 2026-05-27: middle "Cash Kept from Sale" tile = salePrice − tax.
+    // Donut denominator switched from salePrice to GAIN (sale − basis)
+    // so the % LOST in the donut center answers "how much of your
+    // economic gain is going to tax?"
+    var cashKept = Math.max(0, sale - delta_total);
+    _set('bt-cash-kept', _fmt(cashKept));
+    var gainEconomic = Math.max(0, sale - basis);
+    _renderPieChart(gainEconomic, delta_total);
 
     // -----------------------------------------------------------------
     // Q3: Per-property tax breakdown (double-click middle tile reveals).
@@ -304,14 +337,16 @@
           // income — it persists whether or not THIS property exists, so
           // add it to the LT bucket in the "without property N" scenario.
           var ltGainX = Math.max(0, saleX - basisX - deprX - stPropX) + ltGainIncome;
-          var niitBaseX = ltGainX + stGainX + deprX
+          var niitBaseX = ltGainX + stGainX + deprX + qualDiv
                         + Math.max(0, _num('rental-income'))
-                        + Math.max(0, _num('dividend-income'));
+                        + Math.max(0, _num('dividend-income'))
+                        + Math.max(0, _num('interest-income'));
           var fedX = (typeof computeFederalTaxBreakdown === 'function')
             ? computeFederalTaxBreakdown(ord, year, status, {
                 longTermGain: ltGainX,
                 shortTermGain: stGainX,
                 depreciationRecapture: deprX,
+                qualifiedDividend: qualDiv,
                 investmentIncome: niitBaseX,
                 wages: wages,
                 seIncome: seInc
@@ -359,25 +394,128 @@
   var debounced = _debounce(render, 150);
 
   function _attach() {
-    // Listen on the input fields the table depends on. Anything that
-    // changes ordinary income, gains, depreciation, filing, or state
-    // re-renders the baseline. The form's existing money-format
-    // listeners reformat values on blur first; we then read.
-    var ids = [
-      'year1', 'filing-status', 'state-code',
-      'w2-wages', 'se-income', 'biz-revenue',
-      'rental-income', 'dividend-income', 'retirement-distributions',
-      'sale-price', 'cost-basis', 'accelerated-depreciation',
-      'short-term-gain'
-    ];
-    ids.forEach(function (id) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener('input',  debounced);
-      el.addEventListener('change', debounced);
-    });
+    // Re-render whenever ANY form input changes. A delegated,
+    // document-level listener (rather than a hand-maintained field
+    // list) guarantees newly-added income/gain fields can never go
+    // stale — every value flows through collectInputs() on the next
+    // render. Debounced; the render reads the live form and is cheap +
+    // idempotent.
+    //
+    // (Fixed 2026-05-28: the old explicit `ids` list omitted
+    // interest-income, social-security, business-income-amount, and
+    // long-term-gain, so typing into them left the "Total Tax If You
+    // Did Nothing" panel — including the NIIT row — showing stale
+    // numbers even though the engine had them wired correctly.)
+    document.addEventListener('input',  debounced, true);
+    document.addEventListener('change', debounced, true);
     // Initial paint.
     render();
+  }
+
+  // Donut renderer (advisor 2026-05-27). Denominator = GAIN
+  // (sale − basis). Two slices: blue Gain Kept, red Gain Lost.
+  // Leader lines attach to each slice and carry "Title · $amount ·
+  // pct%" on the outside (pattern mirrors projection-dashboard donut).
+  // Center text = % LOST in red. When tax > gain (recap-heavy
+  // scenarios) the slice clips at 100% red and the leader carries the
+  // true uncapped dollar + percent.
+  function _renderPieChart(gain, taxDueFromSale) {
+    var slicesEl = document.getElementById('bt-pie-slices');
+    var leadersEl = document.getElementById('bt-pie-leaders');
+    if (!slicesEl) return;
+    var g = Math.max(0, Number(gain) || 0);
+    var tax = Math.max(0, Number(taxDueFromSale) || 0);
+    var taxBounded = Math.min(tax, g);
+    var keep = Math.max(0, g - taxBounded);
+    var keepPct = g > 0 ? (keep / g) : 0;
+    var taxPct  = g > 0 ? (taxBounded / g) : 0;
+    // Real (uncapped) percents for the labels — what the advisor wants
+    // to see even when tax > gain.
+    var keepPctReal = g > 0 ? (keep / g) : 0;
+    var lostPctReal = g > 0 ? (tax / g) : 0;
+
+    // viewBox: -160 -10 520 240. Donut center (110, 110).
+    // Thicker ring per advisor 2026-05-27: R 92, r 50 (was 80 / 55).
+    var cx = 110, cy = 110, R = 92, r = 50;
+    function _arc(startA, sweepA, fillCss) {
+      if (sweepA <= 0.0001) return '';
+      if (sweepA >= Math.PI * 2 - 0.0001) {
+        return '<circle cx="' + cx + '" cy="' + cy + '" r="' + R + '" fill="' + fillCss + '"/>' +
+               '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="#fff"/>';
+      }
+      var endA = startA + sweepA;
+      var x1 = cx + R * Math.cos(startA);
+      var y1 = cy + R * Math.sin(startA);
+      var x2 = cx + R * Math.cos(endA);
+      var y2 = cy + R * Math.sin(endA);
+      var xi1 = cx + r * Math.cos(endA);
+      var yi1 = cy + r * Math.sin(endA);
+      var xi2 = cx + r * Math.cos(startA);
+      var yi2 = cy + r * Math.sin(startA);
+      var large = sweepA > Math.PI ? 1 : 0;
+      var d = 'M ' + x1 + ' ' + y1 +
+              ' A ' + R + ' ' + R + ' 0 ' + large + ' 1 ' + x2 + ' ' + y2 +
+              ' L ' + xi1 + ' ' + yi1 +
+              ' A ' + r + ' ' + r + ' 0 ' + large + ' 0 ' + xi2 + ' ' + yi2 +
+              ' Z';
+      return '<path d="' + d + '" fill="' + fillCss + '"/>';
+    }
+
+    var start = -Math.PI / 2;
+    var keepSweep = keepPct * Math.PI * 2;
+    var taxSweep  = taxPct * Math.PI * 2;
+    var svg = '';
+    svg += _arc(start, keepSweep, '#2563eb');             // blue (kept)
+    svg += _arc(start + keepSweep, taxSweep, '#dc2626');  // red (lost)
+    slicesEl.innerHTML = svg;
+
+    // Leader lines + labels (SVG). Title on top line, dollar amount
+    // on the line below. No percent on the outside — the center number
+    // is the only percent shown. Skip sliver slices (<6°).
+    function _leader(midA, fillCss, title, dollarStr) {
+      var p1x = cx + R * Math.cos(midA);
+      var p1y = cy + R * Math.sin(midA);
+      var p2x = cx + (R + 18) * Math.cos(midA);
+      var p2y = cy + (R + 18) * Math.sin(midA);
+      var rightSide = Math.cos(midA) >= 0;
+      var p3x = rightSide ? (p2x + 28) : (p2x - 28);
+      var p3y = p2y;
+      var anchor = rightSide ? 'start' : 'end';
+      var tx = rightSide ? (p3x + 6) : (p3x - 6);
+      return '<polyline class="bt-pie-leader" points="' +
+               p1x.toFixed(2) + ',' + p1y.toFixed(2) + ' ' +
+               p2x.toFixed(2) + ',' + p2y.toFixed(2) + ' ' +
+               p3x.toFixed(2) + ',' + p3y.toFixed(2) +
+             '" stroke="' + fillCss + '"/>' +
+             '<text class="bt-pie-leader-title" x="' + tx.toFixed(2) +
+               '" y="' + (p3y - 6).toFixed(2) + '" text-anchor="' + anchor +
+               '" fill="' + fillCss + '">' + title + '</text>' +
+             '<text class="bt-pie-leader-amt" x="' + tx.toFixed(2) +
+               '" y="' + (p3y + 13).toFixed(2) + '" text-anchor="' + anchor + '">' +
+               dollarStr + '</text>';
+    }
+    var leaders = '';
+    if (g > 0) {
+      if (keepSweep > 0.10) {
+        var keepMid = start + keepSweep / 2;
+        leaders += _leader(keepMid, '#2563eb', 'Gain Kept', _fmt(keep));
+      }
+      if (taxSweep > 0.10) {
+        var lostMid = start + keepSweep + taxSweep / 2;
+        leaders += _leader(lostMid, '#b91c1c', 'Gain Lost', _fmt(tax));
+      }
+    }
+    if (leadersEl) leadersEl.innerHTML = leaders;
+
+    var centerEl = document.getElementById('bt-pie-center');
+    if (centerEl) {
+      centerEl.textContent = g > 0 ? (lostPctReal * 100).toFixed(1) + '%' : '—';
+    }
+    // Legacy hidden-span writes (back-compat).
+    _set('bt-pie-keep-amt', _fmt(keep));
+    _set('bt-pie-keep-pct', (keepPct * 100).toFixed(1) + '%');
+    _set('bt-pie-tax-amt', _fmt(tax));
+    _set('bt-pie-tax-pct', (taxPct * 100).toFixed(1) + '%');
   }
 
   if (document.readyState === 'loading') {

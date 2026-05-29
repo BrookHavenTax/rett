@@ -146,12 +146,44 @@ function _bindCaseControls() {
         }
       }
       _flashSaved(result.mode === 'case' ? result.name : '');
-    } catch (e) { (window.reportFailure || console.warn)('Auto-save failed', e); }
+    } catch (e) {
+      // Auto-save failure is silent (console only). The prior
+      // reportFailure call popped a banner on every keystroke when
+      // the save path threw - intrusive without being actionable.
+      // The user can't fix the underlying issue from a popup, and
+      // the next successful save (or manual export) will recover.
+      try { console.warn('Auto-save failed:', e); } catch (_) {}
+    }
   }, 300);
   document.addEventListener('input',  debouncedAutoSave, true);
   document.addEventListener('change', debouncedAutoSave, true);
 
-  setTimeout(function () { window.__rettSuppressAutoSave = false; }, 800);
+  setTimeout(function () {
+    window.__rettSuppressAutoSave = false;
+    // Belt-and-suspenders re-render of the active page after boot
+    // stabilization. The showPage() call at the end of bindControls
+    // fires while restoreOnPageLoad is still propagating form-restore
+    // events; the first render of Projection / Strategy Summary can
+    // capture pre-settled state (cover-taxes carve-out not yet
+    // applied, auto-pick using stale availableCapital, etc.) leaving
+    // the cards stuck at $0. Trigger a fresh render here so the
+    // cards reflect the settled state. Idempotent and cheap. Hard-
+    // refresh-zeros bug per advisor 2026-05-26.
+    try {
+      var activeId = (document.querySelector('section.page.active') || {}).id;
+      if (activeId === 'page-projection') {
+        if (typeof runFullPipeline === 'function') runFullPipeline();
+        if (typeof renderInterestedSnapshot === 'function') renderInterestedSnapshot();
+      } else if (activeId === 'page-allocator') {
+        if (typeof runFullPipeline === 'function') runFullPipeline();
+        if (typeof renderStrategySummary === 'function') renderStrategySummary();
+      } else if (activeId === 'page-baseline') {
+        if (typeof window.renderBaselineTable === 'function') window.renderBaselineTable();
+      }
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('Boot re-render failed:', e);
+    }
+  }, 800);
 
   // ---- Client Name input ------------------------------------------------
   // Typing a name turns the un-named draft into a named case. If the user
@@ -307,6 +339,11 @@ function resetAllInputs(skipConfirm) {
     // Page 1: Income
     'w2-wages', 'se-income', 'biz-revenue', 'rental-income',
     'dividend-income', 'retirement-distributions',
+    // Wired income fields (engine reads all of these via collectInputs):
+    // interest + dividends in the NIIT base, SS through the §86
+    // worksheet, business income into the ordinary stack (+ SE tax).
+    'interest-income', 'qualified-dividends', 'social-security',
+    'business-income-amount',
     // Page 1: Appreciated Assets
     'sale-price', 'cost-basis', 'accelerated-depreciation',
     'computed-gain', 'short-term-gain', 'long-term-gain',
@@ -484,24 +521,25 @@ function _refreshStrategyLockupDisplays() {
     if (!pickedMonths && cfg && cfg.structuredSaleDurationMonths) {
       pickedMonths = cfg.structuredSaleDurationMonths;
     }
-    cEl.textContent = (pickedMonths ? pickedMonths : 36) + ' Month Distribution Period';
+    cEl.textContent = (pickedMonths ? pickedMonths : 36) + ' Month Payment Period';
   }
 }
 
-// Strategy card visibility — simplified per advisor 2026-05-17.
-// Progressive layering, strict greater-than, no margin tolerance:
-//   Card 1 (Proceeds at Sale)            ALWAYS visible.
-//   Card 2 (Installment Sale)            visible when netB > netA.
-//   Card 3 (Structured Installment Sale) visible when card 2 is shown
-//                                        AND netC > netB. (Implies
-//                                        netC > netA too — by chain.)
-//   Default-risk toggle                  ALWAYS visible.
+// Strategy card visibility — per advisor 2026-05-27 RE-SPEC:
+//   Card 1 (Traditional Sale)             visible when netA > 0.
+//   Card 2 (Installment Sale)             visible when netB > netA
+//                                         (B beats A → worth showing).
+//   Card 3 (Structured Installment Sale)  visible ONLY when default-risk
+//                                         toggle = 'yes'. Math-based
+//                                         "C beats B" path retired —
+//                                         B's solver now subsumes C's
+//                                         search space, so the only
+//                                         reason to surface C is the
+//                                         buyer-default protection the
+//                                         MetLife wrapper provides.
+//   Default-risk toggle                   ALWAYS visible.
 //
-// "Better" means strictly greater net benefit; no ±5% band or other
-// thresholds. The previous logic gated Card 3 on a 5% margin and hid
-// the toggle outside a ±5% band — advisor wanted simpler: each card
-// shows up when it actually beats the prior one, and the default-risk
-// question is always on the table.
+// "Better" means strictly greater net benefit; no ±5% band.
 //
 // Grid layout classes:
 //   .strategy-pick-grid--one-only  one centered card  (only A)
@@ -546,38 +584,61 @@ function _refreshCard3Visibility() {
 
   var allFinite = Number.isFinite(netA) && Number.isFinite(netB) && Number.isFinite(netC);
 
-  // Card 2: B better than A, OR default-risk toggled Yes.
-  // Without finite nets (no sale price yet), default to showing Card 2
-  // so the advisor isn't stuck on Card 1 with no comparison.
-  var card2Visible = defaultRiskYes || !allFinite || (netB > netA);
-  // Card 3: C better than B (with Card 2 already shown), OR
-  // default-risk toggled Yes. Skipping Card 2 to show Card 3 would
-  // look like a layout gap.
-  var card3Visible = defaultRiskYes || (card2Visible && allFinite && (netC > netB));
+  // Negative-net hide rule (advisor 2026-05-26): a strategy whose net
+  // benefit is <= 0 (savings minus all fees) is never shown. Brookhaven
+  // plus Brooklyn fees can eat a small sale's savings, and surfacing a
+  // losing strategy as if it were an option is misleading to the client.
+  // Applies to ALL three cards including Card 1 (Traditional Sale). When
+  // every strategy nets <= 0, Page 2 ends up empty - intentional: there
+  // is no recommendable option and the advisor should say so verbally.
+  // Bypass while allFinite is false (no sale entered yet) so the page
+  // doesn't go blank during initial form-fill.
+  var c1 = document.getElementById('strategy-pick-A');
+  var card1Visible = !allFinite || (netA > 0);
+  // Card 2: B visible only when math says it's worth showing — B has
+  // positive net AND B > A. Default-risk toggle does NOT force B
+  // visible (advisor 2026-05-27): the toggle is a C-specific switch.
+  var card2Visible = !allFinite || ((netB > 0) && (netB > netA));
+  // Card 3: ONLY visible when default-risk toggle = 'yes'. The math-
+  // based "C beats B" path is retired (advisor 2026-05-27): B's solver
+  // now searches the same space C does (variable weights + Y0 down),
+  // so the only reason to show C is the MetLife default-protection
+  // wrapper the advisor explicitly elects via the toggle.
+  var card3Visible = defaultRiskYes;
 
+  if (c1) c1.hidden = !card1Visible;
   c2.hidden = !card2Visible;
   c3.hidden = !card3Visible;
 
-  // When Card 3 is hidden (default-risk = No AND netC not better than
-  // netB), any pre-existing Interested mark on Strategy C is cleared
-  // so a stale selection from an earlier scenario doesn't carry
-  // forward into Tab 4 / Tab 5 while the card itself is invisible.
-  // Suppressed during case-load (__rettApplyingState) so opening a
-  // saved client doesn't blow away its persisted C selection.
-  // Same scrub applied to __rettChosenStrategy when it points to C —
-  // a hidden card can't be the chosen strategy.
-  if (!card3Visible && !window.__rettApplyingState) {
-    if (window.__rettStrategyInterest && window.__rettStrategyInterest.C != null) {
-      window.__rettStrategyInterest.C = null;
+  // Hidden cards clear their Interested mark + chosen-strategy pointer
+  // so stale selections from earlier scenarios don't carry into Tab 4
+  // / Tab 5 while the cards themselves are invisible. Suppressed during
+  // case-load (__rettApplyingState) so opening a saved client doesn't
+  // blow away its persisted selections.
+  if (!window.__rettApplyingState) {
+    var interestChanged = false;
+    var chosenChanged = false;
+    function _maybeClear(letter, visible) {
+      if (visible) return;
+      if (window.__rettStrategyInterest && window.__rettStrategyInterest[letter] != null) {
+        window.__rettStrategyInterest[letter] = null;
+        interestChanged = true;
+      }
+      if (window.__rettChosenStrategy === letter) {
+        window.__rettChosenStrategy = null;
+        chosenChanged = true;
+      }
+    }
+    _maybeClear('A', card1Visible);
+    _maybeClear('B', card2Visible);
+    _maybeClear('C', card3Visible);
+    if (interestChanged) {
       try { localStorage.setItem('_strategyInterest', JSON.stringify(window.__rettStrategyInterest)); } catch (e) { /* */ }
-      // Re-paint Card 3's chip state so an Interested button isn't left
-      // pressed when the card flips back into view later.
       if (typeof _refreshStrategyPickCards === 'function') {
         try { _refreshStrategyPickCards(); } catch (e) { /* */ }
       }
     }
-    if (window.__rettChosenStrategy === 'C') {
-      window.__rettChosenStrategy = null;
+    if (chosenChanged) {
       try { localStorage.removeItem('_chosenStrategy'); } catch (e) { /* */ }
     }
   }
@@ -585,9 +646,13 @@ function _refreshCard3Visibility() {
   // Default-risk question — ALWAYS visible per advisor spec.
   grid.classList.remove('strategy-pick-grid--no-default-risk');
 
-  grid.classList.toggle('strategy-pick-grid--one-only', card2Visible === false);
-  grid.classList.toggle('strategy-pick-grid--two-only',
-    card2Visible === true && card3Visible === false);
+  // Grid layout class driven by visible-card count, not which cards
+  // specifically. Now that Card 1 can hide too (negative-net rule),
+  // we can have configurations like only-B-visible or B+C-with-A-
+  // hidden that the old "card2Visible-only" logic didn't handle.
+  var visibleCount = (card1Visible ? 1 : 0) + (card2Visible ? 1 : 0) + (card3Visible ? 1 : 0);
+  grid.classList.toggle('strategy-pick-grid--one-only', visibleCount === 1);
+  grid.classList.toggle('strategy-pick-grid--two-only', visibleCount === 2);
 }
 
 function _monthsUntilNextJan1(isoDate) {
@@ -719,6 +784,16 @@ function showPage(id) {
     } catch (e) {
       (window.reportFailure || console.warn)('Could not run the projection pipeline', e, { level: 'error' });
     }
+  }
+
+  // Admin math panel (admin-math-panel.js). No-op when admin mode is
+  // locked; otherwise shows the per-page math drawer below the active
+  // page. Wrapped in try/catch so a panel-rendering bug can never
+  // affect normal page navigation.
+  try {
+    if (typeof window.renderAdminMath === 'function') window.renderAdminMath(id);
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('Admin math panel render failed:', e);
   }
 }
 
@@ -1017,6 +1092,21 @@ function runFullPipeline() {
               }
               if (chosenStrat === 'C' && Number.isFinite(apk.durationMonths)) {
                 cfg.structuredSaleDurationMonths = apk.durationMonths;
+              }
+              if (chosenStrat === 'C' && Number.isFinite(apk.parkRatio)) {
+                cfg.parkRatio = apk.parkRatio;
+              }
+              // Strategy B: thread the chosen installment payment count
+              // AND the auto-picked weight allocation (advisor 2026-05-27).
+              // Without these, runFullPipeline would re-run the engine
+              // with the form's default cfg and miss the auto-picked
+              // weight optimization.
+              if (chosenStrat === 'B' && Number.isFinite(apk.bestRecC)) {
+                cfg.installmentPayments = apk.bestRecC;
+                cfg.recognitionStartYearIndex = 1;
+              }
+              if (chosenStrat === 'B' && Array.isArray(apk.installmentWeights)) {
+                cfg.installmentScheduleWeights = apk.installmentWeights;
               }
             }
           } catch (apErr) { /* leave cfg unchanged on auto-pick failure */ }
@@ -1426,7 +1516,7 @@ function bindControls() {
   // state.
   var suppResetBtn = document.getElementById('supp-reset-selections-btn');
   if (suppResetBtn) suppResetBtn.addEventListener('click', function () {
-    if (!window.confirm('Reset all supplemental strategy selections on this page? Dollar inputs will be cleared (rate defaults preserved).')) return;
+    if (!window.confirm('Reset all supplemental strategy selections on this page? Dollar inputs will be cleared (rate defaults preserved). Hidden cards will reappear.')) return;
     if (typeof window.resetSupplementalExtra === 'function') {
       try { window.resetSupplementalExtra(); } catch (e) { /* */ }
     }
@@ -1435,6 +1525,13 @@ function bindControls() {
     }
     if (typeof window.resetSupplementalEnabledOverride === 'function') {
       try { window.resetSupplementalEnabledOverride(); } catch (e) { /* */ }
+    }
+    // Clear the click-to-hide state per advisor 2026-05-26 so hidden
+    // cards reappear when the advisor hits Reset. Re-render so the
+    // visible grid + dynamic numbering refresh.
+    window.__rettSuppHidden = {};
+    if (typeof window.renderSupplementalPage === 'function') {
+      try { window.renderSupplementalPage(); } catch (e) { /* */ }
     }
     if (typeof window.runFullPipeline === 'function') {
       try { window.runFullPipeline(); } catch (e) { /* */ }
@@ -2064,23 +2161,25 @@ function bindControls() {
       if (errEl) errEl.hidden = true;
     }
 
-    const taxCarveOut = wantsCoverTaxes ? _estimatedSaleTax() : 0;
+    // Cover-taxes-from-sale (advisor 2026-05-26): the tax-reserve money
+    // DEPLOYS to Brooklyn at Y0 alongside the rest of the proceeds. The
+    // engine models the withdrawal at April 1 of Y1 (right before
+    // April 15 taxes are due) as a Y0-only tranche. So Available Capital
+    // here is no longer reduced by the tax estimate - the form shows
+    // the full amount the seller is putting in. The toggle now just
+    // signals the engine to model the Y1 withdrawal.
 
-    // Drive available-capital from sale - keep - tax-carve-out always.
+    // Drive available-capital from sale - keep always.
     // Available Capital is a fully-derived field — no UI for the user to
     // edit it directly (the input lives hidden inside
     // #full-projection-region as an engine-only field). The model is:
     //   • "Investing everything?" = Yes  →  avail = sale (keep=0)
     //   • "Investing everything?" = No   →  avail = sale − amount-to-keep
-    //   • "Cover taxes from sale?" = Yes →  additionally subtract est. tax
-    // Re-derive on every watched-field change so the value tracks the
-    // toggles without going stale. Earlier code gated this on (empty OR
-    // hasSubtraction) to "protect a manual override," but the field has
-    // no edit UI now — the gate just trapped saved cases at stale or
-    // glitched values (e.g. "jared smith" stuck at $1 → Page 3 showed $0
-    // across all strategies with no recovery).
+    //   • "Cover taxes from sale?" = Yes →  engine adds a Y0-only tax-
+    //                                       reserve tranche (does NOT
+    //                                       reduce avail here).
     if (!hasError && saleVal > 0) {
-      const newAvailNum = Math.max(0, saleVal - keep - taxCarveOut);
+      const newAvailNum = Math.max(0, saleVal - keep);
       const newAvail = (typeof fmtUSD === 'function')
         ? fmtUSD(newAvailNum)
         : String(newAvailNum);

@@ -55,6 +55,49 @@ function _flatBracketTax(amount, brackets) {
           return tax;
 }
 
+// Per-slice bracket tax with a per-slice rate ceiling. Used for §1250
+// unrecaptured gain (advisor-confirmed methodology 2026-05-27): the
+// recap slice stacks on top of ordinary income (W-2 etc.), each
+// bracket slot it touches is taxed at min(slot rate, rateCap). Where
+// the bracket rate is below the cap, that slice pays the bracket rate;
+// once the recap slice crosses into a bracket above the cap, the cap
+// kicks in for the remainder. This is taxpayer-favorable vs the IRS
+// Schedule D Tax Worksheet's "min(stacked-at-ordinary, cap × recap)"
+// total-comparison approach. Advisor chose this method to match how
+// the strategy is presented to clients.
+//   amount           — width of the slice to tax
+//   baseAlreadyTaxed — top of the ordinary stack the slice sits on top of
+//   brackets         — same [[cap, rate], ...] shape as _flatBracketTax
+//   rateCap          — per-slice ceiling (0.25 for §1250)
+function _flatBracketTaxCapped(amount, baseAlreadyTaxed, brackets, rateCap) {
+          if (amount <= 0 || !brackets || !brackets.length) return 0;
+          let tax = 0;
+          let remaining = amount;
+          let cursor = Math.max(0, baseAlreadyTaxed);
+          let prevMax = 0;
+          for (const b of brackets) {
+                        const cap = b[0], rate = b[1];
+                        if (remaining <= 0.005) break;
+                        if (cap <= cursor) { prevMax = cap; continue; }
+                        const sliceFloor = Math.max(prevMax, cursor);
+                        const sliceTop   = Math.min(cap, cursor + remaining);
+                        const width      = sliceTop - sliceFloor;
+                        if (width > 0) {
+                                    tax += width * Math.min(rate, rateCap);
+                                    remaining -= width;
+                                    cursor = sliceTop;
+                        }
+                        prevMax = cap;
+          }
+          // If recap extends past the top declared bracket, anything left
+          // pays at the top bracket's rate capped at rateCap.
+          if (remaining > 0.005 && brackets.length) {
+                        const topRate = brackets[brackets.length - 1][1];
+                        tax += remaining * Math.min(topRate, rateCap);
+          }
+          return tax;
+}
+
 function _amtForYearStatus(year, status) {
           const k = fsKey(status);
           const factor = _yearProjectionFactor(year);
@@ -80,7 +123,7 @@ function _amtForYearStatus(year, status) {
 // on top — double-taxing the LTCG portion at 26/28% AND the LTCG rate.
 // On a $48M LTCG / $0 ordinary case that fabricated ~$13M of AMT
 // liability that doesn't exist on a real return.
-function _computeAmt(amti, year, status, ltAmount, recapAmount) {
+function _computeAmt(amti, year, status, ltAmount, recapAmount, recapTaxRegular) {
           const a = _amtForYearStatus(year, status);
           let exemption = a.exemption;
           const excess = Math.max(0, amti - a.phaseoutStart);
@@ -101,7 +144,19 @@ function _computeAmt(amti, year, status, ltAmount, recapAmount) {
           const rcap = Math.max(0, Number(recapAmount) || 0);
           const recapInSlice = Math.min(rcap, Math.max(0, taxable - lt));
           const ordinarySlice = Math.max(0, taxable - lt - recapInSlice);
-          const recapAmt = recapInSlice * 0.25;
+          // §1250 unrecaptured gain inside AMT (Form 6251 Part III) runs
+          // through the SAME §1(h) worksheet as regular tax — taxed at the
+          // lesser of the ordinary bracket rate or 25%, NOT a flat 25%.
+          // When the caller supplies the regular-tax recap dollar amount
+          // (recapTaxRegular), reuse its effective rate so the recapture
+          // nets out of the AMT top-up. A flat 25% over-stated the top-up
+          // by (25% − bracketRate) × recap whenever the bracket landed
+          // below 25% (advisor 2026-05-27). Fallback to 25% if the regular
+          // amount isn't passed (preserves the §1(h)(1)(E) ceiling).
+          const _recapEffRate = (rcap > 0 && recapTaxRegular != null && isFinite(recapTaxRegular))
+                ? (recapTaxRegular / rcap)
+                : 0.25;
+          const recapAmt = recapInSlice * _recapEffRate;
           if (ordinarySlice <= 0) return recapAmt;
           const ordAmt = ordinarySlice <= a.rate26Threshold
               ? ordinarySlice * a.rate26
@@ -114,6 +169,49 @@ function _computeNiit(investmentIncome, magi, year, status) {
           const over = Math.max(0, magi - threshold);
           const base = Math.min(Math.max(0, investmentIncome), over);
           return base * 0.038;
+}
+
+// §86 Social Security taxability worksheet. Returns the taxable
+// portion (0% / up to 50% / up to 85%) of gross SS benefits, which
+// is added to ordinary income on Form 1040 Line 6b.
+//
+// provisional = otherAGI + taxExemptInterest + 0.5 × grossSS
+//
+// Thresholds are STATUTORY and NOT inflation-indexed (IRC §86(c)):
+//   MFJ:           Tier 1 ≤ $32,000;  Tier 2 ≤ $44,000;  Tier 3 > $44,000
+//   Single / HoH:  Tier 1 ≤ $25,000;  Tier 2 ≤ $34,000;  Tier 3 > $34,000
+//   MFS lived-with-spouse: treated as Tier 3 from $0 (full 85%).
+//
+// Source: IRC §86; IRS Publication 915 Worksheet 1.
+//
+// State treatment is NOT modeled here - most states (incl. GA per
+// O.C.G.A. §48-7-27(a)(4)) exempt SS entirely. CO/CT/MN/RI/UT/VT/WV
+// have partial state-level SS taxation. Per advisor (GA-first), the
+// engine adds the taxable SS portion to the state base alongside
+// federal ordinary income, which over-states state tax for clients
+// in SS-exempt states. P1 follow-up to add a per-state SS-inclusion
+// flag to computeStateTax.
+function _computeTaxableSocialSecurity(grossSS, otherAGI, taxExemptInterest, status) {
+          var gss = Math.max(0, Number(grossSS) || 0);
+          if (gss <= 0) return 0;
+          var oth = Math.max(0, Number(otherAGI) || 0);
+          var txi = Math.max(0, Number(taxExemptInterest) || 0);
+          var provisional = oth + txi + 0.5 * gss;
+          var key = fsKey(status);
+          // MFS-lived-with-spouse: §86(c)(1)(C)(ii) sets thresholds to
+          // zero, effectively making 85% of SS taxable from dollar one.
+          if (key === 'married_separate') {
+                        return Math.min(0.85 * gss, 0.85 * provisional);
+          }
+          var t1 = (key === 'married_joint') ? 32000 : 25000;
+          var t2 = (key === 'married_joint') ? 44000 : 34000;
+          if (provisional <= t1) return 0;
+          if (provisional <= t2) {
+                        return Math.min(0.5 * (provisional - t1), 0.5 * gss);
+          }
+          var tier2Cap = 0.5 * (t2 - t1);
+          var tier3Add = 0.85 * (provisional - t2);
+          return Math.min(tier2Cap + tier3Add, 0.85 * gss);
 }
 
 function _computeAddlMedicare(wages, status) {
@@ -340,21 +438,27 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       const _deductionConsumedOnOrd = Math.max(0, ordinaryGross - taxableOrdinary - _carriedLossOrdOffset);
       const _leftoverDeduction = Math.max(0, deduction - _deductionConsumedOnOrd);
 
-      // §1(h)(1)(E) — unrecaptured §1250 gain caps at 25%. Compute
-      // the bracket tax on taxableOrdinary BOTH including and
-      // excluding the recapture slice, then attribute the difference
-      // to recapTaxAtOrdinary. The §1250 cap floors that slice at
-      // 25% × recapture; ordinary income outside the recapture slice
-      // pays normal marginal rates.
+      // §1(h)(1)(E) unrecaptured §1250 gain — PER-SLICE 25% cap
+      // (advisor methodology, confirmed 2026-05-27). Recap stacks on
+      // top of taxableOrdinary minus recap (= W-2/STG/etc. after std
+      // deduction). For each ordinary bracket the recap slice touches,
+      // that piece is taxed at min(bracket rate, 25%). Differs from
+      // the IRS Schedule D Tax Worksheet, which uses a total-comparison
+      // cap (min(stacked-at-ordinary, 25% × recap)); the per-slice
+      // method is taxpayer-favorable for scenarios where part of recap
+      // falls into a bracket above 25% (the over-25% portion gets
+      // capped; the below-25% portion does NOT get pulled up to 25%
+      // by the worksheet's all-or-nothing comparison).
       const _recapInTaxable = Math.min(_recap, taxableOrdinary);
       const _taxableOrdExRecap = Math.max(0, taxableOrdinary - _recapInTaxable);
       const ordinaryTaxExRecap = _flatBracketTax(_taxableOrdExRecap, ordBrk);
       const ordinaryTaxIncRecap = _flatBracketTax(taxableOrdinary, ordBrk);
+      const recapTax = (_recapInTaxable > 0)
+            ? _flatBracketTaxCapped(_recapInTaxable, _taxableOrdExRecap, ordBrk, 0.25)
+            : 0;
+      // Keep these for AMT-comparison and other call sites that read them.
       const _recapTaxAtOrdinary = Math.max(0, ordinaryTaxIncRecap - ordinaryTaxExRecap);
       const _recapTaxCapped = _recapInTaxable * 0.25;
-      const recapTax = (_recapInTaxable > 0)
-            ? Math.min(_recapTaxAtOrdinary, _recapTaxCapped)
-            : 0;
       const ordinaryTax = ordinaryTaxExRecap;
 
       let ltTax = 0;
@@ -397,7 +501,7 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       // owe top-up on a real return.
       const _stdDedAddback = (deduction === stdDed && stdDed > 0) ? stdDed : 0;
       const amtAmti     = taxableOrdinary + _stdDedAddback + ltAmount;
-      const amtOrdOnly  = _computeAmt(amtAmti, year, status, ltAmount, _recapInTaxable);
+      const amtOrdOnly  = _computeAmt(amtAmti, year, status, ltAmount, _recapInTaxable, recapTax);
       const amtTotal    = amtOrdOnly + ltTax;
       // Regular tax for AMT comparison includes recapTax — without
       // it the AMT top-up double-counts the recapture portion.
@@ -434,12 +538,28 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       }
 
       const total = ordinaryTax + recapTax + ltTax + amtTopUp + niit + addlMed + seTax;
+      // Expose AMT internals so the admin panel can show how the top-up
+      // was derived (advisor wants to see TMT vs regular side-by-side).
+      // tentativeMinimumTax = §55(b) total under the alt-min regime
+      // (AMT applied to ordinary slice + preferential LTCG layered on
+      // top). regularFederalTax = the §1 stack that AMT is compared to.
+      // amtTopUp = max(0, tentativeMinimumTax - regularFederalTax).
+      const regularFederalTax = ordinaryTax + recapTax + ltTax;
+      const tentativeMinimumTax = amtTotal;
       return {
             ordinaryTax: ordinaryTax,
             recapTax: recapTax,
             ltTax: ltTax,
+            // Post-§1211-netting capital gains (>= 0), exposed so the
+            // state-tax caller can build a conforming base when a capital
+            // LOSS was entered (negative ST/LT nets against gains first).
+            // These EXCLUDE qualified dividends (carried separately).
+            netLongTermGain: longTermGain,
+            netShortTermGain: shortTermGain,
             seTax: seTax,
             amtTopUp: amtTopUp,
+            tentativeMinimumTax: tentativeMinimumTax,
+            regularFederalTax: regularFederalTax,
             niit: niit,
             addlMedicare: addlMed,
             // Surface the §1211(b) accounting so callers can render a

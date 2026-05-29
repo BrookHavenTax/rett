@@ -6,8 +6,20 @@
     <title>RETT — BrookHaven Multi-Year Tax Strategy Projector</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Fonts:
+         - Hanken Grotesk → BrookHaven brand-bible primary typeface
+           (substitute for the licensed Aktiv Grotesk; same neo-grotesque
+           proportions, free on Google Fonts). Drives body + UI + headings.
+         - Source Serif 4 → substitute for the brand-bible serif (Adobe
+           Text Pro); used for editorial accents (hero tagline, wordmark
+           tagline). Adobe's own open serif, closest free match.
+         - Fraunces / Plus Jakarta Sans / JetBrains Mono kept because the
+           upstream stylesheet (synced verbatim) references them in its
+           --font-* tokens; we remap the tokens in brand-theme.css but
+           keep these loaded so any non-tokenized upstream rule still
+           resolves a real font. -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,300..800;1,300..800&family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
     <!-- The upstream stylesheet, copied verbatim into public/legacy/css/. -->

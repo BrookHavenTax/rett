@@ -1,61 +1,51 @@
-// Client Inputs page. Verbatim port of upstream `<section id="page-inputs">`
-// after the May 2026 multi-property overhaul. Major shape changes vs. the
-// previous port (all sourced from upstream commits in the deaeb68..c9b9638
-// sync range):
-//   - Case Management section moved OUT of here and into PagePMQ.tsx
-//     (commit 5451a94). The case-name-input, case-load-select, case-new-btn,
-//     case-delete-btn IDs are unchanged so controls.js wires them by ID.
-//   - Section 02 (Income Sources) adds Q7: a visible Long-Term Capital Gain
-//     input (commit eab89d3). The legacy hidden #long-term-gain mirror is
-//     removed; engine reads the visible field directly.
-//   - Section 03 (Real Estate Sale Proceeds, formerly "Appreciated Asset
-//     Sale") is now a multi-property scaffold (commits eab89d3, 6487f40,
-//     799def7). Five property blocks, Property 1 visible by default and
-//     2–5 hidden behind a "+ Additional Real Estate Sale" button. Each
-//     block carries its own sale-price-N, cost-basis-N, accelerated-
-//     depreciation-N, holding-period-N, implementation-date-N, strategy-
-//     implementation-date-N, personal-use-yes-no-N, personal-use-amount-N.
-//     Property 1 keeps the unsuffixed IDs for back-compat with legacy
-//     direct-DOM readers.
-//   - Old Section 04 "Sale Proceeds" block collapsed (commit 799def7). The
-//     personal-use carve-out moved to per-property. Only the client-level
-//     "Cover any tax bill from sale?" question remains as a visible row at
-//     the bottom of Section 03. The legacy #withhold-yes-no, #withhold-
-//     amount, #withhold-amount-group, #withhold-error elements stay as
-//     HIDDEN MIRRORS — inputs-collector + _recomputeAvailableCapital +
-//     engine consumers continue to read consistent aggregate values
-//     synced from the per-property fields by controls.js.
-//   - Section 05 renamed "Future Appreciated Asset Sale" -> "Proactive
-//     Tax Savings" (commit 35ef872). Fields collapsed to a simple "How
-//     much gain?" + "When will it be recognized?" pair backed by IDs
-//     future-estimated-gain + future-sale-date. The legacy multi-field
-//     form (future-sale-price, future-cost-basis, future-accelerated-
-//     depreciation, future-long-term-gain) is gone upstream.
-//   - structured-sale-duration-months default value bumped to "36"
-//     (commit 9bd756a/eab89d3 from earlier; surfaced this round).
-//   - Continue button text now "Continue to Tax Implications" since
-//     Tab 2 renamed (commit 97ee7c9).
+// Client Inputs page — May 2026 sync (upstream 24b93fb..4efeb0f).
+// Major shape changes vs. the previous port:
 //
-// React-only departure preserved: Section 02 keeps the W2Uploader at the
-// top of its section-body (calls our same-origin Express proxy at
-// /api/gemini/extract-w2 so the Gemini key stays server-side).
+//   - Custodian + Filing Information (year1, filing-status, state-code)
+//     moved to Tab 0 (PagePMQ.tsx). The old Section 01 here is GONE.
+//   - Section 01 here is now Income Sources, reordered to follow Form
+//     1040 line order with three new visible fields:
+//       * Interest Income (#interest-income)         — 1040 Line 2b
+//       * Social Security (#social-security)         — 1040 Line 6a
+//       * Business Income (#business-income-amount)  — simplified single
+//         amount, no Schedule C vs K-1 split
+//     The previous Self-Employment Income + Business Income inputs
+//     (#se-income, #biz-revenue) collapse into HIDDEN MIRRORS that engine
+//     wiring still reading them sees as 0 until the engine bot reroutes
+//     through the new business-income block. Dividends simplified — the
+//     qualified-vs-ordinary split is dropped; the hidden #qualified-
+//     dividends mirror stays at 0 for any wiring that still reads it.
+//   - Section 02 here is now Real Estate Sale Proceeds (was Section 03).
+//     The "Cost Basis (Original Sale Price)" subtext on each of the 5
+//     property blocks is removed; label is now just "Cost Basis".
+//   - NEW Section 03 — Additional Funds. Yes/No gate (mirrors Future
+//     Sale's pattern) reveals a taxable-account block: account value,
+//     LT + ST gain, derived cost basis (readonly), the contribution
+//     ("Additional Funds") amount + auto-note span, and a live
+//     proportional-realized-gain breakdown. Inert for now — engine
+//     wiring is TBD; the only client-side behaviour is the derived
+//     cost basis and the proportional realized-gain breakdown. The
+//     Projection page "Include Additional Funds" toggle controls
+//     whether the contribution becomes additional Brooklyn capital
+//     once engine wiring lands.
+//   - Section 04 here is Future Sale (was Section 05, "Proactive Tax
+//     Savings"). Renamed by advisor 2026-05-27. The Yes/No question
+//     reads "Do you have a large real estate, stock, or business
+//     sale in the future?". Underlying field IDs (#future-sale-yes-
+//     no, #future-estimated-gain, #future-sale-date,
+//     #future-sale-fields-group) unchanged so existing engine wiring
+//     keeps working.
+//   - Continue button text "Continue to Tax Implications" preserved.
+//
+// React-only departure preserved: Section 01 (Income Sources) keeps the
+// W2Uploader at the top of its section-body (calls our same-origin
+// Express proxy at /api/gemini/extract-w2). NOTE: the W2Uploader's
+// FIELD_MAP currently writes Self-Employment Income / Business Income
+// to #se-income / #biz-revenue, which are now HIDDEN MIRRORS the engine
+// no longer reads. Until the FIELD_MAP is rerouted to
+// #business-income-amount, autofilled SE/Biz dollars will sit in dead
+// inputs. Tracked in SYNC.md.
 import W2Uploader from '../W2Uploader';
-
-const STATES: ReadonlyArray<[string, string]> = [
-  ['AL', 'Alabama'], ['AK', 'Alaska'], ['AZ', 'Arizona'], ['AR', 'Arkansas'],
-  ['CA', 'California'], ['CO', 'Colorado'], ['CT', 'Connecticut'], ['DE', 'Delaware'],
-  ['DC', 'District of Columbia'], ['FL', 'Florida'], ['GA', 'Georgia'], ['HI', 'Hawaii'],
-  ['ID', 'Idaho'], ['IL', 'Illinois'], ['IN', 'Indiana'], ['IA', 'Iowa'],
-  ['KS', 'Kansas'], ['KY', 'Kentucky'], ['LA', 'Louisiana'], ['ME', 'Maine'],
-  ['MD', 'Maryland'], ['MA', 'Massachusetts'], ['MI', 'Michigan'], ['MN', 'Minnesota'],
-  ['MS', 'Mississippi'], ['MO', 'Missouri'], ['MT', 'Montana'], ['NE', 'Nebraska'],
-  ['NV', 'Nevada'], ['NH', 'New Hampshire'], ['NJ', 'New Jersey'], ['NM', 'New Mexico'],
-  ['NY', 'New York'], ['NC', 'North Carolina'], ['ND', 'North Dakota'], ['OH', 'Ohio'],
-  ['OK', 'Oklahoma'], ['OR', 'Oregon'], ['PA', 'Pennsylvania'], ['RI', 'Rhode Island'],
-  ['SC', 'South Carolina'], ['SD', 'South Dakota'], ['TN', 'Tennessee'], ['TX', 'Texas'],
-  ['UT', 'Utah'], ['VT', 'Vermont'], ['VA', 'Virginia'], ['WA', 'Washington'],
-  ['WV', 'West Virginia'], ['WI', 'Wisconsin'], ['WY', 'Wyoming'],
-];
 
 function CurrencyInput({ id }: { id: string }) {
   return (
@@ -67,8 +57,10 @@ function CurrencyInput({ id }: { id: string }) {
 
 // Per-property block. Property 1 keeps the unsuffixed legacy IDs so
 // direct-DOM readers in the calculator engine continue to work; properties
-// 2–5 use -N suffixes and stay hidden until the user clicks the "+ Add" btn
-// at the bottom of Section 03 (controls.js _showNextSlot reveals them).
+// 2–5 use -N suffixes and stay hidden until the user clicks the "+ Add"
+// btn at the bottom of Section 02 (currently HIDDEN per advisor — the
+// multi-property feature is parked until per-property tranche routing
+// lands in the engine).
 function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
   const suf = n === 1 ? '' : `-${n}`;
   return (
@@ -84,7 +76,7 @@ function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
         <CurrencyInput id={`sale-price${suf}`} />
       </div>
       <div className="input-row">
-        <div className="label">Cost Basis (Original Sale Price)</div>
+        <div className="label">Cost Basis</div>
         <CurrencyInput id={`cost-basis${suf}`} />
       </div>
       <div className="input-row">
@@ -129,122 +121,101 @@ export default function PageInputs() {
 
       <div className="inputs-2col">
         <div className="inputs-stack">
-          {/* Section 01 — Custodian & Filing Information */}
-          <div className="input-section">
-            <div className="section-heading">
-              <h2>Custodian &amp; Filing Information</h2>
-              <span className="num">SECTION 01</span>
-            </div>
-            <div className="section-body">
-              <div className="input-row">
-                <div className="label">Custodian</div>
-                {/* Options populated by controls.js _populateCustodian() from
-                    js/00-data/custodians.js. No "-- Select --" placeholder
-                    so the engine doesn't fall into the no-custodian
-                    "variable" leverage path advisors don't want. */}
-                <select id="custodian-select" required aria-required="true" defaultValue="">
-                </select>
-              </div>
-              <div className="input-row">
-                <div className="label">Tax Year</div>
-                <select id="year1" defaultValue="2026">
-                  <option value="2026">2026</option>
-                  <option value="2027">2027</option>
-                  <option value="2025">2025</option>
-                </select>
-              </div>
-              <div className="input-row">
-                <div className="label">Filing Status</div>
-                <select id="filing-status" defaultValue="mfj">
-                  <option value="single">Single</option>
-                  <option value="mfj">Married Filing Jointly</option>
-                  <option value="mfs">Married Filing Separately</option>
-                  <option value="hoh">Head of Household</option>
-                </select>
-              </div>
-              <div className="input-row">
-                <div className="label">State</div>
-                <select id="state-code" defaultValue="NY">
-                  {STATES.map(([code, name]) => (
-                    <option key={code} value={code}>{name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
 
-          {/* Section 02 — Income Sources. The Upload 1040 button at the top
-              of the section body sends the file (in memory only — never
-              persisted) to /api/gemini/extract-w2 on our same-origin
-              Express proxy, which calls Gemini Flash with the JSON-
-              extraction prompt. The returned fields are written to the
-              income inputs below + the Section 01 filing-status and
-              state-code selects. Each write dispatches synthetic input +
-              change events so the upstream calculator immediately
-              recomputes the Tax Baseline. (The /extract-w2 endpoint name
-              is unchanged for back-compat; the underlying prompt has
-              always handled 1040 + W-2 + 1099 + K-1.) */}
+          {/* Section 01 — Income Sources (1040-aligned, 2026-05-27).
+              The Upload 1040 scanner at the top of the section body sends
+              the file (in memory only — never persisted) to
+              /api/gemini/extract-w2 on our same-origin Express proxy,
+              which calls Gemini Flash with the JSON-extraction prompt.
+              The returned fields are written into the inputs below + the
+              Section 01 (PMQ) Filing Status + State selects. Each write
+              dispatches synthetic input + change events so the upstream
+              calculator immediately recomputes the Tax Implications. */}
           <div className="input-section">
             <div className="section-heading">
               <h2>Income Sources</h2>
-              <span className="num">SECTION 02</span>
+              <span className="num">SECTION 01</span>
             </div>
             <div className="section-body">
               <W2Uploader />
+
+              {/* 1040 Line 1a */}
               <div className="input-row">
                 <div className="label">W-2 Wages</div>
                 <CurrencyInput id="w2-wages" />
               </div>
+              {/* 1040 Line 2b — taxable interest. Ordinary brackets + NIIT base. */}
               <div className="input-row">
-                <div className="label">Self-Employment Income</div>
-                <CurrencyInput id="se-income" />
+                <div className="label">Interest Income</div>
+                <CurrencyInput id="interest-income" />
               </div>
+              {/* Dividends (simplified 2026-05-27 — no qualified vs ordinary
+                  split; engine treats this whole amount as ordinary
+                  investment income for the baseline). Hidden
+                  #qualified-dividends stays at 0 for back-compat. */}
               <div className="input-row">
-                <div className="label">Business Income</div>
-                <CurrencyInput id="biz-revenue" />
-              </div>
-              <div className="input-row">
-                <div className="label">Rental Income</div>
-                <CurrencyInput id="rental-income" />
-              </div>
-              <div className="input-row">
-                <div className="label">Dividend / Interest</div>
+                <div className="label">Dividends</div>
                 <CurrencyInput id="dividend-income" />
               </div>
+              <input type="hidden" id="qualified-dividends" defaultValue="" />
+              {/* 1040 Line 4b/5b */}
               <div className="input-row">
                 <div className="label">Retirement Distributions</div>
                 <CurrencyInput id="retirement-distributions" />
               </div>
+              {/* 1040 Line 6a (gross). Engine applies §86 provisional-
+                  income worksheet to derive Line 6b (taxable portion). */}
+              <div className="input-row">
+                <div className="label">Social Security</div>
+                <CurrencyInput id="social-security" />
+              </div>
+              {/* Schedule E Part I */}
+              <div className="input-row">
+                <div className="label">Rental Income</div>
+                <CurrencyInput id="rental-income" />
+              </div>
+              {/* Schedule D Part I */}
               <div className="input-row">
                 <div className="label">Short-Term Capital Gain</div>
                 <CurrencyInput id="short-term-gain" />
               </div>
-              {/* Q7: non-property LT cap gain (stocks held >1yr, crypto,
-                  partnership distributions, etc.). Engine treats this as
-                  recurring annual LT income (parallels baseShortTermGain).
-                  Property-derived LT gain flows separately via
-                  cfg.salePrice − costBasis − depreciation. */}
+              {/* Schedule D Part II — non-property LT cap gain (stocks
+                  held >1yr, crypto, fund distributions, etc.).
+                  Property-derived LT gain from the real-estate sale
+                  flows SEPARATELY via cfg.salePrice − costBasis −
+                  depreciation and never touches this field. */}
               <div className="input-row">
                 <div className="label">Long-Term Capital Gain</div>
                 <CurrencyInput id="long-term-gain" />
               </div>
+              {/* Business Income (simplified 2026-05-27 — single amount,
+                  no Schedule C vs K-1 type dropdown). The engine should
+                  treat this whole amount as ordinary income; SE-tax /
+                  NIIT-routing distinctions deferred. */}
+              <div className="input-row">
+                <div className="label">Business Income</div>
+                <CurrencyInput id="business-income-amount" />
+              </div>
+              {/* Legacy mirrors preserved (hidden) for any engine wiring
+                  still reading them. Both stay at 0. */}
+              <input type="hidden" id="se-income"   defaultValue="" />
+              <input type="hidden" id="biz-revenue" defaultValue="" />
             </div>
           </div>
+
         </div>
 
         <div className="inputs-stack">
-          {/* Section 03 — Real Estate Sale Proceeds (multi-property).
+
+          {/* Section 02 — Real Estate Sale Proceeds (multi-property).
               Property 1 always visible; Properties 2-5 hidden behind the
-              "+ Additional Real Estate Sale" button. Each block carries
-              its own sale figures + closing date + holding period +
-              personal-use carve-out. The Strategy Implementation Date is
-              per-property too. inputs-collector aggregates per-property
-              values; engine sees a single cfg.salePrice / costBasis /
-              acceleratedDepreciation = sum across visible blocks. */}
+              "+ Additional Real Estate Sale" button (which itself is
+              hidden temporarily — the engine's per-property tranche
+              routing isn't built out yet). */}
           <div className="input-section">
             <div className="section-heading">
               <h2>Real Estate Sale Proceeds</h2>
-              <span className="num">SECTION 03</span>
+              <span className="num">SECTION 02</span>
             </div>
             <div className="section-body">
 
@@ -254,14 +225,10 @@ export default function PageInputs() {
               <PropertyBlock n={4} hidden />
               <PropertyBlock n={5} hidden />
 
-              {/* Cover-Tax question — single client-level decision applied to
-                  the aggregate. Personal-use carve-out moved to per-property
-                  (see "Any sale proceeds needed for personal use?" inside
-                  each property block above). The legacy #withhold-yes-no and
-                  #withhold-amount elements stay as HIDDEN MIRRORS below so
-                  inputs-collector + _recomputeAvailableCapital + engine
-                  consumers continue to read consistent aggregate values
-                  synced from the per-property fields by controls.js. */}
+              {/* Cover-Tax question — single client-level decision applied
+                  to the aggregate. Personal-use carve-out moved to
+                  per-property. The legacy #withhold-yes-no and
+                  #withhold-amount elements stay as HIDDEN MIRRORS below. */}
               <div className="input-row property-proceeds-divider">
                 <div className="label">Cover any tax bill from sale?</div>
                 <select id="cover-taxes-yes-no" className="yes-no" defaultValue="yes">
@@ -270,8 +237,6 @@ export default function PageInputs() {
                 </select>
               </div>
 
-              {/* Hidden mirror fields (back-compat). Populated by JS from
-                  the per-property personal-use inputs. */}
               <div hidden aria-hidden="true">
                 <select id="withhold-yes-no" className="yes-no" defaultValue="no">
                   <option value="no">Yes</option>
@@ -282,30 +247,15 @@ export default function PageInputs() {
                 <p id="withhold-error" className="error-text" role="alert" hidden />
               </div>
 
-              {/* + Additional Real Estate Sale button — sits at the very
-                  bottom of Section 03 so clicking it reads as "add another
-                  property to this section" rather than appearing to insert
-                  something inside Property 1. The next hidden property
-                  block (P2-P5) is revealed by controls.js _showNextSlot.
-
-                  HIDDEN TEMPORARILY (upstream commit 8b6fe99, 2026-05-17)
-                  per advisor — the engine's per-property tranche routing
-                  isn't built out yet (sales collapse to the earliest date,
-                  Brooklyn opens at the earliest strategy date, minimum
-                  checks are aggregate-only). Future Sale Loss Target
-                  (Section 05) covers the "I'll have more gain later" case
-                  in the meantime. Re-enable by removing the `hidden`
-                  attribute below. The hidden property-2..5 blocks stay
-                  mounted so re-enabling is a one-attribute flip. */}
+              {/* + Additional Real Estate Sale button — hidden temporarily
+                  per advisor (upstream 8b6fe99). Re-enable is one
+                  attribute flip; hidden property-2..5 blocks stay mounted. */}
               <div className="property-add-row" hidden>
                 <button type="button" id="property-add-btn" className="property-add-btn">+ Additional Real Estate Sale</button>
               </div>
 
               {/* Multi-year-sale notice — only meaningful when multi-
-                  property is exposed. Kept in the DOM (hidden) for the
-                  future re-enable; controls.js's toggle logic still runs
-                  against it but with no property-2..5 visible it stays
-                  hidden permanently. */}
+                  property is exposed. Kept in the DOM (hidden). */}
               <div id="multi-year-sale-notice" className="multi-year-sale-notice" hidden>
                 <strong>Heads up:</strong> two or more properties have sale or strategy implementation dates
                 in different calendar years. The engine treats the sale as one event at the EARLIEST sale date
@@ -315,22 +265,88 @@ export default function PageInputs() {
             </div>
           </div>
 
-          {/* Section 05 — Proactive Tax Savings (formerly "Future
-              Appreciated Asset Sale"). Tells the optimizer there's a gain
-              the client expects to recognize in the future. Engine treats
-              it as additional absorbable gain and sizes Brooklyn / preserves
-              carryforward so the loss generated by the strategy lands in
-              the year the gain is recognized. Legacy IDs (future-sale-
-              yes-no, future-sale-date) preserved; future-estimated-gain
-              replaces the multi-field form. */}
+          {/* Section 03 — Additional Funds (NEW 2026-05-28, upstream
+              commit ee948e3 + follow-ups). Captures a taxable investment
+              account the client could tap. INERT for now (data-inert) —
+              not wired into the engine yet. The only live behaviour is
+              the derived cost basis (Account Value − LT gain − ST gain)
+              and the proportional-realized-gain breakdown. The
+              "Additional Funds" amount can be auto-populated by the
+              optimizer (window.rettSuggestAdditionalFunds) when the
+              additional-funds-ui module is wired. The Projection-tab
+              toggle controls whether the contribution actually moves
+              the projection. */}
           <div className="input-section">
             <div className="section-heading">
-              <h2>Proactive Tax Savings</h2>
-              <span className="num">SECTION 05</span>
+              <h2>Additional Funds</h2>
+              <span className="num">SECTION 03</span>
+            </div>
+            <div className="section-body">
+              {/* Gate question (mirrors the Future Sale yes/no). "No"
+                  by default; flipping to "Yes" reveals the account
+                  fields. */}
+              <div className="input-row">
+                <div className="label">Do you have additional funds to invest?</div>
+                <select id="additional-funds-yes-no" className="yes-no" defaultValue="no">
+                  <option value="no">No</option>
+                  <option value="yes">Yes</option>
+                </select>
+              </div>
+              <div id="additional-funds-fields-group" hidden>
+                <div className="input-row">
+                  <div className="label">Account Value</div>
+                  <CurrencyInput id="additional-account-value" />
+                </div>
+                <div className="input-row">
+                  <div className="label">Long-Term Gain</div>
+                  <CurrencyInput id="additional-lt-gain" />
+                </div>
+                <div className="input-row">
+                  <div className="label">Short-Term Gain</div>
+                  <CurrencyInput id="additional-st-gain" />
+                </div>
+                <div className="input-row">
+                  <div className="label">Cost Basis</div>
+                  <div className="currency-input">
+                    <input type="text" id="additional-cost-basis-derived" placeholder="0" inputMode="numeric" autoComplete="off" readOnly tabIndex={-1} />
+                  </div>
+                </div>
+                <div className="input-row">
+                  <div className="label">Additional Funds</div>
+                  <div className="currency-input">
+                    <input type="text" id="additional-funds" placeholder="0" inputMode="numeric" autoComplete="off" />
+                    <span id="additional-funds-auto-note" className="addfunds-auto-note" hidden />
+                  </div>
+                </div>
+                {/* Live proportional realized-gain breakdown — liquidating
+                    from the account triggers gains pro-rata to the account's
+                    gain composition. Client-side display only. */}
+                <div id="additional-funds-breakdown" className="addfunds-breakdown" hidden>
+                  <div className="addfunds-breakdown-title">
+                    Liquidating <span id="afb-amount">$0</span> realizes:
+                  </div>
+                  <div className="addfunds-breakdown-rows">
+                    <div className="addfunds-bd-row"><span>Long-term gain</span><span id="afb-lt">$0</span></div>
+                    <div className="addfunds-bd-row"><span>Short-term gain</span><span id="afb-st">$0</span></div>
+                    <div className="addfunds-bd-row"><span>Return of basis (no tax)</span><span id="afb-basis">$0</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 04 — Future Sale (was Section 05, "Proactive Tax
+              Savings"). Renamed 2026-05-27. The Yes/No question now reads
+              "Do you have a large real estate, stock, or business sale in
+              the future?". Underlying field IDs unchanged. */}
+          <div className="input-section">
+            <div className="section-heading">
+              <h2>Future Sale</h2>
+              <span className="num">SECTION 04</span>
             </div>
             <div className="section-body">
               <div className="input-row">
-                <div className="label">Do you have gain you'll recognize in the future?</div>
+                <div className="label">Do you have a large real estate, stock, or business sale in the future?</div>
                 <select id="future-sale-yes-no" className="yes-no" defaultValue="no">
                   <option value="no">No</option>
                   <option value="yes">Yes</option>
@@ -351,16 +367,14 @@ export default function PageInputs() {
         </div>
       </div>
 
-      {/* Structured-sale duration default 36 months (regulatory minimum +
-          common Vegas-spec default). Engine still reads the field; advisor
-          can override once product terms become user-configurable again. */}
+      {/* Structured-sale duration locked to 36 months (3 yearly Jan-1
+          payments, 40/40/20 split) per advisor 2026-05-26. The engine
+          ignores any value other than 36. */}
       <div hidden aria-hidden="true">
         <input type="text" id="structured-sale-duration-months" defaultValue="36" />
       </div>
 
-      {/* Hidden legacy fields (projection horizon + leverage cap mirrors).
-          Q7's #long-term-gain is now visible in Section 02 above; the old
-          hidden mirror is removed (engine reads the visible field). */}
+      {/* Hidden legacy fields (projection horizon + leverage cap mirrors). */}
       <div hidden aria-hidden="true">
         <select id="projection-years" defaultValue="5">
           <option value="1">1 year</option>

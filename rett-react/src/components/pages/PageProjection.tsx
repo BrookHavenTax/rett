@@ -8,7 +8,18 @@
 export default function PageProjection() {
   return (
     <section id="page-projection" className="page" role="tabpanel" aria-labelledby="nav-projection">
-      <h2>Projection</h2>
+      {/* Projection head row 2026-05-28 (upstream commit ee948e3): the
+          headline + the Additional Funds toggle live side-by-side. When
+          ON, the Additional Funds contribution from Tab 1 Section 03
+          becomes additional available capital for Brooklyn / strategies.
+          UI-only for now — engine wiring TBD. */}
+      <div className="page-projection-head">
+        <h2>Projection</h2>
+        <label className="proj-addfunds-toggle" htmlFor="additional-funds-toggle" title="Include the Additional Funds contribution from Client Inputs as extra available capital">
+          <input type="checkbox" id="additional-funds-toggle" />
+          <span>Include additional funds</span>
+        </label>
+      </div>
 
       {/* Minimal Page-3 view: filtered to scenarios the user marked
           Interested on Page 2. Each card shows net benefit with a

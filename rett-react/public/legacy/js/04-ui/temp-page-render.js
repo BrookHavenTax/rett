@@ -55,12 +55,26 @@
   }
 
   function _recurringOrdinary() {
+    // Mirrors inputs-collector.js _sumIncomeSources for the new income
+    // shape: W-2 + ord-div + retirement + interest + business-income,
+    // plus signed rental. Legacy se-income / biz-revenue removed
+    // (always 0; replaced by #business-income-amount).
     var ord = 0;
-    ['w2-wages','se-income','dividend-income','retirement-distributions'].forEach(function (id) {
+    ['w2-wages','dividend-income','retirement-distributions',
+     'interest-income','business-income-amount'].forEach(function (id) {
       ord += Math.max(0, _readNum(id));
     });
-    ['biz-revenue','rental-income'].forEach(function (id) { ord += _readNum(id); });
+    ['rental-income'].forEach(function (id) { ord += _readNum(id); });
     return ord;
+  }
+  function _recurringSeIncome() {
+    var biRad = document.querySelector('input[name="business-income-type"]:checked');
+    var biType = biRad ? biRad.value : null;
+    return (biType === 'se' || biType === 'k1-partnership-gp')
+      ? Math.max(0, _readNum('business-income-amount')) : 0;
+  }
+  function _recurringQualDiv() {
+    return Math.max(0, _readNum('qualified-dividends'));
   }
 
   // Compute a baseline for a given absolute year using the form's
@@ -83,16 +97,21 @@
     var ord    = _recurringOrdinary() * _inflF;
     var stGain = Math.max(0, _readNum('short-term-gain'));
     var wages  = Math.max(0, _readNum('w2-wages')) * _inflF;
-    var seInc  = Math.max(0, _readNum('se-income')) * _inflF;
-    // Passive investment income (rental + dividend) inflated alongside ord.
-    // stGain is asset-specific, not inflated (no recurring annual gain to grow).
-    var nIIT_base = stGain
+    var seInc  = _recurringSeIncome() * _inflF;
+    var qualDiv = _recurringQualDiv() * _inflF;
+    // Passive investment income (rental + dividend + interest)
+    // inflated alongside ord. stGain is asset-specific, not inflated
+    // (no recurring annual gain to grow). Qualified-div goes in
+    // separately for LTCG bracket routing AND NIIT base.
+    var nIIT_base = stGain + qualDiv
                   + Math.max(0, _readNum('rental-income'))  * _inflF
                   + Math.max(0, _readNum('dividend-income')) * _inflF
+                  + Math.max(0, _readNum('interest-income')) * _inflF
                   + recap;
     var fedB = (typeof root.computeFederalTaxBreakdown === 'function')
       ? root.computeFederalTaxBreakdown(ord, year, status, {
           longTermGain: 0, shortTermGain: stGain, depreciationRecapture: recap,
+          qualifiedDividend: qualDiv,
           investmentIncome: nIIT_base, wages: wages, seIncome: seInc
         })
       : null;
@@ -165,6 +184,19 @@
     var entry = summary.entries.find(function (e) { return e.type === chosen; });
     if (!entry || !entry.cfg) return null;
     var ecfg = entry.cfg;
+    // Reflect the optimizer's partial-investment dial-back: run the engine
+    // at the DEPLOYED capital, not full available, so the carryover-loss and
+    // per-year numbers match the chosen (dialed-back) strategy shown
+    // everywhere else. Without this Tab 7 showed the full-deployment
+    // carryforward (e.g. $644,676) instead of the actual dialed-back one
+    // ($387,616) — the optimizer holds capital back precisely to shed that
+    // unused loss (2026-05-28).
+    var _pd = entry._partialDeploy;
+    if (_pd && Number.isFinite(Number(_pd.deployed)) &&
+        Math.round(Number(_pd.deployed)) !== Math.round(Number(ecfg.availableCapital) || 0)) {
+      var _dep = Math.max(0, Math.round(Number(_pd.deployed)));
+      ecfg = Object.assign({}, ecfg, { availableCapital: _dep, investment: _dep, investedCapital: _dep });
+    }
     if (typeof root.rettFlavorEngineCfg === 'function') {
       try { ecfg = root.rettFlavorEngineCfg(ecfg); } catch (e) { /* */ }
     }
@@ -211,7 +243,7 @@
   }
 
   function _stratLabel(t) {
-    if (t === 'A') return 'Normal Sale';
+    if (t === 'A') return 'Traditional Sale';
     if (t === 'B') return 'Installment Sale';
     if (t === 'C') return 'Structured Installment Sale';
     return null;
@@ -255,7 +287,8 @@
   // TAX side — split federal into ordinary / LT cap gains / recap /
   // AMT / NIIT / addl Medicare / SE, plus state, plus total. Hide
   // zero rows except the canonical four (ord, LT, state, total).
-  function _renderTaxRows(b) {
+  function _renderTaxRows(b, opts) {
+    opts = opts || {};
     var fedOrd = Number(b.ordinaryTax) || 0;
     var fedLt  = Number(b.ltTax)       || 0;
     var fedRcp = Number(b.recapTax)    || 0;
@@ -267,10 +300,13 @@
     var fedTotal = (b.federalIncomeTax != null) ? Number(b.federalIncomeTax) : (fedOrd + fedRcp + fedLt + amt);
     var total = (b.total != null) ? Number(b.total) : (fedTotal + niit + addmed + setax + state);
 
+    // opts.forceRecap — show the §1250 recap line even when it's $0
+    // (used by the Results column so the CPA sees the strategy drove
+    // recapture tax from $X down to $0 via Brooklyn absorption).
     var rows = [
       ['Ordinary income tax',     fedOrd, true],
       ['LT capital gains tax',    fedLt,  true],
-      ['Depreciation recap tax',  fedRcp, false],
+      ['Depreciation recap tax',  fedRcp, !!opts.forceRecap],
       ['AMT top-up',              amt,    false],
       ['NIIT (3.8%)',             niit,   false],
       ['Additional Medicare',     addmed, false],
@@ -283,6 +319,53 @@
       return '<tr><td>' + r[0] + '</td><td class="temp-amt">' + _fmt(amt2) + '</td></tr>';
     }).join('') +
       '<tr class="temp-total-row"><td><strong>Total tax</strong></td><td class="temp-amt"><strong>' + _fmt(total) + '</strong></td></tr>';
+  }
+
+  // RESULTS side — the post-strategy tax breakdown (row.withStrategy).
+  // Same line-by-line shape as the baseline tax breakdown (federal
+  // ordinary / LT cap gains / §1250 recap / AMT / NIIT / Add'l Medicare
+  // / SE / state / total) but reflecting the strategy's effect. Adds a
+  // "Tax saved vs baseline" line comparing to the baseline total so the
+  // CPA sees the year's net tax movement. withStrategy carries the same
+  // keys baseline does (verified) so _renderTaxRows works directly.
+  function _renderResultsCell(withStrategy, baseline) {
+    if (!withStrategy) return '<div class="temp-baseline-empty">No result data.</div>';
+    // Income RECOGNIZED under the strategy this year — same recognition
+    // event as the baseline column (LT gain recognized + §1250 recap),
+    // so the CPA sees that the $200K recapture and the LT gain are still
+    // recognized even though the strategy's Brooklyn losses drive the
+    // TAX on them down. Pulled from baseline._incomes (set by
+    // _deriveIncomesForEngineRow in the render loop).
+    var incomeRows = '';
+    if (baseline && baseline._incomes) {
+      incomeRows = _renderIncomeRows(baseline._incomes, 0);
+    }
+    // Force the recap line to show when the baseline had recapture tax,
+    // so the CPA sees it drop to $0 (or whatever residual) under the
+    // strategy rather than the row silently disappearing.
+    var baselineHadRecap = baseline && Number(baseline.recapTax) > 0;
+    var taxRows = _renderTaxRows(withStrategy, { forceRecap: baselineHadRecap });
+    var savedRow = '';
+    if (baseline && baseline.total != null && withStrategy.total != null) {
+      var saved = Number(baseline.total) - Number(withStrategy.total);
+      if (Math.abs(saved) > 0.5) {
+        var cls = saved >= 0 ? 'temp-result-saved-row' : 'temp-result-saved-row temp-result-saved-neg';
+        var label = saved >= 0 ? 'Tax saved vs baseline' : 'Tax increase vs baseline';
+        savedRow = '<tr class="' + cls + '"><td><strong>' + label + '</strong></td>' +
+          '<td class="temp-amt"><strong>' + _fmt(Math.abs(saved)) + '</strong></td></tr>';
+      }
+    }
+    return '' +
+      '<table class="temp-baseline-table">' +
+        '<tbody>' +
+          (incomeRows
+            ? '<tr class="temp-section-head"><td colspan="2">Income recognized (with strategy)</td></tr>' + incomeRows
+            : '') +
+          '<tr class="temp-section-head"><td colspan="2">Tax with strategy applied</td></tr>' +
+          taxRows +
+          savedRow +
+        '</tbody>' +
+      '</table>';
   }
 
   function _renderBaselineCell(b, carryIn, carryOut) {
@@ -803,6 +886,10 @@
         '<div class="temp-year-activity">' +
           '<div class="temp-year-head temp-year-head-muted">Strategy activity</div>' +
           _renderActivityCell(row, i, chosen, cfg, fundedSupps, feeScale, lowerBracketBenefit) +
+        '</div>' +
+        '<div class="temp-year-results">' +
+          '<div class="temp-year-head temp-year-head-result">Results &mdash; with strategy</div>' +
+          _renderResultsCell(row.withStrategy || row.baseline, row.baseline) +
         '</div>' +
         _renderWithdrawalCell(row, year, cfg) +
       '</div>';

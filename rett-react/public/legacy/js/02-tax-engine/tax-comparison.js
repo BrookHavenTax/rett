@@ -37,33 +37,25 @@
 // Strategy B (Seller Finance §453, sets maxRecognitionYearIndex) bypass
 // because they don't route through the MetLife product.
 // =============================================================================
+// Per advisor 2026-05-26: structured sale is locked to a single 3-year
+// 40/40/20 schedule. The prior 4-year+ branch (50/30/10/10) was
+// removed since the advisor confirmed the product offering is 3-year
+// only. Code paths still accept durationMonths so saved cases with
+// e.g. 48mo aren't rejected outright - they're coerced to 36mo math.
 var METLIFE_RULES = {
-      // Default rule (used when term-years can't be determined). Matches
-      // the looser 4-yr+ caps so it doesn't accidentally over-constrain.
-      firstPaymentMaxPct:        0.50,
+      firstPaymentMaxPct:        0.40,
       firstTwoPaymentsMaxPct:    0.80,
-      lastPaymentMinPct:         0.10
+      lastPaymentMinPct:         0.20
 };
 
-// Returns the rule object for a given structured-sale duration in months.
-// 36mo → 3-yr rule, 48+ → 4-yr+ rule. The 80% combined Y1+Y2 cap is
-// universal (same for both terms).
 function _metlifeRulesForTerm(durationMonths) {
-      var months = Number(durationMonths) || 0;
-      if (months > 0 && months < 48) {
-            // 3-year (36mo) — tighter Y1 cap + higher last-floor because
-            // there are only 3 payments to absorb 100% of gain.
-            return {
-                  firstPaymentMaxPct:     0.40,
-                  firstTwoPaymentsMaxPct: 0.80,
-                  lastPaymentMinPct:      0.20
-            };
-      }
-      // 4-year and longer terms.
+      // Always return the canonical 3-year rule. durationMonths is
+      // accepted for backwards compatibility but ignored - all
+      // structured sales are 3-year.
       return {
-            firstPaymentMaxPct:     0.50,
+            firstPaymentMaxPct:     0.40,
             firstTwoPaymentsMaxPct: 0.80,
-            lastPaymentMinPct:      0.10
+            lastPaymentMinPct:      0.20
       };
 }
 
@@ -166,40 +158,77 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
       // Did Nothing" — which has always summed recapture into the
       // ordinary stack.
       const idx = yr - cfg.year1;
-      // When no per-year override is supplied, scale ordinary income by
-      // the same inflation factor the engine uses for bracket projection
-      // (2% per year past base). Without this, brackets inflate but
-      // income stays flat — clients silently drift into a lower
-      // effective marginal rate, understating baseline tax (and thus
-      // overstating savings) by ~10% over a 5-year horizon.
-      // Read inflation rate from TAX_DATA directly — keeping a literal
-      // 0.02 fallback silently drifts from the data file if it's ever
-      // tuned. If TAX_DATA isn't loaded, fall through to 0 so the math
-      // breaks loudly rather than silently using a stale rate.
-      const _infl = (typeof TAX_DATA !== 'undefined' && TAX_DATA && typeof TAX_DATA.inflationRate === 'number')
-            ? TAX_DATA.inflationRate
-            : ((typeof window !== 'undefined' && window.TAX_DATA && typeof window.TAX_DATA.inflationRate === 'number')
-                  ? window.TAX_DATA.inflationRate : 0);
-      const _scaledBaseOrd = (cfg.baseOrdinaryIncome || 0) * Math.pow(1 + _infl, Math.max(0, idx));
-      const _scaledBaseWages = (cfg.wages || 0) * Math.pow(1 + _infl, Math.max(0, idx));
+      // Multi-year projection assumption (advisor 2026-05-27): income is
+      // held FLAT at year-1 values across the projection horizon. Only
+      // the tax BRACKETS / LTCG breakpoints inflate 2%/yr (handled
+      // separately in tax-calc-federal via _yearProjectionFactor). This
+      // is the advisor's stated model — a single explicit assumption.
+      //
+      // Prior versions also inflated income 2%/yr to keep the effective
+      // marginal rate constant in real terms; that was dropped because
+      // it (a) wasn't the intended assumption and (b) pushed wages above
+      // the FROZEN $250K Additional-Medicare threshold, making that
+      // surcharge appear and grow in later years. With flat income the
+      // surcharge stays at its year-1 value. Note: flat income against
+      // inflating brackets lets the same income drift into wider
+      // brackets, so baseline tax eases slightly each year — but this
+      // applies identically to the baseline and the with-strategy path,
+      // so the net benefit (the savings) is unaffected.
+      const _scaledBaseOrd = (cfg.baseOrdinaryIncome || 0);
+      const _scaledBaseWages = (cfg.wages || 0);
       const ordOverride = (cfg.ordinaryByYear   && cfg.ordinaryByYear[idx]   != null) ? cfg.ordinaryByYear[idx]   : _scaledBaseOrd;
       // Q2 multi-property holding-period: shortTermPropertyGain captures
       // any property the user marked as held < 1 year. ST property gain
       // is recognized in the sale year only (idx === 0); LT-flavored
       // strategy deferrals don't apply to ST gain.
       const _stOverride = (cfg.shortGainByYear && cfg.shortGainByYear[idx] != null) ? cfg.shortGainByYear[idx] : (cfg.baseShortTermGain || 0);
-      const shortOverride = _stOverride + ((idx === 0) ? (cfg.shortTermPropertyGain || 0) : 0);
+      // Additional Funds (Section 03): the proportional gain triggered by
+      // liquidating securities to fund the strategy is a ONE-TIME event,
+      // recognized in the sale year only (idx === 0) — like
+      // shortTermPropertyGain. Signed (a portfolio position can be a loss).
+      const _addY0ST = (idx === 0) ? (Number(cfg.additionalY0ShortGain) || 0) : 0;
+      const _addY0LT = (idx === 0) ? (Number(cfg.additionalY0LongGain)  || 0) : 0;
+      const shortOverride = _stOverride + ((idx === 0) ? (cfg.shortTermPropertyGain || 0) : 0) + _addY0ST;
       // Q7: baseLongTermGain mirrors baseShortTermGain — non-property LT
       // income (stocks held >1yr, crypto, etc.) recurs each year. Engine
       // falls back to it when longGainByYear[idx] is not set.
       const longOverride  = (cfg.longGainByYear  && cfg.longGainByYear[idx]  != null) ? cfg.longGainByYear[idx]  : (cfg.baseLongTermGain || 0);
-      const ltAmt = (gainTakenThisYear != null ? gainTakenThisYear : 0) + longOverride;
+      const ltAmt = (gainTakenThisYear != null ? gainTakenThisYear : 0) + longOverride + _addY0LT;
       // Passive / portfolio income inside ordinary (rental + non-qualified
       // div / interest) is also part of the §1411 NIIT base. Inflated
       // alongside baseOrdinaryIncome so high-income clients with heavy
       // rental income pay the right NIIT every year.
-      const _scaledInvOrd = (cfg.investmentIncomeOrdinary || 0) * Math.pow(1 + _infl, Math.max(0, idx));
+      const _scaledInvOrd = (cfg.investmentIncomeOrdinary || 0);
       const _recap = Math.max(0, Number(recaptureThisYear) || 0);
+      // Qualified dividends — recurring annual income, inflation-scaled
+      // alongside other recurring streams. IRC §1(h)(11): preferential
+      // LTCG rates, stacks on ordinary for bracket placement, in NIIT
+      // base. Engine path: scenario.qualifiedDividend → opts.qualified-
+      // Dividend → computeFederalTaxBreakdown ltAmount + investment-
+      // Income. Wired 2026-05-27.
+      const _scaledQualDiv = (cfg.qualifiedDividend || 0);
+      // Social Security (gross). IRC §86 — taxable portion derived via
+      // the provisional-income worksheet. The taxable portion taxes at
+      // ordinary brackets but does NOT enter the NIIT base (Form 8960
+      // line 1 excludes SS) and does NOT enter the Additional Medicare
+      // wage base (SS is not earned income). Provisional includes the
+      // year's other ordinary income + capital gains + 50% of gross SS.
+      // SS itself is COLA-indexed, scale gross by the same inflation
+      // factor as wages so multi-year projections are coherent.
+      const _scaledGrossSS = (cfg.socialSecurityBenefits || 0);
+      var _taxableSS = 0;
+      if (_scaledGrossSS > 0 && typeof _computeTaxableSocialSecurity === 'function') {
+            var _ssRecapForProv = Math.max(0, Number(recaptureThisYear) || 0);
+            // §86 provisional income = AGI-excluding-SS + tax-exempt
+            // interest + 50% gross SS. ordOverride (baseOrdinaryIncome)
+            // ALREADY contains interest + dividends + rental, so
+            // _scaledInvOrd must NOT be added again — doing so
+            // double-counted portfolio income and could push low-income
+            // filers into a higher §86 inclusion tier (50%→85%).
+            var _otherAgi = ordOverride + _scaledQualDiv
+                  + Math.max(0, shortOverride) + ltAmt + _ssRecapForProv;
+            _taxableSS = _computeTaxableSocialSecurity(_scaledGrossSS, _otherAgi, 0, cfg.filingStatus);
+      }
       return {
             year: yr,
             status: cfg.filingStatus,
@@ -208,11 +237,26 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             // field) so the engine can apply the §1250 25% cap. Adding
             // it to ordinaryIncome would silently route it through
             // full marginal rates.
-            ordinaryIncome: ordOverride,
+            // Taxable SS (§86) folds into ordinary income for bracket
+            // placement. Not added to investmentIncome (excluded from
+            // NIIT). State base inherits this via _ord pass-through in
+            // _yearTaxes - acceptable for GA-first audience, P1 to
+            // refine per-state SS exemption.
+            ordinaryIncome: ordOverride + _taxableSS,
             depreciationRecapture: _recap,
             shortTermGain: shortOverride,
             longTermGain: ltAmt,
-            qualifiedDividend: 0,
+            qualifiedDividend: _scaledQualDiv,
+            // SE-eligible portion of business income. Engine applies
+            // 12.4% SS (capped at SSA wage base, net of W-2) + 2.9%
+            // Medicare (uncapped) on (seIncome × 0.9235). Also folds
+            // into the Additional Medicare wage base via
+            // computeFederalTaxBreakdown's internal wage = w2 +
+            // (seIncome × 0.9235). Scaled by inflation alongside
+            // wages so multi-year projections stay coherent.
+            seIncome: (cfg.seIncome || 0),
+            _taxableSocialSecurity: _taxableSS,
+            _grossSocialSecurity:   _scaledGrossSS,
             // NIIT base = LT gain + ST gain + §1250 unrecaptured gain +
             // passive ordinary (rental / non-qualified div / interest).
             // Per §1411, depreciation recapture from a property sale IS
@@ -223,7 +267,7 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             // netting in _applyLossesToScenario / _applyLossesWithSTCfCap
             // now subtracts offset amounts from this same base, keeping
             // ledger consistent.
-            investmentIncome: ltAmt + Math.max(0, shortOverride) + _recap + _scaledInvOrd,
+            investmentIncome: ltAmt + Math.max(0, shortOverride) + _recap + _scaledInvOrd + _scaledQualDiv,
             // Additional-Medicare wage base. cfg.wages (W-2 + SE only)
             // when supplied — scaled by the same inflation factor as
             // baseOrdinaryIncome so wages grow alongside brackets.
@@ -232,6 +276,62 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             wages: (cfg.wages != null ? _scaledBaseWages : ordOverride),
             itemized: cfg.itemized || 0
       };
+}
+
+// Public Y0 baseline snapshot helper. Returns the income shape every
+// "did nothing" tax reader (baseline-table.js, calc-oil-gas.js,
+// calc-delphi.js, temp-page-render.js, supplementals) needs, derived
+// from the live form via collectInputs() and the engine's own
+// _baseScenarioForYear. Single source of truth so the new income
+// fields (interest, qualified-div, §86 SS, business-income SE) flow
+// to every downstream consumer automatically.
+//
+// Returns null when collectInputs is unavailable. Returned shape:
+//   {
+//     cfg, scenario,       // the underlying cfg + full scenario object
+//     year, status, state,
+//     ordTotal,            // ordinary income incl. §86 taxable SS
+//     recap,               // §1250 depreciation recapture (Y0 ordinary)
+//     stGain, ltGain,      // property-sale derived + recurring income
+//     qualifiedDividend,   // recurring qualified div (preferential rate)
+//     niitBase,            // §1411 NIIT base (inv income)
+//     wages,               // W-2 only — engine folds SE × 0.9235 in
+//     seInc,               // SE-eligible portion (drives §1401 SE tax)
+//     taxableSS, grossSS   // §86 derivation values for admin display
+//   }
+function rettY0BaselineSnapshot() {
+      if (typeof window === 'undefined' || typeof window.collectInputs !== 'function') return null;
+      var cfg;
+      try { cfg = window.collectInputs(); } catch (e) { return null; }
+      if (!cfg) return null;
+      var year = cfg.year1 || (new Date()).getFullYear();
+      var sp = Math.max(0, Number(cfg.salePrice) || 0);
+      var cb = Math.max(0, Number(cfg.costBasis) || 0);
+      var ad = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
+      var stpg = Math.max(0, Number(cfg.shortTermPropertyGain) || 0);
+      var ltGainProperty = Math.max(0, sp - cb - ad - stpg);
+      var recapture = ad;
+      var scenario = _baseScenarioForYear(cfg, year, ltGainProperty, recapture);
+      return {
+            cfg: cfg,
+            scenario: scenario,
+            year: year,
+            status: cfg.filingStatus || 'mfj',
+            state: cfg.state || 'NONE',
+            ordTotal: scenario.ordinaryIncome,
+            recap: scenario.depreciationRecapture,
+            stGain: scenario.shortTermGain,
+            ltGain: scenario.longTermGain,
+            qualifiedDividend: scenario.qualifiedDividend || 0,
+            niitBase: scenario.investmentIncome,
+            wages: scenario.wages,
+            seInc: scenario.seIncome || 0,
+            taxableSS: scenario._taxableSocialSecurity || 0,
+            grossSS:   scenario._grossSocialSecurity || 0
+      };
+}
+if (typeof window !== 'undefined') {
+      window.rettY0BaselineSnapshot = rettY0BaselineSnapshot;
 }
 
 function _yearTaxes(scenario) {
@@ -247,30 +347,50 @@ function _yearTaxes(scenario) {
       const _rcp = Number(_s.depreciationRecapture) || 0;
       const _inv = (_s.investmentIncome != null) ? Number(_s.investmentIncome) : (_lt + _qd);
       const _w   = (_s.wages != null) ? Number(_s.wages) : 0;
+      const _se  = Number(_s.seIncome) || 0;
       const _itm = Number(_s.itemized) || 0;
       const _yr  = _s.year != null ? _s.year : (new Date()).getFullYear();
       const _stat = _s.status || 'single';
       const _state = _s.state || 'NONE';
+      // ST gain is passed as a SIGNED opt (not folded into ordinary) so
+      // the federal §1211/§1212 netting handles a short-term capital
+      // LOSS correctly: it nets against gains, offsets up to $3K/yr of
+      // ordinary, and carries the rest forward. (LT was already a signed
+      // opt.) For positive ST this is identical to the old `_ord + _st`
+      // folding — the engine re-adds shortTermGain to the ordinary stack
+      // internally (ordinaryGross = ordinaryIncome + shortTermGain + recap).
       const fed   = computeFederalTaxBreakdown(
-            _ord + _st,
+            _ord,
             _yr, _stat,
-            { longTermGain: _lt, qualifiedDividend: _qd,
+            { longTermGain: _lt, shortTermGain: _st, qualifiedDividend: _qd,
               depreciationRecapture: _rcp,
               investmentIncome: _inv, wages: _w,
+              seIncome: _se,
               itemized: _itm });
       // State tax sees recapture as ordinary income — most states do
       // NOT honor the federal §1250 25% cap. Pass recapture into the
       // ordinary base for state calc so state revenue is right.
-      // Pass _ordOffsetApplied so disconforming states (NJ) can add
-      // back the federal §1211 ordinary offset that was already baked
-      // into _ord — they don't conform to the federal $3K offset rule
-      // (NJSA 54A:5-2 categorizes income; capital losses can't offset
-      // ordinary in NJ).
+      //
+      // Capital losses (negative ST/LT) conform at the state level too
+      // (GA-first): use the federal-NETTED positive gains for the state
+      // base, and reduce the state ordinary base by the federal §1211
+      // capital-loss ordinary offset. The Brooklyn ordinary offset is
+      // ALREADY baked into _ord upstream (_applyLossesWithSTCfCap), so it
+      // shows up without re-subtracting.
+      //
+      // lossOrdOffsetApplied carries BOTH offsets (Brooklyn + capital
+      // loss) so disconforming states (NJ) add both back — capital
+      // losses can't offset ordinary in NJ (NJSA 54A:5-2).
       const _ordOffApplied = Number(_s._ordOffsetApplied) || 0;
+      const _capLossOff = Number(fed && fed.lossOrdOffsetApplied) || 0;
+      const _netLTraw = Number(fed && fed.netLongTermGain);
+      const _netSTraw = Number(fed && fed.netShortTermGain);
+      const _stateLT = Number.isFinite(_netLTraw) ? _netLTraw : Math.max(0, _lt);
+      const _stateST = Number.isFinite(_netSTraw) ? _netSTraw : Math.max(0, _st);
       const stateTax = computeStateTax(
-            _ord + _st + _rcp + _lt + _qd,
+            (_ord - _capLossOff) + _rcp + _qd + _stateLT + _stateST,
             _yr, _state, _stat,
-            { itemized: _itm, longTermGain: _lt, lossOrdOffsetApplied: _ordOffApplied });
+            { itemized: _itm, longTermGain: _stateLT, lossOrdOffsetApplied: _ordOffApplied + _capLossOff });
       // Schema convention (don't drift):
       //   ordinaryTax / recapTax / ltTax / amt — components of the
       //     income-tax calculation (Form 1040 line 16-equivalent).
@@ -321,38 +441,33 @@ function _applyLossesWithSTCfCap(scenario, lossAvailable, capOrdinary) {
       const out = Object.assign({}, scenario);
       let loss = lossAvailable;
 
-      // IRC §1(h) loss ordering — capital losses absorb gain buckets
-      // highest-rate first (taxpayer-favorable):
+      // Loss ordering — Brooklyn short-term capital losses absorb gain
+      // buckets highest-rate first (taxpayer-favorable):
       //   1) ST gain (ordinary rates, up to 37%)
-      //   2) §1250 unrecaptured gain (capped at 25%)
-      //   3) Regular LT gain (0/15/20%)
-      //   4) Ordinary income (capped at $3K / $1.5K MFS)
+      //   2) Regular LT gain (0/15/20%)
+      //   3) Ordinary income (capped at $3K / $1.5K MFS)
+      //
+      // Depreciation recapture is INTENTIONALLY NOT in this list
+      // (advisor 2026-05-27): the "accelerated depreciation recapture"
+      // input represents §1250(a)-style recapture recognized as ORDINARY
+      // income in the year of sale per §453(i). It is not a capital gain
+      // bucket Brooklyn's capital losses can offset — it stays fully
+      // taxed at its (25%-capped) rate regardless of the loss generated.
+      // Previously this function had a Step 2 that reduced
+      // depreciationRecapture by the loss, which zeroed the recapture
+      // tax on Tab 7 even with $200K of recapture present — wrong.
 
       // Step 1: ST gain. ST cap gain is investment income for §1411 NIIT
-      // purposes (per the same logic as recap and LT below), so the NIIT
-      // base must shrink by the absorbed amount alongside shortTermGain.
-      // Bug fix 2026-05-06 (verified by targeted-loss-application tests):
-      // omitting this caused the 3.8% NIIT savings on Brooklyn-absorbed
-      // ST gain to silently drop. Symptom was T3_ST_first_h1 ratio
-      // landing at 0.370 (federal 37% only) instead of expected 0.408
-      // (37% + 3.8% NIIT). Steps 2 (recap) and 3 (LT) already shrink
-      // investmentIncome correctly.
+      // purposes (per the same logic as LT below), so the NIIT base must
+      // shrink by the absorbed amount alongside shortTermGain.
       const offsetShort = Math.min(out.shortTermGain || 0, loss);
       out.shortTermGain = (out.shortTermGain || 0) - offsetShort;
       out.investmentIncome = Math.max(0, (out.investmentIncome || 0) - offsetShort);
       loss -= offsetShort;
 
-      // Step 2: §1250 unrecaptured gain (recapture). Still a capital gain
-      // for §1211 netting purposes, just rate-capped at 25% downstream.
-      // NIIT base also shrinks since recapture is investment income.
-      if (loss > 0) {
-            const offsetRecap = Math.min(out.depreciationRecapture || 0, loss);
-            out.depreciationRecapture = (out.depreciationRecapture || 0) - offsetRecap;
-            out.investmentIncome = Math.max(0, (out.investmentIncome || 0) - offsetRecap);
-            loss -= offsetRecap;
-      }
-
-      // Step 3: LT gain (the recognized property gain in year R).
+      // Step 2: LT gain (the recognized property gain in year R). Note
+      // recapture is skipped — capital losses flow straight from ST gain
+      // to LT gain, leaving the ordinary recapture untouched.
       if (loss > 0) {
             const offsetLong = Math.min(out.longTermGain || 0, loss);
             out.longTermGain = (out.longTermGain || 0) - offsetLong;
@@ -678,12 +793,247 @@ function unifiedTaxComparison(cfg, opts) {
       const _availTotal = (cfg.investment != null) ? Math.max(0, Number(cfg.investment))
                        : (cfg.investedCapital != null ? Math.max(0, Number(cfg.investedCapital)) : 0);
       const _basisFull  = Math.max(0, cfg.costBasis || 0);
-      const basisCash   = isDeferred ? Math.min(_basisFull, _availTotal) : _availTotal;
+      // Strategy C model (advisor 2026-05-26):
+      //   The seller can park UP TO totalLT inside the MetLife product
+      //   - cost basis and depreciation recapture CANNOT be parked
+      //   (basis is principal recovery; recap is §1250 ordinary at Y1).
+      //   The seller can choose to park LESS than totalLT, taking the
+      //   remainder as Y1 LT closing cash. Example: $900K basis + $3M
+      //   gain + $1M availableCapital -> park $2.9M in product, $100K
+      //   of gain comes out as closing cash + $900K basis = $1M Y1
+      //   Brooklyn deployment.
+      //
+      //   Optimal strategy: minimize parkedGain so Y1 Brooklyn deploys
+      //   as much availableCapital as possible, since Y1 has the
+      //   highest loss rate (year-0 tranches) and absorbs both the
+      //   recapture (ordinary) and the unparked gain (LT) immediately.
+      //
+      //   Prior model: basisCash = min(basis, avail), gain auto-parked
+      //   100% - which left Y1 Brooklyn at $0 for low-basis sales and
+      //   force-recognized everything at maturity with no offset.
+      // Tier-jumping combo list MUST be set up before the tranche
+      // creation below, because the Y1 tranche tags itself with the
+      // combo its cumulative deposit qualifies for. Schwab-combo cfgs
+      // only - non-Schwab cfgs leave _tieringCombos empty and the
+      // tranche-tag falls back to null (engine uses the legacy curve).
+      const combo = (cfg.comboId && typeof getSchwabCombo === 'function')
+            ? getSchwabCombo(cfg.comboId) : null;
+      var _tieringCombos = (function () {
+            if (!combo || typeof listSchwabCombosForStrategy !== 'function') return [];
+            var stratKey = combo.strategyKey;
+            var userCap = combo.leverage;
+            var all = listSchwabCombosForStrategy(stratKey) || [];
+            return all
+                  .filter(function (c) { return c && c.leverage <= userCap + 1e-6; })
+                  .sort(function (a, b) { return a.minInvestment - b.minInvestment; });
+      })();
+      function _pickComboForCumulative(cumulative) {
+            if (!_tieringCombos.length) return combo;
+            var picked = _tieringCombos[0];
+            for (var k = 0; k < _tieringCombos.length; k++) {
+                  if (cumulative + 0.01 >= _tieringCombos[k].minInvestment) picked = _tieringCombos[k];
+            }
+            return picked;
+      }
+      // Smallest combo minimum = the account-opening floor. The first
+      // Brooklyn deposit must clear this for the account to open.
+      var _smallestComboMin = _tieringCombos.length ? _tieringCombos[0].minInvestment : 0;
+
+      // Installment-sale mode (Strategy B, §453). Set via
+      // cfg.installmentPayments = N (1, 2, or 3). When active, the
+      // engine:
+      //   - Does NOT deploy a Y0 Brooklyn tranche (no closing-day cash;
+      //     buyer pays in installments starting Y1 Jan 1).
+      //   - Recognizes totalLT / N as LT gain each year for N years
+      //     starting at Y1. Equivalent to applying the §453 gross-profit
+      //     ratio to N equal payments of (salePrice - acceleratedDepr) / N.
+      //   - Creates a Brooklyn tranche each payment year sized to the
+      //     installment payment (basis + gain combined), capped by
+      //     remaining availableCapital.
+      //   - Recapture stays as Y0 ordinary income per §453(i).
+      //   - Bypasses unparked-Y1-gain logic and MetLife schedule caps;
+      //     those are Strategy C concerns.
+      const _installmentPayments = (cfg.installmentPayments | 0) || 0;
+      const _isInstallment = isDeferred && _installmentPayments >= 1;
+      // Installment schedule weights (advisor 2026-05-27): §453 contracts
+      // don't require equal payments — buyer can pay e.g. 80% Y1 + 20%
+      // Y2. cfg.installmentScheduleWeights is an array of N positive
+      // weights summing to 1.0. When absent, the engine falls back to
+      // equal split (1/N per year). Auto-picker (_autoPickSection's B
+      // branch in projection-dashboard-render.js) sweeps weight space
+      // to find the highest-net allocation; engine just consumes the
+      // chosen weights. Each year's payment = (salePrice − recap) ×
+      // weight[i]; each year's recognized gain = totalLT × weight[i]
+      // (per §453 gross-profit ratio — the GP ratio is constant across
+      // payments, so applying the same weight to both the cash and the
+      // gain preserves the ratio mathematically).
+      function _weightForPaymentIdx(pIdx) {
+            var w = (Array.isArray(cfg.installmentScheduleWeights)
+                  && pIdx >= 0 && pIdx < cfg.installmentScheduleWeights.length
+                  && Number.isFinite(Number(cfg.installmentScheduleWeights[pIdx])))
+                  ? Math.max(0, Number(cfg.installmentScheduleWeights[pIdx]))
+                  : (_installmentPayments > 0 ? 1 / _installmentPayments : 0);
+            return w;
+      }
+
+      // Strategy C Y0 down-payment (advisor 2026-05-27): optional extra
+      // cash paid at closing beyond recap, recognized via §453 GP ratio.
+      // Solver-optimized — when D > 0, a Y0 Brooklyn tranche of size D
+      // opens to absorb the D × GP_ratio of Y0 LT gain. Capped at
+      // (salePrice − recap) so we never exceed the contract price.
+      const _y0DownPaymentRaw = Math.max(0, Number(cfg.y0DownPayment) || 0);
+      const _y0DownPaymentCap = Math.max(0, (cfg.salePrice || 0) - Math.max(0, recapture));
+      const _y0DownPayment = (_installmentPayments >= 1)
+            ? Math.min(_y0DownPaymentRaw, _y0DownPaymentCap)
+            : 0;
+
+      let basisCash, _unparkedY1Gain, _parkedGain;
+      // Recapture cash deployment (advisor 2026-05-27): §453(i) forces
+      // the §1250 recapture to be recognized Y0 as ordinary income, but
+      // the CASH received for that slice of the sale is available to
+      // deploy into Brooklyn at Y0. Pooling it with the optional Y0
+      // down-payment lets the Y0 Brooklyn loss offset the (unavoidable)
+      // recapture tax WITHOUT recognizing extra gain. If the pool clears
+      // the account-opening minimum it opens a Y0 tranche; otherwise it
+      // rolls into the first installment (Schwab can't open below min,
+      // so the cash deploys with the first qualifying deposit).
+      var _y0RollToFirstInstallment = 0;
+      if (_isInstallment) {
+            var _y0Pool = _y0DownPayment + Math.max(0, recapture);
+            if (_y0Pool >= _smallestComboMin && _y0Pool > 0) {
+                  basisCash = _y0Pool;
+            } else {
+                  basisCash = 0;
+                  _y0RollToFirstInstallment = _y0Pool;
+            }
+            _unparkedY1Gain = 0;
+            _parkedGain = 0;
+      } else if (isDeferred) {
+            const _basisAndRecap = _basisFull + Math.max(0, recapture);
+            const _maxUnparkable = Math.max(0, _availTotal - _basisAndRecap);
+            // parkRatio (0..1) controls how much of totalLT to leave inside
+            // the MetLife product vs unpark as Y0 closing cash. The auto-
+            // picker (_autoPickSection in projection-dashboard-render.js)
+            // sweeps parkRatio for Strategy C and picks the value that
+            // maximizes net benefit. When unset, fall back to legacy greedy
+            // behavior (unpark as much as availableCapital allows) so any
+            // direct caller of the engine that doesn't set parkRatio gets
+            // the previous semantics.
+            //
+            // Why this exists: hardcoded greedy was optimal for early-year
+            // sales (Y0 tranches absorb at near-full year-1 loss rate), but
+            // wrong for late-year sales (Y0 yfImpl multiplier collapses the
+            // loss rate to ~5% of full in December). Engine-time math is
+            // identical to before when parkRatio=0; the difference is that
+            // parkRatio=1.0 now correctly parks all gain so Y1+ tranches
+            // (full-year rates) absorb the recognition stream.
+            var _parkRatio = (cfg.parkRatio != null && Number.isFinite(Number(cfg.parkRatio)))
+                  ? Math.max(0, Math.min(1, Number(cfg.parkRatio)))
+                  : null;
+            if (_parkRatio === null) {
+                  _unparkedY1Gain = Math.min(totalLT, _maxUnparkable);
+            } else {
+                  var _desiredUnparked = totalLT * (1 - _parkRatio);
+                  _unparkedY1Gain = Math.min(_desiredUnparked, _maxUnparkable, totalLT);
+            }
+            _parkedGain = Math.max(0, totalLT - _unparkedY1Gain);
+            basisCash = Math.min(_availTotal, _basisAndRecap + _unparkedY1Gain);
+      } else {
+            basisCash = _availTotal;
+            _unparkedY1Gain = 0;
+            _parkedGain = 0;
+      }
+
+      // Installment-mode per-payment amount = (salePrice - accelDepr) ×
+      // weight[i]. The recap portion (accelDepr) is excluded from the
+      // contract price for LT-gain GP-ratio purposes because §453(i)
+      // fully recognizes it at Y0 separately. Per-payment amount now
+      // varies by weight (advisor 2026-05-27); the helper below returns
+      // the payment for payment index pIdx (0-based from startIdx).
+      const _installmentContractPrice = _isInstallment
+            ? Math.max(0, (cfg.salePrice || 0) - Math.max(0, recapture))
+            : 0;
+      // Y0 down-payment shrinks the cash available to the weight
+      // schedule — (contract − D) is what gets paid across the
+      // weighted installments. With D > 0 each Y1+ payment is smaller.
+      function _installmentPaymentForIdx(pIdx) {
+            return Math.max(0, _installmentContractPrice - _y0DownPayment) * _weightForPaymentIdx(pIdx);
+      }
+      // Cover-taxes-from-sale Y0-only tranche (advisor 2026-05-26):
+      // when the user toggles "cover taxes from sale", the tax-reserve
+      // money deploys to Brooklyn at Y0 alongside the rest of the sale
+      // proceeds. April 1 of Y1 (right before April 15 taxes are due)
+      // the reserve gets pulled out to pay taxes - modeled here as a
+      // Y0-only tranche (maxAgeInclusive: 0) so it generates Y0 loss +
+      // fees but contributes nothing in Y1+.
+      //
+      // Tax-reserve estimate: Y0-recognized LT gain + recapture, taxed
+      // at the engine's LT marginal estimate. Slight underestimate of
+      // recap (taxed at ordinary, not LT) but acceptable approximation -
+      // the alternative would be a circular dependency (tax depends on
+      // tranches, tranches depend on tax).
+      //
+      // Skipped in installment mode (Strategy B has no Y0 Brooklyn
+      // tranche to split).
+      // Cover-taxes (advisor 2026-05-28 revision): Strategy A no longer
+      // carves a Y0 tax-reserve tranche that "sells" Apr 1 Y1 — A's
+      // projection is Y0-only, so modeling a Y1 sale would introduce Y1
+      // tax implications we don't want to show. A now deploys its full Y0
+      // basis and the estimated sale tax is surfaced for DISPLAY only
+      // (computed in the recognition loop as withStrategy − no-sale tax).
+      // The installment strategies (B/C) cover taxes by setting aside each
+      // year's actual tax from that year's January payment (loop below).
+      var _taxReserveY0 = 0;
+      var _permanentBasis = basisCash;
+
       const tranches = [];
-      if (basisCash > 0) tranches.push({ capital: basisCash, startIdx: 0 });
-      // Reinvest budget = remaining "keep proceeds" room. Immediate
-      // mode always 0 because availableCapital is the sale-day deposit
-      // total — there's no separate proceeds stream to redeploy.
+      // Tier-jumping decision is made on TOTAL Y0 deployment (basisCash)
+      // since both tranches are physically deployed at the same time -
+      // cumulative deposit for tier purposes is the sum.
+      // Strategy C degeneracy detection (advisor 2026-05-26): when the
+      // deferred path's parkedGain is 0 (because availableCapital fully
+      // covers basis + recap + totalLT), Strategy C effectively becomes
+      // Strategy A - all gain recognized at Y0 via the unparkedY1 path,
+      // structured product holds nothing. Brooklyn's position serves no
+      // purpose after Y0. Cap the basis tranche at maxAgeInclusive=0 so
+      // Brooklyn fees stop after Y0 (matches reality - the seller would
+      // close the position). Brookhaven schedule is also truncated below.
+      var _y0OnlyDegeneracy = isDeferred && !_isInstallment && _parkedGain <= 0.01 && _unparkedY1Gain > 0;
+      // Brookhaven smoothing (advisor 2026-05-27): the strict
+      // degeneracy gate above created a fee cliff - at parkRatio
+      // exactly 0, Brookhaven = Y0 only; at parkRatio 0.001, Brookhaven
+      // jumped to 4 years of fees against a token parked balance. That
+      // produced a non-monotonic auto-pick across sale dates (40% gain
+      // row flipped A->B->C->B as the parkRatio optimum crossed 0/>0).
+      // Smooth it: when parkedGain is small relative to totalLT, scale
+      // Brookhaven Y1+ proportionally - full fees only when at least
+      // 5% of the gain is actually parked. Eliminates the cliff while
+      // preserving the original "no park = no Y1+ fees" intent.
+      var _parkedShare = (totalLT > 0) ? Math.max(0, Math.min(1, _parkedGain / totalLT)) : 0;
+      var _brookhavenY1PlusScale = Math.max(0, Math.min(1, _parkedShare / 0.05));
+      var _y0Combo = (basisCash > 0) ? _pickComboForCumulative(basisCash) : null;
+      function _y0TrancheTemplate(cap, isTaxReserve) {
+            var t = {
+                  capital: cap,
+                  startIdx: 0,
+                  comboId: _y0Combo ? _y0Combo.id : null,
+                  comboLossByYear: _y0Combo && _y0Combo.lossByYear ? _y0Combo.lossByYear.slice() : null,
+                  comboFeeRate: _y0Combo ? _comboFeeRate(_y0Combo) : null
+            };
+            // Tax-reserve tranche is always Y0-only. The permanent basis
+            // tranche also closes after Y0 when the no-park degeneracy
+            // fires (no future recognition activity to support).
+            if (isTaxReserve || (!isTaxReserve && _y0OnlyDegeneracy)) {
+                  t.maxAgeInclusive = 0;
+            }
+            return t;
+      }
+      if (_permanentBasis > 0) tranches.push(_y0TrancheTemplate(_permanentBasis, false));
+      if (_taxReserveY0  > 0) tranches.push(_y0TrancheTemplate(_taxReserveY0,  true));
+      // Reinvest budget = remaining "keep proceeds" room for redeploying
+      // installment payouts as they arrive. Immediate mode always 0
+      // (availableCapital is fully deployed at Y1). Deferred mode: any
+      // availableCapital not consumed by the Y1 tranche.
       let _remainingReinvestCap = isDeferred
             ? Math.max(0, _availTotal - basisCash)
             : 0;
@@ -696,7 +1046,14 @@ function unifiedTaxComparison(cfg, opts) {
       // entirely — first installment is always the Jan 1 immediately
       // following close, regardless of sale month.
       let startIdx, maturityIdx;
-      if (isDeferred) {
+      if (_isInstallment) {
+            // Installment-sale spans exactly N years starting Y1. Engine
+            // recognizes totalLT/N at each year - see recognition loop.
+            const startIdxRaw = Math.max(1, Math.min(horizon - 1,
+                  (cfg.recognitionStartYearIndex != null ? cfg.recognitionStartYearIndex : 1)));
+            startIdx    = startIdxRaw;
+            maturityIdx = Math.min(horizon - 1, startIdxRaw + _installmentPayments - 1);
+      } else if (isDeferred) {
             const startIdxRaw = Math.max(1, Math.min(horizon - 1,
                   (cfg.recognitionStartYearIndex != null ? cfg.recognitionStartYearIndex : 1)));
             const durationMonths = Number(cfg.structuredSaleDurationMonths) || 0;
@@ -719,15 +1076,25 @@ function unifiedTaxComparison(cfg, opts) {
             maturityIdx = 0;
       }
 
-      // Loss-rate function — shared. Same Schwab combo / proxy decay
-      // helper both engines call.
+      // Loss-rate function — shared baseline used when tier-jumping
+      // is unavailable (non-Schwab cfgs or saved cases without comboId).
+      // Schwab-combo cfgs override per-tranche below via _trancheLossRate.
       const lossRateForTrancheYear = _buildLossRateByAge(cfg, yfImpl) || function () { return 0; };
 
       // Fee rate — unified regression first, then combo-direct, then
       // tier interpolation, then 0. Mirrors the deferred-path's
       // fallback chain (already established as the source of truth).
-      const combo = (cfg.comboId && typeof getSchwabCombo === 'function')
-            ? getSchwabCombo(cfg.comboId) : null;
+      // Note: `combo` was hoisted above the tranche-setup block to
+      // support tier-jumping (which tags each tranche with its combo
+      // at creation time).
+      // fee-split.js is the single source of truth for Brooklyn fee
+      // rates (see fees.js docstring). Stale `combo.feeRate` was deleted
+      // from schwab-strategies.js 2026-05-27 — any combo passed in here
+      // must be resolved via brooklynFeeRateFor(longPct, shortPct).
+      function _comboFeeRate(c) {
+            if (!c || typeof window.brooklynFeeRateFor !== 'function') return 0;
+            return window.brooklynFeeRateFor(c.longPct, c.shortPct) || 0;
+      }
       const feeRate = (function () {
             var lp, sp;
             if (combo) { lp = combo.longPct; sp = combo.shortPct; }
@@ -738,7 +1105,6 @@ function unifiedTaxComparison(cfg, opts) {
             if (typeof window.brooklynFeeRateFor === 'function' && lp != null && sp != null) {
                   return window.brooklynFeeRateFor(lp, sp);
             }
-            if (combo) return combo.feeRate || 0;
             if (typeof brooklynInterpolate === 'function') {
                   var snap = brooklynInterpolate(cfg.tierKey || 'beta1', _defaultLeverage(cfg));
                   return snap ? (snap.feeRate || 0) : 0;
@@ -746,10 +1112,106 @@ function unifiedTaxComparison(cfg, opts) {
             return 0;
       })();
 
+      // Tier-migration (advisor 2026-05-27): when cumulative active
+      // capital crosses a higher combo's minimum, ALL active tranches
+      // migrate to that combo at their CURRENT age. The old model
+      // tagged each tranche at creation and never moved it; that
+      // understated losses for early tranches when later deposits
+      // pushed cumulative past a threshold.
+      //
+      // Example: $3M sale, 50/50 weights. Y1 deposit $1.5M opens at
+      // 145/45 (cum=$1.5M). Y2 deposit $1.5M brings cum to $3M
+      // → 200/100 threshold crossed. At Y2:
+      //   • Y1 tranche (now age 1): uses 200/100 age-1 (49%) instead
+      //     of 145/45 age-1 (27%).
+      //   • Y2 tranche (age 0): uses 200/100 age-0 (59%).
+      // Y1 tranche keeps its age (does NOT reset to age-0 just because
+      // it migrated combos — the position is still 1 year old).
+      //
+      // _yearCombo is recomputed at the start of each year loop based
+      // on PEAK cumulative active capital seen so far (one-way ratchet —
+      // a maturing tax-reserve tranche shouldn't downgrade existing
+      // tranches). Bounded by _tieringCombos which already enforces
+      // the user's selected combo as the cap.
+      var _peakCumulativeForTier = 0;
+      var _yearCombo = combo;
+
+      // Day-weighted 365-day tranche loss rate, WITH its components so the
+      // admin can show the staggering math (advisor 2026-05-28). Returns
+      // { rate, yf, prev, curr } where:
+      //   rate = blended effective rate used by the engine
+      //   yf   = day-weight applied to the CURRENT age-rate
+      //   prev = the prior age-rate (src[age-1]); curr = src[age]
+      // Composition: age 0 → curr·yf; age ≥ 1 → prev·(1−yf) + curr·yf.
+      function _trancheLossRateParts(t, age) {
+            // Use _yearCombo (dynamic) when tier-jumping is active.
+            // Falls back to the tranche's stored creation-time combo
+            // for the legacy non-tier-jumping path.
+            var src = (_tieringCombos.length && _yearCombo && _yearCombo.lossByYear)
+                  ? _yearCombo.lossByYear
+                  : (t && t.comboLossByYear) || null;
+            if (src && src.length) {
+                  var safeAge = Math.max(0, age | 0);
+                  var lastIdx = src.length - 1;
+                  // Day-weighted 365-day tranche aging (advisor 2026-05-27):
+                  // a tranche opened mid-year (the Y0 sale-close tranche,
+                  // yfImpl < 1) keeps its mid-year anniversary EVERY year,
+                  // so each tax year blends two adjacent age-rates by day
+                  // count — NOT just year 0. Example (Jul 1 open, yfImpl
+                  // ≈ 0.50): Y0 = 0.50·r0; Y1 = 0.50·r0 + 0.50·r1; Y2 =
+                  // 0.50·r1 + 0.50·r2; etc. Previously yfForThis was gated
+                  // to `safeAge === 0`, which snapped the tranche to Jan-1
+                  // alignment after Y0 and dropped ~half of the high
+                  // age-0 rate — understating mid-year tranche loss.
+                  // Tranches opening Jan 1 (yfImpl === 1, all installment
+                  // tranches) blend to the full integer-age rate, unchanged.
+                  var yfForThis = (t.startIdx === 0) ? yfImpl : 1;
+                  if (safeAge === 0) {
+                        var r0 = src[0] || 0;
+                        return { rate: r0 * yfForThis, yf: yfForThis, prev: 0, curr: r0 };
+                  }
+                  var prev = src[Math.min(safeAge - 1, lastIdx)] || 0;
+                  var curr = src[Math.min(safeAge, lastIdx)] || 0;
+                  return { rate: (1 - yfForThis) * prev + yfForThis * curr, yf: yfForThis, prev: prev, curr: curr };
+            }
+            var legacy = lossRateForTrancheYear(age);
+            return { rate: legacy, yf: 1, prev: legacy, curr: legacy };
+      }
+
+      function _trancheLossRate(t, age) { return _trancheLossRateParts(t, age).rate; }
+
+      function _trancheFeeRate(t) {
+            // Dynamic fee rate parallels loss-rate migration. Tranches
+            // migrating to a higher-leverage combo pay that combo's
+            // higher fee.
+            if (_tieringCombos.length && _yearCombo) {
+                  return _comboFeeRate(_yearCombo);
+            }
+            if (_tieringCombos.length && t && typeof t.comboFeeRate === 'number') {
+                  return t.comboFeeRate;
+            }
+            return feeRate;
+      }
+
       // Per-tranche tax carve-out for "cover taxes from sale" toggle
       // (deferred only). Rate held constant across the recognition
       // window — see _estimateGainTaxRate.
-      const _gainTaxRate = (isDeferred && cfg.coverTaxesFromSale) ? _estimateGainTaxRate(cfg) : 0;
+      //
+      // §453 installment carve exemption (advisor 2026-05-27): the
+      // original cover-taxes model carved an estimated tax slice from
+      // EVERY Brooklyn deposit (basis tranche AND each installment
+      // reinvest). That model is right for Strategies A and C, where
+      // the seller has cash at sale and is "reserving" some of it for
+      // the April tax bill before Brooklyn opens. For Strategy B (§453
+      // installment), the seller hasn't received any cash until the
+      // first installment arrives - they pay taxes naturally from each
+      // installment as it lands, without "reserving" anything in
+      // advance. Applying the carve to B reduced its effective
+      // Brooklyn deployment by ~30% per installment (over-conservative)
+      // and made B underperform A on cover-taxes-ON scenarios where
+      // it should have won. Verified before/after: B's net jumped from
+      // \$650K to \$945K on a canonical \$5M/\$250K Mar 2 HoH scenario.
+      const _gainTaxRate = (isDeferred && cfg.coverTaxesFromSale && !_isInstallment) ? _estimateGainTaxRate(cfg) : 0;
       const _reinvestFrac = 1 - _gainTaxRate;
 
       // Brookhaven advisory wrap — same schedule for both modes
@@ -757,8 +1219,48 @@ function unifiedTaxComparison(cfg, opts) {
       // soft-fail (the legacy immediate path does this via _noEngagement
       // zero-out below; we add the same gate at output time so we don't
       // emit fees we'll just zero anyway).
+      // Brookhaven fee schedule. When the Y0-only degeneracy fires
+      // (Strategy C w/ parkedGain=0 - all gain absorbed at Y0), the
+      // Brookhaven planning fee should also stop after Y0; otherwise
+      // the advisor charges for a multi-year wrap that never happens.
+      // Match the engine's basis-tranche maxAgeInclusive=0 behavior by
+      // zeroing the schedule past index 0.
       const brookhavenSchedule = (typeof brookhavenFeeSchedule === 'function' && !_belowMin)
-            ? brookhavenFeeSchedule(horizon, yfImpl)
+            ? (function () {
+                  var sched = brookhavenFeeSchedule(horizon, yfImpl);
+                  // Schedule shape: { perYear: [{setup, quarterly, total}], total }.
+                  // For the Y0-only degeneracy, zero perYear[i].total for i>=1
+                  // so downstream row reads (line 1210: bh.total) see 0.
+                  if (_y0OnlyDegeneracy && sched && sched.perYear && sched.perYear.length > 1) {
+                        var trimmedTotal = 0;
+                        for (var bi = 0; bi < sched.perYear.length; bi++) {
+                              if (bi >= 1) {
+                                    sched.perYear[bi] = { setup: 0, quarterly: 0, total: 0 };
+                              }
+                              trimmedTotal += sched.perYear[bi].total;
+                        }
+                        sched.total = trimmedTotal;
+                  } else if (isDeferred && !_isInstallment && !_y0OnlyDegeneracy &&
+                             _brookhavenY1PlusScale < 1 && sched && sched.perYear && sched.perYear.length > 1) {
+                        // Smoothing path: parkedGain > 0 but small. Scale
+                        // Brookhaven Y1+ by parkedShare/0.05. Setup fee
+                        // (engagement open) and Y0 quarterly stay full;
+                        // Y1+ quarterly+setup scaled.
+                        var scaledTotal = 0;
+                        for (var bj = 0; bj < sched.perYear.length; bj++) {
+                              if (bj >= 1) {
+                                    sched.perYear[bj] = {
+                                          setup: sched.perYear[bj].setup * _brookhavenY1PlusScale,
+                                          quarterly: sched.perYear[bj].quarterly * _brookhavenY1PlusScale,
+                                          total: sched.perYear[bj].total * _brookhavenY1PlusScale
+                                    };
+                              }
+                              scaledTotal += sched.perYear[bj].total;
+                        }
+                        sched.total = scaledTotal;
+                  }
+                  return sched;
+            })()
             : null;
 
       let stCF = 0;
@@ -766,8 +1268,52 @@ function unifiedTaxComparison(cfg, opts) {
       const rows = [];
       const recognitionSchedule = [];
 
+      // Cover-taxes-from-sale set-aside (advisor 2026-05-28). When ON, the
+      // installment strategies (B/C) hold back each year's ACTUAL sale tax
+      // from that year's January payment instead of reinvesting it — so the
+      // tax money never deploys to Brooklyn / generates no offsetting loss.
+      // Single-pass + sequential (no circularity): year i's January
+      // reinvestment is carved by the PRIOR year's sale tax (the tax due
+      // that April on last year's recognized gain). Sale tax = that year's
+      // with-strategy total tax − the no-sale baseline tax (isolates the
+      // sale's impact after Brooklyn offsets). _coverTaxSaleTaxA captures
+      // the Y0 figure for Strategy A's display-only readout.
+      var _coverTax = !!cfg.coverTaxesFromSale;
+      var _priorYearSaleTax = 0;     // sale tax carried into THIS year's carve
+      var _totalTaxSetAside  = 0;    // running total actually held back
+      var _coverTaxSaleTaxA  = 0;    // Y0 sale tax (Strategy A display)
+
       for (let i = 0; i < horizon; i++) {
             const year = _y0 + i;
+
+            // Tier-migration: recompute _yearCombo based on PEAK
+            // cumulative active capital, INCLUDING this year's incoming
+            // installment payment (so the threshold-crossing year
+            // benefits existing tranches immediately, not next year).
+            // Peak ratchets upward only — a maturing tax-reserve tranche
+            // doesn't downgrade existing tranche combos.
+            (function () {
+                  var active = 0;
+                  for (var ti = 0; ti < tranches.length; ti++) {
+                        var t = tranches[ti];
+                        if (i < t.startIdx) continue;
+                        var _age = i - t.startIdx;
+                        if (typeof t.maxAgeInclusive === 'number' && _age > t.maxAgeInclusive) continue;
+                        active += t.capital;
+                  }
+                  // Predict THIS year's new deposit for installment mode
+                  // (known upfront from weights × contract). Non-
+                  // installment deferred reinvest depends on existingLoss
+                  // (circular), so don't predict — _yearCombo lags by one
+                  // year for that path. Strategy A has no reinvest.
+                  var newDeposit = 0;
+                  if (_isInstallment && i >= startIdx && i <= maturityIdx) {
+                        newDeposit = _installmentPaymentForIdx(i - startIdx);
+                  }
+                  var projected = active + newDeposit;
+                  if (projected > _peakCumulativeForTier) _peakCumulativeForTier = projected;
+                  _yearCombo = _pickComboForCumulative(_peakCumulativeForTier) || combo;
+            })();
 
             // Step 1 — existing tranches' loss + fee at this year's age.
             // Basis tranche (startIdx=0) gets partial-year fee in Y1.
@@ -789,14 +1335,64 @@ function unifiedTaxComparison(cfg, opts) {
             let existingLoss = 0;
             let existingFee = 0;
             let existingInvested = 0;
+            // Per-tranche breakdown (opt-in via opts.includeTrancheBreakdown).
+            // CPA-facing admin reveal needs to see each tranche's per-year
+            // contribution to loss + fees - reconstructing externally would
+            // duplicate engine logic and drift. Push records into trancheRows
+            // when the flag is set; otherwise leave undefined (no perf hit
+            // on the normal path).
+            const _includeTrancheBreakdown = !!opts.includeTrancheBreakdown;
+            const trancheRows = _includeTrancheBreakdown ? [] : null;
             if (!_belowMin) {
-                  tranches.forEach(function (t) {
+                  tranches.forEach(function (t, tIdx) {
                         const trancheAge = i - t.startIdx;
                         if (trancheAge < 0) return;
-                        existingLoss += t.capital * lossRateForTrancheYear(trancheAge);
+                        // Tax-reserve Y0-only tranche (cover-taxes-from-sale):
+                        // capital withdrew April 1 of Y1 to pay taxes, so it
+                        // contributes nothing once trancheAge exceeds the
+                        // maxAgeInclusive cap. Other tranches don't set
+                        // this field and contribute their full lifecycle.
+                        if (typeof t.maxAgeInclusive === 'number' && trancheAge > t.maxAgeInclusive) return;
+                        // Per-tranche loss rate honors tier-jumping when a
+                        // Schwab combo cfg is present; falls back to the
+                        // single legacy curve otherwise.
+                        const _trancheLossPartsV = _trancheLossRateParts(t, trancheAge);
+                        const _trancheLossRateV = _trancheLossPartsV.rate;
+                        const _trancheFeeRateV = _trancheFeeRate(t);
                         const _trancheYf = (t.startIdx === 0 && trancheAge === 0) ? yfImpl : 1;
-                        existingFee += t.capital * feeRate * _trancheYf;
+                        const _tLoss = t.capital * _trancheLossRateV;
+                        const _tFee = t.capital * _trancheFeeRateV * _trancheYf;
+                        existingLoss += _tLoss;
+                        existingFee += _tFee;
                         existingInvested += t.capital;
+                        if (trancheRows) {
+                              trancheRows.push({
+                                    trancheIdx: tIdx,
+                                    openYear: _y0 + t.startIdx,
+                                    capital: t.capital,
+                                    age: trancheAge,
+                                    // Display the YEAR'S combo (post-migration),
+                                    // not the tranche's creation-time combo. This
+                                    // surfaces tier-migration in the admin
+                                    // breakdown so a CPA can see "Y1 tranche was
+                                    // 145/45 at age 0, migrated to 200/100 at
+                                    // age 1 when cumulative crossed $3M."
+                                    comboId: (_yearCombo && _yearCombo.id) || t.comboId || null,
+                                    lossRate: _trancheLossRateV,
+                                    // Day-weight components of the loss rate so the
+                                    // admin can show the 365-day staggering math:
+                                    // age 0 → currRate·lossYf; age ≥1 →
+                                    // prevRate·(1−lossYf) + currRate·lossYf.
+                                    lossYf:       _trancheLossPartsV.yf,
+                                    lossPrevRate: _trancheLossPartsV.prev,
+                                    lossCurrRate: _trancheLossPartsV.curr,
+                                    feeRate: _trancheFeeRateV,
+                                    yf: _trancheYf,
+                                    loss: _tLoss,
+                                    fee: _tFee,
+                                    isTaxReserve: typeof t.maxAgeInclusive === 'number' && t.maxAgeInclusive === 0 && t.startIdx === 0 && tIdx > 0
+                              });
+                        }
                   });
                   // Y1 loss override (immediate mode, not below-min): replace
                   // the tranche-derived Y1 loss with the caller-supplied
@@ -838,24 +1434,74 @@ function unifiedTaxComparison(cfg, opts) {
                   ? _metlifeRulesForTerm(cfg.structuredSaleDurationMonths)
                   : null;
             let gainRecThisYear = 0;
-            if (i >= startIdx && i <= maturityIdx && gainRemaining > 0) {
+            // Installment-sale recognition (Strategy B, §453). Each year
+            // in [startIdx, maturityIdx] recognizes totalLT/N as LT
+            // gain - equivalent to applying the gross-profit ratio
+            // (totalLT / (salePrice - accelDepr)) to N equal payments of
+            // (salePrice - accelDepr) / N. Brooklyn's loss capacity
+            // doesn't gate recognition here (unlike Strategy C, where
+            // recognition is capped by absorbable); whatever Brooklyn
+            // doesn't absorb is just taxed at LT rates.
+            // Y0 down-payment gain (Strategy C optional, Strategy B in
+            // principle): D dollars of cash at closing × GP ratio is
+            // recognized as Y0 LT gain. GP ratio is constant for the
+            // entire §453 contract — applies identically to Y0 down
+            // and to each Y1+ installment.
+            if (i === 0 && _isInstallment && _y0DownPayment > 0 && _installmentContractPrice > 0) {
+                  var _gpRatioY0 = totalLT / _installmentContractPrice;
+                  var _y0DownGain = _y0DownPayment * _gpRatioY0;
+                  gainRecThisYear += _y0DownGain;
+                  gainRemaining   -= _y0DownGain;
+            }
+            if (_isInstallment && i >= startIdx && i <= maturityIdx) {
+                  // Per-year gain recognition uses the weight for this
+                  // payment index (0-based from startIdx). Weights apply
+                  // to (contract − Y0 down) — see _installmentPaymentForIdx
+                  // above. Net effect: weights scale the post-Y0 portion
+                  // of LT gain, identical math to pre-Y0-down behavior
+                  // when D = 0.
+                  var _pIdx = i - startIdx;
+                  var _postDownLT = Math.max(0, totalLT - (_y0DownPayment > 0 && _installmentContractPrice > 0
+                        ? _y0DownPayment * (totalLT / _installmentContractPrice) : 0));
+                  var _installmentGainThisYear = _postDownLT * _weightForPaymentIdx(_pIdx);
+                  gainRecThisYear += _installmentGainThisYear;
+                  gainRemaining   -= _installmentGainThisYear;
+            }
+            // Unparked-gain Y1 recognition (Strategy C only). The
+            // portion of total LT gain the seller chose NOT to park in
+            // the MetLife product comes out as Y1 closing cash and is
+            // taxed as Y1 LT. The structured-sale schedule below only
+            // covers the parked portion.
+            if (i === 0 && isDeferred && !_isInstallment && _unparkedY1Gain > 0) {
+                  gainRecThisYear += _unparkedY1Gain;
+                  gainRemaining   -= _unparkedY1Gain;
+            }
+            if (!_isInstallment && i >= startIdx && i <= maturityIdx && gainRemaining > 0) {
                   const maxAbsorbable = Math.max(0, (stCF + existingLoss - _recapDrag) / denom);
                   let cap = Math.min(gainRemaining, maxAbsorbable);
                   if (_metlifeRules) {
+                        // METLIFE caps apply to the PARKED portion only -
+                        // the unparked Y1 gain is closing cash, not part
+                        // of the insurance product's payment schedule.
+                        // For immediate-mode safety, _parkedGain defaults
+                        // to 0 there and these branches are bypassed
+                        // (deferred-only via _isMetLifeConstrained gate).
+                        const _metlifeBase = _parkedGain;
                         // First-payment cap (term-specific):
                         //   3-yr: 40%, 4-yr+: 50%
                         if (i === startIdx) {
-                              const firstCap = totalGainBucket * _metlifeRules.firstPaymentMaxPct;
+                              const firstCap = _metlifeBase * _metlifeRules.firstPaymentMaxPct;
                               cap = Math.min(cap, firstCap);
                         }
                         // First-two-payments combined cap (universal: 80%).
-                        // gainRemaining at this point includes whatever Y1
-                        // already took, so cumulative-recognized = total -
+                        // gainRemaining at this point reflects parked-only
+                        // (unparked Y1 was already subtracted above), so
+                        // cumulative-parked-recognized = _parkedGain -
                         // gainRemaining. Y2 can take at most
-                        // (80% × total) - cumulativeRecognized.
+                        // (80% × _parkedGain) - cumulativeRecognized.
                         if (i === startIdx + 1) {
-                              const combinedCap = totalGainBucket * _metlifeRules.firstTwoPaymentsMaxPct;
-                              const cumulativeRecognized = totalGainBucket - gainRemaining;
+                              const combinedCap = _metlifeBase * _metlifeRules.firstTwoPaymentsMaxPct;
+                              const cumulativeRecognized = _parkedGain - gainRemaining;
                               const maxY2 = Math.max(0, combinedCap - cumulativeRecognized);
                               cap = Math.min(cap, maxY2);
                         }
@@ -864,7 +1510,7 @@ function unifiedTaxComparison(cfg, opts) {
                         // Don't apply on the maturity year itself — it
                         // takes the residual anyway.
                         if (i < maturityIdx) {
-                              const lastReserve = totalGainBucket * _metlifeRules.lastPaymentMinPct;
+                              const lastReserve = _metlifeBase * _metlifeRules.lastPaymentMinPct;
                               const maxAllowed  = Math.max(0, gainRemaining - lastReserve);
                               cap = Math.min(cap, maxAllowed);
                         }
@@ -880,19 +1526,86 @@ function unifiedTaxComparison(cfg, opts) {
             // (deferred only). Immediate mode skips: _gainTaxRate=0
             // and _remainingReinvestCap=0, so trancheTaxCarve=0 and
             // reinvested clamps to 0 even before the cap check.
+            //
+            // Installment mode (Strategy B): the buyer's payment this
+            // year is the FULL _installmentPayment (basis + gain), not
+            // just the gain. The seller deploys the whole payment to
+            // Brooklyn (minus the gain-portion tax carve when "cover
+            // taxes" is on). This is bigger than Strategy C's reinvest
+            // because basis recovery is also cash, not just principal
+            // returned silently.
             const trancheTaxCarve = gainRecThisYear * _gainTaxRate;
-            let reinvested = Math.max(0, gainRecThisYear - trancheTaxCarve);
+            // Cover-taxes set-aside (B/C): hold back the PRIOR year's sale
+            // tax from this January's payment — that cash pays the April
+            // tax bill, so it never deploys to Brooklyn. Capped at the
+            // payment (can't reserve more cash than arrives that year).
+            var _coverTaxCarve = (_coverTax && _isInstallment) ? Math.max(0, _priorYearSaleTax) : 0;
+            var _setAsideThisYear = 0;   // actual cash held back from this year's payment
+            let reinvested;
+            if (_isInstallment) {
+                  // Installment mode: Brooklyn deploys per-payment.
+                  //   • i = startIdx..maturityIdx: yearly installment
+                  //     creates a new tranche of (payment − taxCarve −
+                  //     coverTax set-aside) dollars.
+                  //   • i = 0 (sale year): no reinvest tranche.
+                  if (i >= startIdx && i <= maturityIdx) {
+                        var _basePayment = _installmentPaymentForIdx(i - startIdx);
+                        // Recapture cash (+ sub-min Y0 down) that couldn't
+                        // open a Y0 tranche rolls into the FIRST installment
+                        // so it still gets deployed into Brooklyn.
+                        if (i === startIdx) _basePayment += _y0RollToFirstInstallment;
+                        _setAsideThisYear = Math.min(_coverTaxCarve, Math.max(0, _basePayment - trancheTaxCarve));
+                        _totalTaxSetAside += _setAsideThisYear;
+                        reinvested = Math.max(0, _basePayment - trancheTaxCarve - _setAsideThisYear);
+                  } else {
+                        reinvested = 0;
+                  }
+            } else {
+                  reinvested = Math.max(0, gainRecThisYear - trancheTaxCarve);
+            }
             if (_remainingReinvestCap !== null) {
                   reinvested = Math.min(reinvested, _remainingReinvestCap);
                   _remainingReinvestCap = Math.max(0, _remainingReinvestCap - reinvested);
             }
+            // Tier-jumping: pick the new reinvest tranche's combo based on
+            // cumulative deposit INCLUDING this reinvest. So a Y2 reinvest
+            // that pushes cumulative across the $3M threshold lands the new
+            // tranche on 200/100 with its 0.59 Y1 loss rate, while the
+            // existing Y1 tranche stays on its original 145/45 curve.
+            var _reinvestCombo = null;
+            var _newTrancheLossRate = year1Rate;
+            var _newTrancheFeeRate  = feeRate;
             if (reinvested > 0) {
-                  tranches.push({ capital: reinvested, startIdx: i });
+                  var _existingCumulative = tranches.reduce(function (s, t) { return s + (t.capital || 0); }, 0);
+                  var _cumulativeWithThis = _existingCumulative + reinvested;
+                  _reinvestCombo = _pickComboForCumulative(_cumulativeWithThis);
+                  // New tranche's age-0 loss/fee uses _yearCombo (the
+                  // migrated combo for THIS year) so it aligns with the
+                  // existing tranches' migrated rates. Prevents the
+                  // "new tranche at one combo, existing at another"
+                  // inconsistency the old per-tranche-locked model had.
+                  var _newSrc = (_tieringCombos.length && _yearCombo && _yearCombo.lossByYear)
+                        ? _yearCombo
+                        : _reinvestCombo;
+                  if (_newSrc && _newSrc.lossByYear) {
+                        _newTrancheLossRate = _newSrc.lossByYear[0] || 0;
+                        _newTrancheFeeRate  = _comboFeeRate(_newSrc) || feeRate;
+                  }
+                  tranches.push({
+                        capital: reinvested,
+                        startIdx: i,
+                        comboId: _reinvestCombo ? _reinvestCombo.id : null,
+                        comboLossByYear: _reinvestCombo && _reinvestCombo.lossByYear ? _reinvestCombo.lossByYear.slice() : null,
+                        comboFeeRate: _reinvestCombo ? _comboFeeRate(_reinvestCombo) : null
+                  });
             }
 
             // Step 4 — recompute year totals INCLUDING the new tranche.
-            const newTrancheLoss = reinvested * year1Rate;
-            const newTrancheFee  = reinvested * feeRate;
+            // The new tranche operates at age=0 with its own combo's Y1
+            // loss rate (which may differ from existing tranches' rates
+            // under tier-jumping).
+            const newTrancheLoss = reinvested * _newTrancheLossRate;
+            const newTrancheFee  = reinvested * _newTrancheFeeRate;
             const yearLoss     = existingLoss + newTrancheLoss;
             const yearFee      = existingFee + newTrancheFee;
             const yearInvested = existingInvested + reinvested;
@@ -925,10 +1638,24 @@ function unifiedTaxComparison(cfg, opts) {
             // Recompute investmentIncome to match the do-nothing LT/ST/recap
             // — the LT slice differs from the matched-timing baseline so
             // NIIT base must be recomputed; ST stays as set by
-            // _baseScenarioForYear.
+            // _baseScenarioForYear. Passive ordinary (interest + rental +
+            // non-qualified div via cfg.investmentIncomeOrdinary) is also
+            // in the NIIT base per §1411(c)(1)(A)(i) - include the same
+            // inflation-scaled value _baseScenarioForYear used. Without
+            // this term, do-nothing NIIT silently zeroed out the surtax
+            // on passive ordinary income, understating totalBaseline and
+            // therefore Brooklyn savings on rental/interest-heavy clients.
+            var _dnInflRate = (typeof TAX_DATA !== 'undefined' && TAX_DATA && typeof TAX_DATA.inflationRate === 'number')
+                  ? TAX_DATA.inflationRate
+                  : ((typeof window !== 'undefined' && window.TAX_DATA && typeof window.TAX_DATA.inflationRate === 'number')
+                        ? window.TAX_DATA.inflationRate : 0);
+            var _dnScaledInvOrd = (cfg.investmentIncomeOrdinary || 0) * Math.pow(1 + _dnInflRate, Math.max(0, i));
+            var _dnScaledQualDiv = (cfg.qualifiedDividend || 0) * Math.pow(1 + _dnInflRate, Math.max(0, i));
             dnBaseline.investmentIncome = (dnBaseline.longTermGain || 0)
                   + Math.max(0, dnBaseline.shortTermGain || 0)
-                  + (dnBaseline.depreciationRecapture || 0);
+                  + (dnBaseline.depreciationRecapture || 0)
+                  + _dnScaledInvOrd
+                  + _dnScaledQualDiv;
             const dnBaselineTax = _yearTaxes(dnBaseline);
 
             // Apply Brooklyn losses to the matched-timing baseline.
@@ -940,17 +1667,54 @@ function unifiedTaxComparison(cfg, opts) {
 
             stCF = Math.max(0, withStrat._lossUnused || 0);
 
+            // Cover-taxes: this year's ACTUAL sale tax (after Brooklyn
+            // offsets) = with-strategy total − the no-sale baseline tax
+            // (gain=0, recap=0 → the client's regular tax). It carries into
+            // NEXT year's January carve. Y0's figure is also kept for
+            // Strategy A's display-only readout. Only computed when ON.
+            if (_coverTax) {
+                  var _noSaleTax = _yearTaxes(_baseScenarioForYear(cfg, year, 0, 0)).total;
+                  var _saleTaxThisYear = Math.max(0, withStratTax.total - _noSaleTax);
+                  if (i === 0) _coverTaxSaleTaxA = _saleTaxThisYear;   // A display (Y0)
+                  _priorYearSaleTax = _saleTaxThisYear;                // next year's carve
+            }
+
             const bh = brookhavenSchedule ? brookhavenSchedule.perYear[i] : { setup: 0, quarterly: 0, total: 0 };
+
+            // Append the new reinvest tranche to the per-year breakdown
+            // (it opened THIS year so its trancheAge=0 and gets the new-
+            // tranche loss rate / fee rate calculated above).
+            if (trancheRows && reinvested > 0) {
+                  trancheRows.push({
+                        trancheIdx: tranches.length - 1,
+                        openYear: year,
+                        capital: reinvested,
+                        age: 0,
+                        // Display the year's migrated combo so the
+                        // breakdown shows the tier this tranche is
+                        // actually operating under.
+                        comboId: (_yearCombo && _yearCombo.id) || (_reinvestCombo ? _reinvestCombo.id : null),
+                        lossRate: _newTrancheLossRate,
+                        feeRate: _newTrancheFeeRate,
+                        yf: 1,
+                        loss: newTrancheLoss,
+                        fee: newTrancheFee,
+                        isTaxReserve: false,
+                        isNew: true
+                  });
+            }
 
             rows.push({
                   year: year,
                   gainRecognized: gainRecThisYear,
                   taxCarveOut: trancheTaxCarve,
+                  taxSetAside: _setAsideThisYear,   // cover-taxes: cash held back from this Jan payment
                   reinvestedThisYear: reinvested,
                   lossGenerated: yearLoss,
                   lossApplied: withStrat._lossUsed || 0,
                   stCarryForward: stCF,
                   investmentThisYear: yearInvested,
+                  trancheBreakdown: trancheRows,
                   fee: yearFee,
                   brookhavenFee: bh.total,
                   brookhavenSetupFee: bh.setup,
@@ -1059,7 +1823,15 @@ function unifiedTaxComparison(cfg, opts) {
             recognitionSchedule: recognitionSchedule,
             durationYears: durationYears,
             unrecognizedGain: gainRemaining,
-            deferred: isDeferred
+            deferred: isDeferred,
+            // Cover-taxes-from-sale (advisor 2026-05-28): total cash held
+            // back from January installment payments to pay the sale tax
+            // (B/C, not deployed to Brooklyn). coverTaxSaleTaxY0 is the Y0
+            // sale tax for Strategy A's display-only readout (A deploys in
+            // full; no sale is modeled). Both 0 when the toggle is off.
+            coverTaxesOn: _coverTax,
+            totalTaxSetAside: _totalTaxSetAside,
+            coverTaxSaleTaxY0: _coverTaxSaleTaxA
       };
 }
 
