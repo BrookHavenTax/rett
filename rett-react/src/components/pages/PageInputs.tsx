@@ -39,12 +39,8 @@
 //
 // React-only departure preserved: Section 01 (Income Sources) keeps the
 // W2Uploader at the top of its section-body (calls our same-origin
-// Express proxy at /api/gemini/extract-w2). NOTE: the W2Uploader's
-// FIELD_MAP currently writes Self-Employment Income / Business Income
-// to #se-income / #biz-revenue, which are now HIDDEN MIRRORS the engine
-// no longer reads. Until the FIELD_MAP is rerouted to
-// #business-income-amount, autofilled SE/Biz dollars will sit in dead
-// inputs. Tracked in SYNC.md.
+// Express proxy at /api/gemini/extract-w2). SE + Sched C amounts from
+// a 1040 are merged into the single #business-income-amount field.
 import W2Uploader from '../W2Uploader';
 
 function CurrencyInput({ id }: { id: string }) {

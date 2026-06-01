@@ -8,17 +8,15 @@ import { useRef, useState } from 'react';
 // (controls.js, baseline-table.js, projection-dashboard-render.js, etc.)
 // recomputes immediately — same handshake the upstream pmq-handler.js used.
 //
-// The first seven entries are the Section 02 (Income Sources) fields. The
-// last two (filing-status, state-code) belong to Section 01 but a 1040
-// reliably reveals them, so we autofill those too — same fields the
-// upstream extractor populated.
+// Section 01 Income Sources (Tab 1) — all nine visible currency fields.
+// Filing Status + State live on Tab 0 but a 1040 reliably reveals them.
 const FIELD_MAP: ReadonlyArray<{ id: string; key: string; label: string }> = [
   { id: 'w2-wages',                 key: 'wages',                   label: 'W-2 Wages' },
-  { id: 'se-income',                key: 'seIncome',                label: 'Self-Employment Income' },
-  { id: 'biz-revenue',              key: 'businessRevenue',         label: 'Business Income' },
-  { id: 'rental-income',            key: 'rentalIncome',            label: 'Rental Income' },
-  { id: 'dividend-income',          key: 'dividendIncome',          label: 'Dividend / Interest' },
+  { id: 'interest-income',          key: 'interestIncome',          label: 'Interest Income' },
+  { id: 'dividend-income',          key: 'dividendIncome',          label: 'Dividends' },
   { id: 'retirement-distributions', key: 'retirementDistributions', label: 'Retirement Distributions' },
+  { id: 'social-security',        key: 'socialSecurity',          label: 'Social Security' },
+  { id: 'rental-income',            key: 'rentalIncome',            label: 'Rental Income' },
   { id: 'short-term-gain',          key: 'shortTermGain',           label: 'Short-Term Capital Gain' },
   { id: 'long-term-gain',           key: 'longTermGain',            label: 'Long-Term Capital Gain' },
   { id: 'filing-status',            key: 'filingStatus',            label: 'Filing Status' },
@@ -51,6 +49,18 @@ function setInput(id: string, value: string | number | null | undefined) {
   return true;
 }
 
+/** Business Income is a single visible field; 1040s may split SE vs Sched C. */
+function resolveBusinessIncome(fields: Record<string, unknown>): number | null {
+  const direct = fields.businessIncome;
+  if (typeof direct === 'number' && !Number.isNaN(direct)) return direct;
+  const se = fields.seIncome;
+  const biz = fields.businessRevenue;
+  const seN = typeof se === 'number' && !Number.isNaN(se) ? se : 0;
+  const bizN = typeof biz === 'number' && !Number.isNaN(biz) ? biz : 0;
+  if (seN === 0 && bizN === 0) return null;
+  return seN + bizN;
+}
+
 export default function W2Uploader() {
   const inputRef            = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
@@ -81,6 +91,11 @@ export default function W2Uploader() {
         if (setInput(id, v as string | number | null | undefined)) {
           filled.push(label);
         }
+      }
+
+      const bizAmt = resolveBusinessIncome(fields as Record<string, unknown>);
+      if (setInput('business-income-amount', bizAmt)) {
+        filled.push('Business Income');
       }
 
       if (filled.length === 0) {

@@ -149,17 +149,49 @@ body {
     var(--bh-diagonal),
     linear-gradient(120deg, #1b1745 0%, var(--rett-navy) 45%, #2c2670 100%);
   box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(11,12,40,0.28);
-  padding: 16px 48px;
+  padding: 14px 48px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-.header h1 {
-  font-family: var(--font-display);
-  font-weight: 800;
-  letter-spacing: -0.03em;
+/* Retire the upstream CSS bar-chart glyph — replaced by /assets/rett-logo.png */
+.header::before {
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
 }
-.header h1 .rett-tm { color: var(--bh-brookhaven-blue); }
-/* Editorial serif accent on the wordmark + hero tagline (brand sans+serif pairing) */
-.header-line-1,
+.header-left {
+  align-items: flex-start;
+  gap: 10px;
+}
+/* Official logo image inside <h1> for admin unlock clicks + a11y */
+.header-logo-wrap {
+  margin: 0;
+  padding: 6px 12px 4px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  line-height: 0;
+  cursor: pointer;
+}
+.header-logo-img {
+  display: block;
+  width: auto;
+  height: 52px;
+  max-width: min(240px, 42vw);
+  object-fit: contain;
+}
+.header-product-sub {
+  margin: 0;
+  padding-left: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bh-powder-blue);
+}
+/* Editorial serif accent on BrookHaven attribution (brand sans+serif pairing) */
 .header-bh-mark {
   font-family: var(--font-serif);
   font-style: italic;
@@ -505,10 +537,41 @@ body {
    13. FOOTER — dark Trusted-Blue with diagonal brand pattern.
    -------------------------------------------------------------------------- */
 .footer,
-.compliance-footer {
+.compliance-footer,
+.app-compliance {
   background:
     var(--bh-diagonal),
     linear-gradient(120deg, #1a1640 0%, var(--rett-navy) 100%);
+}
+
+/* Extended IMPORTANT DISCLOSURES block — below existing footer lines */
+.compliance-disclosures-extended {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255,255,255,0.14);
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: left;
+}
+.compliance-disclosures-extended__title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bh-brand-yellow);
+  margin: 0 0 12px;
+}
+.compliance-disclosures-extended p {
+  font-family: var(--font-body);
+  font-size: 10px;
+  line-height: 1.55;
+  color: rgba(255,255,255,0.72);
+  margin: 0 0 10px;
+}
+.compliance-disclosures-extended p:last-child {
+  margin-bottom: 0;
 }
 
 /* ----------------------------------------------------------------------------
@@ -551,6 +614,8 @@ body {
   .header { position: static; padding: 14px 20px; }
   .nav { position: static; top: auto; padding: 8px 14px; }
   .rett-hero { padding: 26px 22px; border-radius: 16px; }
+  .header-logo-img { height: 44px; }
+  .compliance-disclosures-extended { padding-left: 4px; padding-right: 4px; }
 }
 
 /* Respect reduced-motion preferences. */

@@ -2,23 +2,27 @@ export default function Header() {
   return (
     <header className="header">
       <div className="header-left">
-        <h1>
-          RETT<sup className="rett-tm" aria-hidden="true">&trade;</sup>
-          <span className="visually-hidden">, trademark</span>
+        {/* Official RETT wordmark + icon (replaces the CSS bar-chart
+            ::before glyph and separate RETT™ + tagline text). The <h1>
+            wrapper is kept so admin-math-panel.js can attach its double-
+            click / triple-click unlock handler to
+            `header.header .header-left h1`. */}
+        <h1
+          className="header-logo-wrap"
+          title="Double-click to unlock admin mode • Triple-click to log out"
+        >
+          <img
+            src="/assets/rett-logo.png"
+            alt="RETT — Real Estate Transition Trust"
+            className="header-logo-img"
+            width={220}
+            height={124}
+            decoding="async"
+          />
         </h1>
-        <span className="header-dash" aria-hidden="true">&mdash;</span>
-        <div className="header-tagline">
-          <div className="header-line-1">Real Estate Transition Trust</div>
-          <div className="header-line-2">Multi-Year Tax Strategy Projector</div>
-        </div>
+        <p className="header-product-sub">Multi-Year Tax Strategy Projector</p>
       </div>
       <div className="header-right">
-        {/* ADMIN badge (upstream 2026-05-25 commit a7e6b0e + 8bee451).
-            Hidden by default; shown when admin mode is unlocked via
-            triple-click on the RETT logo. Click to lock. NOT a security
-            boundary — the panel content is computed in-page and viewable
-            via devtools regardless. js/04-ui/admin-math-panel.js wires
-            this button. */}
         <button
           type="button"
           id="rett-admin-badge"

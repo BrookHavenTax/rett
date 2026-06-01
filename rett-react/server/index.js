@@ -101,7 +101,7 @@ app.use('/api/gemini/', geminiLimiter);
 // ---- (W-2, 1040, 1099-NEC/MISC/INT/DIV/R/B, K-1, or a free-form client
 // ---- income summary sheet). Schema is the superset the upstream calculator
 // ---- expects for Section 01 (filing-status, state-code) and Section 02
-// ---- (the seven income inputs). The advisor uploads whichever document they
+// ---- (nine income inputs). The advisor uploads whichever document they
 // ---- have on hand; Gemini fills the fields it can actually find and
 // ---- returns null for everything else.
 const TAX_EXTRACT_PROMPT = [
@@ -121,10 +121,13 @@ const TAX_EXTRACT_PROMPT = [
   '  "filingStatus":            "single"|"mfj"|"mfs"|"hoh"|null,',
   '  "wages":                   number|null,',
   '  "federalTaxWithheld":      number|null,',
+  '  "interestIncome":          number|null,',
+  '  "dividendIncome":          number|null,',
+  '  "socialSecurity":          number|null,',
   '  "seIncome":                number|null,',
   '  "businessRevenue":         number|null,',
+  '  "businessIncome":          number|null,',
   '  "rentalIncome":            number|null,',
-  '  "dividendIncome":          number|null,',
   '  "retirementDistributions": number|null,',
   '  "shortTermGain":           number|null,',
   '  "longTermGain":            number|null,',
@@ -134,15 +137,22 @@ const TAX_EXTRACT_PROMPT = [
   'Field-matching rules (apply in this order):',
   '  - "wages" / "W-2 Wages" / Box 1 of a W-2 / line 1a or 1z of a 1040',
   '    → wages',
+  '  - "Interest Income" / "Taxable interest" / 1040 line 2b /',
+  '    1099-INT box 1 → interestIncome (do NOT add dividends).',
+  '  - "Dividends" / "Ordinary dividends" / 1040 line 3b /',
+  '    1099-DIV box 1a → dividendIncome (do NOT add interest).',
+  '  - "Social Security" / "Social security benefits" / 1040 line 6a',
+  '    (gross benefits, not the taxable portion on line 6b)',
+  '    → socialSecurity',
   '  - "Self-Employment Income" / "SE Income" / 1099-NEC box 1',
-  '    / Schedule C line 1 → seIncome',
-  '  - "Business Income" / K-1 (1065 or 1120S) ordinary business income',
-  '    → businessRevenue',
+  '    / Schedule C net profit → seIncome',
+  '  - Schedule C / K-1 ordinary business income when labeled separately',
+  '    from SE → businessRevenue',
+  '  - "Business Income" when the document lists ONE combined business',
+  '    amount (or Sched 1 business total) → businessIncome. If both',
+  '    seIncome and businessRevenue are present, leave businessIncome null.',
   '  - "Rental Income" / 1099-MISC box 1 / Schedule E line 3',
   '    → rentalIncome',
-  '  - "Dividend Income" / "Dividend/Interest" / "Interest" /',
-  '    1099-INT box 1 / 1099-DIV box 1a → dividendIncome (sum if both',
-  '    interest and dividends appear).',
   '  - "Retirement Distributions" / "Pension" / 1099-R box 1 /',
   '    1040 line 4b/5b → retirementDistributions',
   '  - "Short-Term Capital Gain" / 1099-B short-term proceeds /',
