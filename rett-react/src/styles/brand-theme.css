@@ -172,7 +172,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 0;
   margin: 0;
   padding: 0;
   line-height: 1;
@@ -231,7 +231,8 @@ body {
 }
 .header-brand__product {
   margin: 0;
-  padding-left: 57px;
+  padding: 0;
+  align-self: stretch;
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 600;
@@ -246,13 +247,17 @@ body {
 }
 .header-brand__product::before {
   content: "";
-  display: inline-block;
-  width: 22px;
+  display: block;
+  width: 100%;
   height: 2px;
-  margin-right: 8px;
-  vertical-align: middle;
+  margin: 8px 0 7px;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--rett-blue) 0%, var(--bh-brand-yellow) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--rett-blue) 0%,
+    var(--bh-brand-yellow) 55%,
+    rgba(142, 212, 240, 0.35) 100%
+  );
   opacity: 0.9;
 }
 /* Editorial serif accent on BrookHaven attribution (brand sans+serif pairing) */
@@ -688,9 +693,12 @@ body {
     max-width: 12rem;
   }
   .header-brand__product {
-    padding-left: 0;
     white-space: normal;
     letter-spacing: 0.12em;
+  }
+  .header-brand__product::before {
+    margin-top: 6px;
+    margin-bottom: 6px;
   }
   .compliance-disclosures-extended { padding-left: 4px; padding-right: 4px; }
 }
