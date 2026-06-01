@@ -1,26 +1,44 @@
+function RettMarkIcon() {
+  return (
+    <svg
+      className="header-brand__icon"
+      viewBox="0 0 40 40"
+      width={44}
+      height={44}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="4" y="16" width="7" height="20" fill="#41B9EA" />
+      <rect x="15" y="8" width="7" height="28" fill="#41B9EA" />
+      <rect x="26" y="3" width="7" height="33" fill="#8ED4F0" />
+    </svg>
+  );
+}
+
 export default function Header() {
   return (
     <header className="header">
       <div className="header-left">
-        {/* Official RETT wordmark + icon (replaces the CSS bar-chart
-            ::before glyph and separate RETT™ + tagline text). The <h1>
-            wrapper is kept so admin-math-panel.js can attach its double-
-            click / triple-click unlock handler to
-            `header.header .header-left h1`. */}
+        {/* Unified brand lockup: icon + RETT entity name + product subtitle.
+            <h1> kept for admin-math-panel.js double/triple-click unlock. */}
         <h1
-          className="header-logo-wrap"
+          className="header-brand"
           title="Double-click to unlock admin mode • Triple-click to log out"
         >
-          <img
-            src="/assets/rett-logo.png"
-            alt="RETT — Real Estate Transition Trust"
-            className="header-logo-img"
-            width={220}
-            height={124}
-            decoding="async"
-          />
+          <RettMarkIcon />
+          <span className="header-brand__text">
+            <span className="header-brand__primary">
+              <span className="header-brand__name">
+                RETT
+                <sup className="header-brand__tm" aria-hidden="true">&trade;</sup>
+                <span className="visually-hidden">, trademark</span>
+              </span>
+              <span className="header-brand__dash" aria-hidden="true">&mdash;</span>
+              <span className="header-brand__entity">Real Estate Transition Trust</span>
+            </span>
+            <span className="header-brand__product">Multi-Year Tax Strategy Projector</span>
+          </span>
         </h1>
-        <p className="header-product-sub">Multi-Year Tax Strategy Projector</p>
       </div>
       <div className="header-right">
         <button
