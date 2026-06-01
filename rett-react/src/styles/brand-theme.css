@@ -185,7 +185,8 @@ body {
 .header-brand__lockup {
   display: inline-flex;
   align-items: center;
-  padding: 6px 12px 6px 8px;
+  max-width: 100%;
+  padding: 7px 14px 7px 10px;
   background: #fff;
   border-radius: 10px;
   box-shadow:
@@ -193,10 +194,51 @@ body {
     0 4px 18px rgba(0, 0, 0, 0.22);
 }
 .rett-logo-lockup {
+  display: flex;
+  align-items: flex-end;
+  gap: 11px;
+  min-width: 0;
+  line-height: 1;
+}
+.rett-logo-lockup__icon {
+  flex: 0 0 auto;
   display: block;
   width: auto;
-  height: 48px;
-  max-width: min(360px, 62vw);
+  height: 46px;
+}
+.rett-logo-lockup__type {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 1px;
+}
+.rett-logo-lockup__name {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 0.88;
+  color: #231f54;
+  white-space: nowrap;
+}
+.rett-logo-lockup__tm {
+  font-size: 0.36em;
+  font-weight: 700;
+  color: #231f54;
+  margin-left: 0.06em;
+  vertical-align: super;
+}
+.rett-logo-lockup__tag {
+  font-family: var(--font-display);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: #231f54;
+  white-space: nowrap;
 }
 .header-brand__product {
   margin: 0;
@@ -637,7 +679,14 @@ body {
   .nav { position: static; top: auto; padding: 8px 14px; }
   .rett-hero { padding: 26px 22px; border-radius: 16px; }
   .header-brand__lockup { padding: 6px 10px 6px 8px; }
-  .rett-logo-lockup { height: 38px; max-width: min(280px, 72vw); }
+  .rett-logo-lockup { gap: 8px; }
+  .rett-logo-lockup__icon { height: 40px; }
+  .rett-logo-lockup__name { font-size: 1.45rem; }
+  .rett-logo-lockup__tag {
+    font-size: 0.625rem;
+    white-space: normal;
+    max-width: 12rem;
+  }
   .header-brand__product { white-space: normal; letter-spacing: 0.12em; }
   .compliance-disclosures-extended { padding-left: 4px; padding-right: 4px; }
 }

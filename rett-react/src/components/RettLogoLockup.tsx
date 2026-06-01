@@ -1,14 +1,26 @@
-/** Official RETT wordmark — raster crop from public/assets/rett-logo.png. */
+/** RETT wordmark — exact icon from brand PNG + full type (crop-safe). */
 export default function RettLogoLockup() {
   return (
-    <img
-      src="/assets/rett-logo-lockup.png"
-      alt="RETT — Real Estate Transition Trust"
-      className="rett-logo-lockup"
-      width={638}
-      height={306}
-      decoding="async"
-      draggable={false}
-    />
+    <span className="rett-logo-lockup">
+      <img
+        src="/assets/rett-icon.png"
+        alt=""
+        className="rett-logo-lockup__icon"
+        width={230}
+        height={306}
+        decoding="async"
+        draggable={false}
+        aria-hidden="true"
+      />
+      <span className="rett-logo-lockup__type">
+        <span className="rett-logo-lockup__name">
+          RETT
+          <sup className="rett-logo-lockup__tm" aria-hidden="true">
+            &trade;
+          </sup>
+        </span>
+        <span className="rett-logo-lockup__tag">Real Estate Transition Trust</span>
+      </span>
+    </span>
   );
 }
