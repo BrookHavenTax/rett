@@ -1,17 +1,14 @@
 function RettMarkIcon() {
   return (
-    <svg
+    <img
+      src="/assets/rett-mark-icon.svg"
+      alt=""
       className="header-brand__icon"
-      viewBox="0 0 40 40"
-      width={44}
-      height={44}
+      width={42}
+      height={56}
+      decoding="async"
       aria-hidden="true"
-      focusable="false"
-    >
-      <rect x="4" y="16" width="7" height="20" fill="#41B9EA" />
-      <rect x="15" y="8" width="7" height="28" fill="#41B9EA" />
-      <rect x="26" y="3" width="7" height="33" fill="#8ED4F0" />
-    </svg>
+    />
   );
 }
 
