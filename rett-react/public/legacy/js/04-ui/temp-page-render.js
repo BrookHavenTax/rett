@@ -160,16 +160,38 @@
     var stGain = Math.max(0, _readNum('short-term-gain'));
     var lt = Math.max(0, Number(row && row.gainRecognized) || 0);
     var recap = 0;
+    var recap1245 = 0;
+    var recap1250 = 0;
     // Recapture lands in the year-of-sale for all three strategies:
     //   A — row[0] (sale year, immediate)
     //   B — row[0] (sale year, ordinary §453(i); LT gain comes in row[1])
     //   C — row[0] (sale year; LT gain spreads across later rows)
-    // displayedI === 0 maps to engine row[0] for all three under the
+    // displayedY === 0 maps to engine row[0] for all three under the
     // new (post-§453-update) rendering path.
     if (displayedI === 0 && (chosen === 'A' || chosen === 'B' || chosen === 'C')) {
       recap = Math.max(0, Number(cfg && cfg.acceleratedDepreciation) || 0);
+      // §1245/§1250 split (advisor 2026-06-04). When the user filled
+      // both sub-amounts on Section 02, surface each separately so the
+      // CPA-facing card shows the tax-character breakdown. When blank,
+      // default the whole recap to §1250 (legacy behavior).
+      var _ad1245 = Math.max(0, Number(cfg && cfg.acceleratedDepreciation1245) || 0);
+      var _ad1250 = Math.max(0, Number(cfg && cfg.acceleratedDepreciation1250) || 0);
+      if (_ad1245 + _ad1250 > 0) {
+        recap1245 = _ad1245;
+        recap1250 = _ad1250;
+      } else {
+        recap1245 = 0;
+        recap1250 = recap;
+      }
     }
-    return { ordinary: ord, longTermGain: lt, shortTermGain: stGain, recapture: recap };
+    return {
+      ordinary: ord,
+      longTermGain: lt,
+      shortTermGain: stGain,
+      recapture: recap,
+      recapture1245: recap1245,
+      recapture1250: recap1250
+    };
   }
 
   // Resolve the chosen strategy's engine output + funded supplementals.
@@ -256,7 +278,18 @@
       return;
     }
     var label = _stratLabel(ctx.chosen);
-    host.innerHTML = '<span class="temp-strategy-pill">Chosen strategy: <strong>' + label + '</strong></span>';
+    var html = '<span class="temp-strategy-pill">Chosen strategy: <strong>' + label + '</strong></span>';
+    // Recommended payment terms for the deferred installment strategies
+    // (B / C), rendered from the SAME helper the Tab-4 comparison table
+    // uses (projection-dashboard-render.js) and from THIS strategy's
+    // chosen cfg (ctx.entry.cfg already reflects its additional-funds
+    // amount), so the two pages can never disagree on the schedule.
+    var _sched = '';
+    if (ctx.entry && ctx.entry.cfg && typeof root.__rettScheduleSummaryLine === 'function') {
+      try { _sched = root.__rettScheduleSummaryLine(ctx.entry.cfg) || ''; } catch (e) { _sched = ''; }
+    }
+    if (_sched) html += '<div class="temp-strategy-schedule">' + _sched + '</div>';
+    host.innerHTML = html;
   }
 
   // INCOME side — reducible buckets the strategy can touch. Hide
@@ -273,9 +306,22 @@
     var rows = [
       ['Ordinary income',          incomes.ordinary,    true],
       ['Long-term capital gain',   incomes.longTermGain, false],
-      ['Short-term capital gain',  incomes.shortTermGain, false],
-      ['Depreciation recapture',   incomes.recapture,    false]
+      ['Short-term capital gain',  incomes.shortTermGain, false]
     ];
+    // §1245 / §1250 recap split (advisor 2026-06-04). Show both rows
+    // when EITHER has a non-zero value; collapse to a single "Depreciation
+    // recapture" line for legacy / pre-split cases where the split sub-
+    // amounts aren't set. §1245 is ordinary-flavored (full marginal,
+    // not in NIIT); §1250 is the §1(h)(1)(E) per-slice 25% cap.
+    var _r1245 = Number(incomes.recapture1245) || 0;
+    var _r1250 = Number(incomes.recapture1250) || 0;
+    var _rTotal = Number(incomes.recapture)    || 0;
+    if (_r1245 > 0 || _r1250 > 0) {
+      rows.push(['Depreciation recapture (§1245)', _r1245, false]);
+      rows.push(['Depreciation recapture (§1250)', _r1250, false]);
+    } else {
+      rows.push(['Depreciation recapture',         _rTotal, false]);
+    }
     html += rows.map(function (r) {
       var amt = Number(r[1]) || 0;
       if (!r[2] && amt === 0) return '';
@@ -292,6 +338,8 @@
     var fedOrd = Number(b.ordinaryTax) || 0;
     var fedLt  = Number(b.ltTax)       || 0;
     var fedRcp = Number(b.recapTax)    || 0;
+    var fedRcp1245 = Number(b.recapTax1245) || 0;
+    var fedRcp1250 = Number(b.recapTax1250) || 0;
     var amt    = Number(b.amt)         || 0;
     var niit   = Number(b.niit)        || 0;
     var addmed = Number(b.addlMedicare)|| 0;
@@ -300,19 +348,28 @@
     var fedTotal = (b.federalIncomeTax != null) ? Number(b.federalIncomeTax) : (fedOrd + fedRcp + fedLt + amt);
     var total = (b.total != null) ? Number(b.total) : (fedTotal + niit + addmed + setax + state);
 
-    // opts.forceRecap — show the §1250 recap line even when it's $0
-    // (used by the Results column so the CPA sees the strategy drove
-    // recapture tax from $X down to $0 via Brooklyn absorption).
+    // opts.forceRecap — show the recap lines even when $0 (Results column
+    // uses this so the CPA sees the strategy drove recapture tax from $X
+    // down via Brooklyn absorption).
     var rows = [
       ['Ordinary income tax',     fedOrd, true],
-      ['LT capital gains tax',    fedLt,  true],
-      ['Depreciation recap tax',  fedRcp, !!opts.forceRecap],
-      ['AMT top-up',              amt,    false],
-      ['NIIT (3.8%)',             niit,   false],
-      ['Additional Medicare',     addmed, false],
-      ['SE / FICA tax',           setax,  false],
-      ['State income tax',        state,  true]
+      ['LT capital gains tax',    fedLt,  true]
     ];
+    // §1245 / §1250 recap-tax split (advisor 2026-06-04). Mirrors the
+    // income-side split. When the user split the recap on Section 02,
+    // show both tax rows. Otherwise collapse to a single "Depreciation
+    // recap tax" line (legacy display).
+    if (fedRcp1245 > 0 || fedRcp1250 > 0) {
+      rows.push(['Depreciation recap tax (§1245)', fedRcp1245, !!opts.forceRecap]);
+      rows.push(['Depreciation recap tax (§1250)', fedRcp1250, !!opts.forceRecap]);
+    } else {
+      rows.push(['Depreciation recap tax',         fedRcp,     !!opts.forceRecap]);
+    }
+    rows.push(['AMT top-up',              amt,    false]);
+    rows.push(['NIIT (3.8%)',             niit,   false]);
+    rows.push(['Additional Medicare',     addmed, false]);
+    rows.push(['SE / FICA tax',           setax,  false]);
+    rows.push(['State income tax',        state,  true]);
     return rows.map(function (r) {
       var amt2 = Number(r[1]) || 0;
       if (!r[2] && amt2 === 0) return '';
@@ -425,8 +482,16 @@
     var ordOffsetSupp = 0;
     var ltGainAddedSupp = 0;
     var otherTaxSaved = 0;
+    // Per-supp itemization: capture each funded supp's contribution to the
+    // four accumulators as a DELTA (snapshot the globals before/after the
+    // accumulation body) so the activity column can list each strategy on
+    // its own line — e.g. "Oil & Gas — ordinary income offset $X" and
+    // "Equipment Leasing — ordinary income offset $Y" as two distinct rows
+    // even though both are ordinary offsets. Display-only; gross/net math
+    // is unaffected (that path runs through _computeSuppSavingsForYear).
+    var suppEntries = [];
     if (Array.isArray(fundedSupps)) {
-      fundedSupps.forEach(function (s) {
+      var _accumulateSupp = function (s) {
         var extraSpec = (root.__rettSupplementalExtra && root.__rettSupplementalExtra[s.id]) || null;
         var coreSpec  = (root.__rettSupplemental      && root.__rettSupplemental[s.id])      || null;
         var last      = (extraSpec && extraSpec.lastResult)
@@ -553,6 +618,18 @@
           var net = Number(s.netBenefit || last.netBenefit || last.totalSaved || 0) || 0;
           if (net > 0) otherTaxSaved += net;
         }
+      };
+      fundedSupps.forEach(function (s) {
+        var _o0 = ordOffsetSupp, _l0 = ltGainAddedSupp, _s0 = stLossSupp, _t0 = otherTaxSaved;
+        _accumulateSupp(s);
+        suppEntries.push({
+          id:    s.id,
+          name:  (s.name || s.id),
+          ord:   ordOffsetSupp   - _o0,
+          lt:    ltGainAddedSupp - _l0,
+          st:    stLossSupp      - _s0,
+          other: otherTaxSaved   - _t0
+        });
       });
     }
 
@@ -629,33 +706,61 @@
     var bhFeeYear = Math.round((Number(row && row.brookhavenFee) || 0) * bhScale);
     var netForYear = grossBenefit - amFeeYear - bhFeeYear;
 
-    // Surface what Brooklyn losses were APPLIED against this year. The
-    // CPA otherwise sees "ST loss generated $1.8M" but doesn't know
-    // where the $1.8M went (esp. when no LT gain is shown for the
-    // year). The bucket label is inferred from row context:
-    //   gainRecognized > 0     → applied to LT capital gain
-    //   Y0 + recap > 0         → applied to §1250 depreciation recapture
-    //                           (Brooklyn ST losses absorb recap via
-    //                           §1212(b) netting before §1211(b) ord cap)
-    //   else lossApp ≤ $3K     → applied to ordinary income (§1211(b) cap)
-    //   else                   → generic "gain / recap"
+    // Surface what Brooklyn losses were APPLIED against this year as
+    // SEPARATE rows per bucket — the engine now exposes the per-bucket
+    // breakdown so we can render:
+    //   • Loss applied to ST capital gain     (rarely populated)
+    //   • Loss applied to LT capital gain     (most common)
+    //   • Loss applied to §1250 unrecap gain  (after LT is exhausted)
+    //   • Loss applied to ordinary income     (§1211(b) $3K/$1.5K cap)
+    // Previously the temp page lumped everything into a single
+    // "Loss applied to ..." line whose label was inferred from row
+    // context — misleading when (e.g.) LT $1.5M + Brooklyn loss
+    // $1.502M absorbed $1.5M into LT and $2,130 into ordinary but
+    // the single line read "Loss applied to LT capital gain $1,502,130".
     var lossApp = Math.max(0, Number(row && row.lossApplied) || 0);
-    var lossAppLabel = '';
-    if (lossApp > 0) {
-      var rowGain = Math.max(0, Number(row && row.gainRecognized) || 0);
-      var cfgRecap = Math.max(0, Number(cfg && cfg.acceleratedDepreciation) || 0);
-      if (rowGain > 0) lossAppLabel = 'Loss applied to LT capital gain';
-      else if (displayedI === 0 && cfgRecap > 0) lossAppLabel = 'Loss applied to §1250 recapture';
-      else if (lossApp <= 3001) lossAppLabel = 'Loss applied to ordinary income (§1211(b) cap)';
-      else lossAppLabel = 'Loss applied (gain / recap)';
-    }
+    var ltOffset      = Math.max(0, Number(row && row.ltOffsetApplied)        || 0);
+    var stOffset      = Math.max(0, Number(row && row.shortOffsetApplied)     || 0);
+    var recap1250Off  = Math.max(0, Number(row && row.recap1250OffsetApplied) || 0);
+    // ordOffsetBrooklyn already computed upstream (line 476-479) from
+    // row.ordOffsetApplied / withStrategy._ordOffsetApplied.
+    // Sanity floor: when the engine row predates the breakdown fields
+    // (legacy code path), fall back to lumping the total under whichever
+    // single bucket label fits — preserves pre-fix display behavior.
+    var hasBreakdown = (stOffset + ltOffset + recap1250Off + ordOffsetBrooklyn) > 0;
 
     var rows = [];
-    if (stLoss > 0)      rows.push(['ST loss generated',     _fmt(stLoss)]);
-    if (lossApp > 0)     rows.push([lossAppLabel,             _fmt(lossApp)]);
-    if (ordOffset > 0)   rows.push(['Ordinary income offset', _fmt(ordOffset)]);
-    if (ltGainAdded > 0) rows.push(['LT gain added',          _fmt(ltGainAdded)]);
-    if (other > 0)       rows.push(['Other tax savings (PTET, etc.)', _fmt(other)]);
+    if (stLossBrooklyn > 0) rows.push(['ST loss generated (Brooklyn)',         _fmt(stLossBrooklyn)]);
+    if (hasBreakdown) {
+      if (stOffset > 0)     rows.push(['Loss applied to ST capital gain',     _fmt(stOffset)]);
+      if (ltOffset > 0)     rows.push(['Loss applied to LT capital gain',     _fmt(ltOffset)]);
+      if (recap1250Off > 0) rows.push(['Loss applied to §1250 unrecap gain',  _fmt(recap1250Off)]);
+      // §1245 deliberately omitted — capital losses can't reach §1245
+      // (it's ordinary, only the $3K cap below applies).
+      if (ordOffsetBrooklyn > 0) {
+        rows.push(['Loss applied to ordinary income (§1211(b) cap)', _fmt(ordOffsetBrooklyn)]);
+      }
+    } else if (lossApp > 0) {
+      // Legacy fallback (engine row missing breakdown fields).
+      var rowGain = Math.max(0, Number(row && row.gainRecognized) || 0);
+      var cfgRecap = Math.max(0, Number(cfg && cfg.acceleratedDepreciation) || 0);
+      var legacyLabel = '';
+      if (rowGain > 0) legacyLabel = 'Loss applied to LT capital gain';
+      else if (displayedI === 0 && cfgRecap > 0) legacyLabel = 'Loss applied to §1250 recapture';
+      else if (lossApp <= 3001) legacyLabel = 'Loss applied to ordinary income (§1211(b) cap)';
+      else legacyLabel = 'Loss applied (gain / recap)';
+      rows.push([legacyLabel, _fmt(lossApp)]);
+    }
+    // Per-supp itemized activity — one row per strategy per effect, so a
+    // CPA testing the page sees each strategy's contribution separately
+    // (two ordinary-offset strategies render as two rows, not one summed
+    // line). Delphi typically shows two rows: ordinary offset + LT gain.
+    suppEntries.forEach(function (e) {
+      if (e.ord   > 0) rows.push([e.name + ' — ordinary income offset', _fmt(e.ord)]);
+      if (e.lt    > 0) rows.push([e.name + ' — long-term gain added',    _fmt(e.lt)]);
+      if (e.st    > 0) rows.push([e.name + ' — ST loss generated',       _fmt(e.st)]);
+      if (e.other > 0) rows.push([e.name + ' — tax saved',               _fmt(e.other)]);
+    });
     // "Gain from lower tax bracket" — deferred-strategy timing benefit,
     // allocated entirely to Y0. Shows what the client gains by recognizing
     // gain in inflation-bumped later-year brackets (and, for Strategy C,
@@ -738,6 +843,13 @@
       var last      = (extraSpec && extraSpec.lastResult)
                    || (coreSpec  && coreSpec.lastResult) || null;
       if (!last) return;
+      // Shared ordinary-pool saturation scale from the master solver: when
+      // multiple ord-offset supps stacked and the Y0 ordinary income ran
+      // out, the crowded-out supp's realized benefit is scaled down (often
+      // to 0). Apply it here so the per-year cards sum to the bottom panel
+      // (which already uses the saturated solverOut.totalSupplementalBenefit).
+      var satScale = Number(s.saturationScale);
+      if (!Number.isFinite(satScale)) satScale = 1;
       var detail = last.detail || {};
       var perYear = Array.isArray(last.perYear) ? last.perYear : null;
       // Multi-year (Oil & Gas style): perYear[i].totalSaved already
@@ -751,7 +863,7 @@
         var py = perYear[displayedI];
         var pyGross = Number(py.totalSaved || 0) || 0;
         var pyFee   = Number(py.mgmtFeeDollars || 0) || 0;
-        sum += Math.max(0, pyGross - pyFee);
+        sum += Math.max(0, pyGross - pyFee) * satScale;
         return;
       }
       // Unified multi-year shape (post-rename 2026-05-09): every
@@ -763,15 +875,15 @@
       if (detail.taxSavingsY0 != null || detail.taxSavingsRestPerYear != null) {
         var yc = Number(detail.yearCount || 1);
         if (displayedI < yc) {
-          sum += (displayedI === 0)
+          sum += ((displayedI === 0)
             ? Number(detail.taxSavingsY0 || 0)
-            : Number(detail.taxSavingsRestPerYear || 0);
+            : Number(detail.taxSavingsRestPerYear || 0)) * satScale;
         }
         return;
       }
       // Single-year fallback: full netBenefit on Y0.
       if (displayedI === 0) {
-        sum += Number(s.netBenefit || last.netBenefit || last.totalSaved || 0) || 0;
+        sum += (Number(s.netBenefit || last.netBenefit || last.totalSaved || 0) || 0) * satScale;
       }
     });
     return sum;
@@ -782,6 +894,44 @@
   // − comp.totalAllFees) so the displayed net equals Strategy Summary
   // exactly. Per-year breakdown above is informational; the bottom
   // panel is the canonical reconciliation.
+  // Strategy C frequently over-generates Brooklyn short-term loss: more
+  // loss is harvested than there is gain to absorb, so a chunk exits the
+  // last engine row unused. That unused loss has real but unquantifiable
+  // value (≈30¢/$ is too hand-wavy to claim), so instead of claiming it
+  // we REFUND the AM fee spent generating the excess — added back to net
+  // benefit upstream in buildInterestedSummary. This panel surfaces the
+  // raw unused loss plus the fee that was credited back. The authoritative
+  // credit is metrics._excessLossFeeCredit (gated to excess > $10k there);
+  // panel shows only when that credit was actually applied.
+  function _renderExcessLossPanel(ctx) {
+    if (!ctx || !ctx.entry || ctx.chosen !== 'C') return '';
+    var m = ctx.entry.metrics || {};
+    var credit = Math.max(0, Math.round(Number(m._excessLossFeeCredit) || 0));
+    if (credit <= 0) return '';
+    var rows = (ctx.comp && ctx.comp.rows) || [];
+    var excess = rows.length
+      ? Math.max(0, Number(rows[rows.length - 1].stCarryForward) || 0)
+      : 0;
+    var lastYr = rows.length ? (Number(rows[rows.length - 1].year) || null) : null;
+    var yrTag = lastYr ? (' (through ' + lastYr + ')') : '';
+    return '' +
+      '<div class="temp-excess-loss-panel">' +
+        '<div class="temp-excess-loss-head">Excess carryover loss' + yrTag + '</div>' +
+        '<div class="temp-excess-loss-body">' +
+          '<div class="temp-excess-loss-line">' +
+            '<span class="temp-excess-loss-amt">' + _fmt(excess) + '</span>' +
+            '<span class="temp-excess-loss-label">unused short-term loss carried forward</span>' +
+          '</div>' +
+          '<div class="temp-excess-loss-line">' +
+            '<span class="temp-excess-loss-amt temp-excess-loss-credit">+' + _fmt(credit) + '</span>' +
+            '<span class="temp-excess-loss-label">Asset Manager fee credited back to net benefit</span>' +
+          '</div>' +
+          '<div class="temp-excess-loss-note"><em>We don’t claim an economic value for the unused loss. ' +
+            'Instead we refund the fee it cost to generate &mdash; already reflected in the reduced Asset Manager fees and net benefit above.</em></div>' +
+        '</div>' +
+      '</div>';
+  }
+
   function _renderFeesPanel(ctx) {
     if (!ctx || !ctx.entry) return '';
     var m = ctx.entry.metrics || {};
@@ -824,14 +974,28 @@
         }
       } catch (e) { /* */ }
     }
-    var totalGross = brooklynGross + suppBenefit;
+    // Carryover-loss offset credit (A/B/C) — the value of the free
+    // §1211(b) $3,000/$1,500 ordinary offset the residual carryforward
+    // buys in the first idle year after deployment. buildInterestedSummary
+    // adds it straight to metrics.net (projection-dashboard-render.js), but
+    // it never touches savings or fees — so the panel must surface it as
+    // its own benefit line, or the "gross − fees" net would sit BELOW the
+    // card / Strategy-Summary net by exactly this credit and trip the
+    // reconciliation check (the Strategy-C "⚠ mismatch" bug). Same applies
+    // to the additional-funds liquidation tax, which metrics.net subtracts
+    // but the panel otherwise wouldn't see.
+    var carryoverCredit = Math.round(Number(m._carryoverOffsetCredit || 0) || 0);
+    var addlFundsTax    = Math.round(Number(m._additionalFundsTriggeredTax || 0) || 0);
+    var totalGross = brooklynGross + suppBenefit + carryoverCredit;
     var brooklynFees   = Math.round(Number(m.brooklynFees   || 0) || 0);
     var brookhavenFees = Math.round(Number(m.brookhavenFees || 0) || 0);
     var totalFees      = brooklynFees + brookhavenFees;
-    var net = totalGross - totalFees;
+    var net = totalGross - totalFees - addlFundsTax;
     // Strategy Summary's displayed net = primary net (Brooklyn savings
-    // − fees) + supplementalBenefit. entry.metrics.net is the primary
-    // piece only; adding suppBenefit gives the user-facing total.
+    // − fees + carryover credit − additional-funds tax) + supplementalBenefit.
+    // entry.metrics.net is the primary piece only; adding suppBenefit gives
+    // the user-facing total. With the credit + tax now folded into `net`
+    // above, the two sides reconcile to the dollar.
     var primaryNet = Math.round(Number(m.net || 0) || 0);
     var ssDisplayedNet = primaryNet + suppBenefit;
     var checkOk = Math.abs(net - ssDisplayedNet) <= 5;
@@ -847,6 +1011,13 @@
     var brooklynRows =
       '<tr><td>Brooklyn gross savings (across all years)</td><td class="temp-amt">' + _fmt(brooklynGross) + '</td></tr>' +
       lbbFootnote;
+    // Surfaced only when nonzero so the simple lump-sum cases stay clean.
+    var carryoverRow = (carryoverCredit > 5)
+      ? '<tr><td>Carryover-loss offset credit (§1211(b) annual offset)</td><td class="temp-amt">' + _fmt(carryoverCredit) + '</td></tr>'
+      : '';
+    var addlFundsTaxRow = (addlFundsTax > 5)
+      ? '<tr><td>Additional-funds liquidation tax (one-time)</td><td class="temp-amt">&minus;' + _fmt(addlFundsTax) + '</td></tr>'
+      : '';
 
     return '' +
       '<div class="temp-fees-panel">' +
@@ -854,9 +1025,11 @@
         '<table class="temp-fees-table"><tbody>' +
           brooklynRows +
           '<tr><td>Supplemental tax savings (vetted total)</td><td class="temp-amt">' + _fmt(suppBenefit) + '</td></tr>' +
+          carryoverRow +
           '<tr class="temp-fees-subtotal"><td><strong>Total gross benefit</strong></td><td class="temp-amt temp-fees-gross"><strong>' + _fmt(totalGross) + '</strong></td></tr>' +
           '<tr><td>Asset Manager fees (across all years)</td><td class="temp-amt">&minus;' + _fmt(brooklynFees) + '</td></tr>' +
           '<tr><td>Brookhaven fees (across all years)</td><td class="temp-amt">&minus;' + _fmt(brookhavenFees) + '</td></tr>' +
+          addlFundsTaxRow +
           '<tr class="temp-fees-total"><td><strong>Net benefit (gross − fees)</strong></td><td class="temp-amt"><strong>' + _fmt(net) + '</strong></td></tr>' +
           '<tr class="temp-fees-check' + (checkOk ? ' is-ok' : ' is-mismatch') + '"><td>Strategy Summary net benefit ' + (checkOk ? '✓ matches' : '⚠ mismatch') + '</td><td class="temp-amt">' + _fmt(ssDisplayedNet) + '</td></tr>' +
         '</tbody></table>' +
@@ -1119,7 +1292,7 @@
     var coversTax = ctx.entry && ctx.entry.cfg &&
       (ctx.entry.cfg.coverTaxesFromSale === true || ctx.entry.cfg.coverTaxesFromSale === 'yes');
     host.classList.toggle('temp-baselines--withdrawals', !!coversTax);
-    host.innerHTML = html + _renderFeesPanel(ctx);
+    host.innerHTML = html + _renderExcessLossPanel(ctx) + _renderFeesPanel(ctx);
   }
 
   root.renderTempPage = render;

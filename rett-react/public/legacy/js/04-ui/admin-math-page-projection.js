@@ -25,10 +25,17 @@
 
   // Same approach as Tab 3: read post-optimizer entries from
   // buildInterestedSummary so the headline net matches the card.
-  // We ALSO call unifiedTaxComparison(entry.cfg) to get the per-year
-  // engine row breakdown - those are pre-optimizer rows but they
-  // represent the raw engine output the CPA wants to see. The
-  // headline net + savings + fees reflect the post-optimizer values.
+  // We ALSO call unifiedTaxComparison(...) to get the per-year engine
+  // row breakdown. CRITICAL: we run the engine on the DIALED-BACK cfg
+  // (entry._partialDeploy.deployed), NOT entry.cfg, so the per-year
+  // and per-tranche numbers match what the optimizer actually chose.
+  // Previously this called engine on full cfg and scaled fees by
+  // optScale, which gave the right total by coincidence but wrong
+  // per-year/per-tranche breakdowns (tier-jumping is non-linear in
+  // capital — fee structure at $5M deployment is not just 0.61× the
+  // fee structure at $3.05M deployment, the tranches live on different
+  // Schwab combos). Tab 7 (temp-page-render.js) has used this dialed
+  // path all along; this brings projection admin in line.
   function _strategyAnalysis(type) {
     if (typeof root.buildInterestedSummary !== 'function') {
       return { error: 'buildInterestedSummary unavailable' };
@@ -43,16 +50,25 @@
     var entry = (summary.entries || []).find(function (e) { return e.type === type; });
     if (!entry) return { error: 'no entry for ' + type };
 
+    // Build the engine cfg at the DIALED-BACK deployment so per-year /
+    // per-tranche rows reconcile to the card without post-scaling.
+    var pd = entry._partialDeploy || null;
+    var ecfg = entry.cfg;
+    if (pd && Number.isFinite(Number(pd.deployed))) {
+      var _dep = Math.max(0, Math.round(Number(pd.deployed)));
+      if (_dep !== Math.round(Number(ecfg.availableCapital) || 0)) {
+        ecfg = Object.assign({}, ecfg, {
+          availableCapital: _dep, investment: _dep, investedCapital: _dep
+        });
+      }
+    }
+    if (typeof root.rettFlavorEngineCfg === 'function') {
+      try { ecfg = root.rettFlavorEngineCfg(ecfg); } catch (e) { /* */ }
+    }
     var cmp;
-    try { cmp = root.unifiedTaxComparison(entry.cfg, { includeTrancheBreakdown: true }); }
+    try { cmp = root.unifiedTaxComparison(ecfg, { includeTrancheBreakdown: true }); }
     catch (e) { return { error: 'engine threw: ' + (e.message || e) }; }
     var m = entry.metrics || {};
-    // Partial-investment optimizer breadcrumb (set in buildInterestedSummary):
-    // how much of the available capital it actually deployed, and the
-    // full-deployment loss it would have wasted (which justified dialing
-    // back). cmp here is the FULL-deployment engine run, so its rows give
-    // the at-full loss generated vs applied.
-    var pd = entry._partialDeploy || null;
     var _lossGen = 0, _lossApp = 0;
     (cmp.rows || []).forEach(function (r) { _lossGen += _num(r.lossGenerated); _lossApp += _num(r.lossApplied); });
     // Strategy A immediate path: card reads brooklynFees from
@@ -110,7 +126,30 @@
       cardSavings: _num(m.savings != null ? m.savings : m._savingsAtFull),
       cardBrooklynFees: _num(m.brooklynFees),
       cardBrookhavenFees: _num(m.brookhavenFees),
-      cardNet: _num(m.net)
+      cardNet: _num(m.net),
+      // Excess-loss fee credit (Strategy C only): when Brooklyn
+      // generates >$10K of carryover loss that can't be absorbed,
+      // the AM fee on that excess is refunded into net. Already
+      // baked into m.brooklynFees / m.net by projection-dashboard-
+      // render.js. Surfacing here as an explicit line so the admin
+      // reconciliation doesn't show a phantom $14K gap between
+      // "savings − fees" and "NET BENEFIT (on card)".
+      excessLossFeeCredit: _num(m._excessLossFeeCredit || 0),
+      // Additional Funds (advisor 2026-06-02): when the Projection-tab
+      // toggle is on, collectInputs folds a brokerage liquidation into
+      // capital. The per-strategy amount sweep (projection-dashboard-render.js)
+      // lets each strategy pick the liquidation amount (0 / a tier gap / the
+      // entered amount) that maximizes ITS net — a card never drops below its
+      // no-funds net. Surface the chosen amount + the liquidation math.
+      additionalFundsApplied:      _num((entry.cfg || {}).additionalFundsApplied || 0),
+      additionalFundsUsed:         _num(m._additionalFundsUsed != null
+                                     ? m._additionalFundsUsed
+                                     : ((entry.cfg || {}).additionalFundsApplied || 0)),
+      additionalFundsFloored:      !!m._additionalFundsFloored,
+      additionalFundsTriggeredTax: _num(m._additionalFundsTriggeredTax || 0),
+      additionalY0LongGain:        _num((entry.cfg || {}).additionalY0LongGain || 0),
+      additionalY0ShortGain:       _num((entry.cfg || {}).additionalY0ShortGain || 0),
+      netBeforeFloor:              (m._netBeforeFloor != null ? _num(m._netBeforeFloor) : null)
     };
   }
 
@@ -120,7 +159,55 @@
       (note ? '<td class="admin-math-note-cell">' + note + '</td>' : '<td></td>') + '</tr>';
   }
 
-  function _perYearTable(cmp, projFees, optScale) {
+  // Additional Funds disclosure: shown only when the toggle folded a
+  // brokerage liquidation in (additionalFundsApplied > 0). Each strategy
+  // picks its own optimal amount; discloses the chosen amount + math.
+  function _additionalFundsBlock(analysis) {
+    var applied = _num(analysis.additionalFundsApplied);   // advisor's entered/considered amount
+    if (!(applied > 0)) return '';
+    var used = _num(analysis.additionalFundsUsed);         // this strategy's chosen amount
+    // Y0 gains scale pro-rata with the CHOSEN amount (cfg holds them at the
+    // entered amount, so rescale by used/applied).
+    var ratio = applied > 0 ? (used / applied) : 0;
+    var lt = _num(analysis.additionalY0LongGain) * ratio;
+    var st = _num(analysis.additionalY0ShortGain) * ratio;
+    var tax = _num(analysis.additionalFundsTriggeredTax);  // already the chosen amount's tax
+    var consideredNote = (Math.abs(used - applied) > 0.5)
+      ? ' (advisor considered ' + _fmtUSD(applied) + ')' : '';
+    var rows = '';
+    rows += '<tr><td>Liquidation (this strategy)</td><td class="admin-math-num">' + _fmtUSD(used) +
+            '</td><td class="admin-math-note-cell">Brokerage sold to add Brooklyn capital' + consideredNote +
+            ' — each strategy picks the amount that helps it most</td></tr>';
+    rows += '<tr><td>Triggered Y0 gain</td><td class="admin-math-num">' + _fmtUSD(lt + st) +
+            '</td><td class="admin-math-note-cell">' + _fmtUSD(lt) + ' LT + ' + _fmtUSD(st) +
+            ' ST realized by the sale (pro-rata to the account’s embedded gain)</td></tr>';
+    rows += '<tr><td>One-time liquidation tax</td><td class="admin-math-num">' + _fmtUSD(tax) +
+            '</td><td class="admin-math-note-cell">tax owed purely for liquidating — not a strategy cost</td></tr>';
+    var forcedNet = (analysis.netBeforeFloor != null) ? _fmtUSD(analysis.netBeforeFloor) : '—';
+    var verdict, note;
+    if (!(used > 0)) {
+      verdict = 'DECLINES funds';
+      note = 'funds don’t pay off here — net held at the no-funds value (' + forcedNet +
+             ' at the full ' + _fmtUSD(applied) + '). The toggle never lowers a card.';
+    } else if (Math.abs(used - applied) <= 0.5) {
+      verdict = 'USES funds (full)';
+      note = 'extra capital improves this strategy by more than the liquidation tax (net already nets the tax above)';
+    } else {
+      verdict = 'USES funds (partial)';
+      note = 'liquidates ' + _fmtUSD(used) + ' — the tier amount that maximizes this strategy; more would only add liquidation tax (' +
+             forcedNet + ' at the full ' + _fmtUSD(applied) + ')';
+    }
+    rows += '<tr class="admin-math-total"><td><strong>Decision: ' + verdict + '</strong></td>' +
+            '<td class="admin-math-num"><strong>' + _fmtUSD(analysis.cardNet) + '</strong></td>' +
+            '<td class="admin-math-note-cell">' + note + '</td></tr>';
+    return '<p class="admin-math-subtitle" style="margin-top:10px;">Additional Funds (this strategy’s decision):</p>' +
+      '<table class="admin-math-table">' +
+        '<thead><tr><th>Item</th><th class="admin-math-num">Amount</th><th>Note</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>';
+  }
+
+  function _perYearTable(cmp, projFees, optScale, excessLossFeeCredit) {
     var rows = cmp.rows || [];
     if (!rows.length) return '<p class="admin-math-empty">No per-year rows from engine.</p>';
     var scale = (typeof optScale === 'number' && isFinite(optScale)) ? optScale : 1;
@@ -166,11 +253,14 @@
       // annualized accrual. Without this the per-year fee column shows
       // $84,815 while the card reads $54,733 — same scenario, two
       // different engines, a $30K phantom gap that looked like a bug.
-      // B/C: scale by optimizer dial-back so deferred-mode rows also
-      // reconcile to the card.
+      // B/C: r.fee is already at the dialed-back deployment (engine
+      // was called with pd.deployed), so no post-scaling needed. The
+      // legacy `_num(r.fee) * scale` pattern was an attempt to scale
+      // FULL-cfg fees down, but tier-jumping makes that non-linear
+      // and produced bogus per-year fees. Use engine truth directly.
       var f = (projFees && projFees.byYear && projFees.byYear[r.year] != null)
         ? _num(projFees.byYear[r.year])
-        : _num(r.fee) * scale;
+        : _num(r.fee);
       var fh = _num(r.brookhavenFee);
       totG += g; totL += l; totS += s; totF += f; totFH += fh; totR += newDep; totWd += withdrawn;
       cumL += l; cumS += s; cumFAll += (f + fh);
@@ -214,10 +304,23 @@
         '<td class="admin-math-num"><strong>' + _fmtUSD(net) + '</strong></td>' +
       '</tr>' +
       '<tr class="admin-math-total">' +
-        '<td colspan="13"><strong>Raw engine net</strong> &mdash; sum of per-year (savings &minus; fees), pre-optimizer</td>' +
+        '<td colspan="13"><strong>Raw engine net</strong> &mdash; sum of per-year (savings &minus; fees)' +
+          (excessLossFeeCredit > 0 ? ', before excess-loss credit' : '') +
+        '</td>' +
         '<td class="admin-math-num"><strong>' + _fmtUSD(net) + '</strong></td>' +
-      '</tr>' +
-      '</tbody></table>' +
+      '</tr>';
+    if (excessLossFeeCredit > 0) {
+      html +=
+        '<tr class="admin-math-total">' +
+          '<td colspan="13">+ Excess-loss fee credit (Strategy C: refunds AM fee on residual unused short-term loss &gt; $10K)</td>' +
+          '<td class="admin-math-num"><strong>+' + _fmtUSD(excessLossFeeCredit) + '</strong></td>' +
+        '</tr>' +
+        '<tr class="admin-math-total">' +
+          '<td colspan="13"><strong>Reconciles to NET BENEFIT on card</strong></td>' +
+          '<td class="admin-math-num"><strong>' + _fmtUSD(net + excessLossFeeCredit) + '</strong></td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>' +
       '</div>';
     return html;
   }
@@ -230,12 +333,12 @@
   function _perTrancheTable(cmp, projFees, optScale) {
     var rows = cmp.rows || [];
     if (!rows.length) return '';
-    // A: scale tranche-level fees by (projFees.total / sum of unified
-    //    fees) so the per-tranche grid also reconciles to the card.
-    //    A is single-tranche / single-year so this is a straight
-    //    substitution in practice — kept as a ratio for safety.
-    // B/C: scale by optScale to absorb optimizer dial-back.
-    var feeScale = (typeof optScale === 'number' && isFinite(optScale)) ? optScale : 1;
+    // A: ratio-scale tranche fees to projFees.total (single-tranche
+    //    single-year so it's a straight substitution; kept as ratio
+    //    for safety).
+    // B/C: NO scaling — cmp was already run at the dialed deployment
+    //    (see _strategyAnalysis), so tranche fees are already correct.
+    var feeScale = 1;
     if (projFees && projFees.total != null) {
       var unifiedFeeTotal = 0;
       rows.forEach(function (r) { unifiedFeeTotal += _num(r.fee); });
@@ -479,6 +582,25 @@
                                            : (letter === 'A'
                                                ? 'Est. sale tax ' + _fmtUSD(analysis.coverSaleTaxY0) + ' — shown for planning; A is Y0-only, no Y1 sale modeled'
                                                : _fmtUSD(analysis.coverSetAside) + ' set aside from the January installments to pay the sale tax — NOT invested in Brooklyn')),
+      // Recap composition (§1245 vs §1250). When the user filled the
+      // split sub-block on Section 02, surface it here so the CPA sees
+      // how much of the recap is ordinary-flavored (§1245) vs capped
+      // at 25% (§1250). The engine routes them differently — §1245
+      // pays full marginal and is excluded from NIIT; §1250 keeps the
+      // §1(h)(1)(E) 25% cap and is in the NIIT base.
+      (function () {
+        var _ad      = _num(cfg.acceleratedDepreciation);
+        var _ad1245  = _num(cfg.acceleratedDepreciation1245);
+        var _ad1250  = _num(cfg.acceleratedDepreciation1250);
+        if (_ad <= 0) return '';
+        if (_ad1245 + _ad1250 <= 0) {
+          return _autoPickRow('Recap composition',  _fmtUSD(_ad) + ' all §1250',
+                              'Split sub-block blank — engine defaulting full recap to §1250 unrecap (25% cap, in NIIT). Set the §1245 portion on Section 02 to route the personal-property piece at full marginal rates.');
+        }
+        return _autoPickRow('Recap composition',
+              _fmtUSD(_ad1245) + ' §1245 + ' + _fmtUSD(_ad1250) + ' §1250',
+              '§1245 (personal property / cost-seg): full marginal rates, NOT in NIIT. §1250 (real property): per-slice 25% cap, IN NIIT.');
+      })(),
       _autoPickRow('Available capital',  _fmtUSD(_num(cfg.availableCapital)),
                                          'Total Brooklyn investment commitment'),
       _autoPickRow('Deployed (optimizer)', _fmtUSD(_num(analysis.deployedCap)),
@@ -486,15 +608,46 @@
                                            ? 'PARTIAL — ' + (analysis.partialScale * 100).toFixed(0) + '% of available; the rest would only add fees (see callout)'
                                            : 'Full deployment (no waste to dial back)')
     ];
+    // Forced Y0 payment (personal-use + amount-owed carved off at
+    // closing). For deferred strategies (B/C) this cash is received in
+    // year zero, so it pulls F × gross-profit-ratio of LT gain forward
+    // into the Y0 row of the per-year table below (and is NOT deployed
+    // to Brooklyn). Strategy A already recognizes everything Y0, so
+    // there it only shrinks available capital.
+    var _forced = _num(cfg.forcedY0Payment);
+    if (_forced > 0) {
+      var _recapF    = Math.max(0, _num(cfg.acceleratedDepreciation));
+      var _ltGF      = Math.max(0, _num(cfg.salePrice) - _num(cfg.costBasis) - _recapF - _num(cfg.shortTermPropertyGain));
+      var _contractF = Math.max(0, _num(cfg.salePrice) - _recapF);
+      var _gpF       = _contractF > 0 ? _ltGF / _contractF : 0;
+      var _forcedGainF = _forced * _gpF;
+      pickRows.push(_autoPickRow('Forced Y0 payment', _fmtUSD(_forced),
+        letter === 'A'
+          ? 'Personal-use + amount-owed carved off proceeds at closing. Strategy A recognizes all gain Y0 anyway, so this only reduces available capital — no extra recognition.'
+          : 'Personal-use + amount-owed carved off at closing. Received Y0 &rarr; recognizes ' +
+            _fmtUSD(_forcedGainF) + ' of LT gain in year zero (F &times; gross-profit-ratio ' +
+            (_gpF * 100).toFixed(1) + '%). Pulled forward out of the deferral schedule (included in the Y0 Gain Recog. row below). NOT deployed to Brooklyn.'));
+    }
+    // Build card-values block. Strategy C may have an excess-loss fee
+    // credit baked into cardBrooklynFees + cardNet; surface it so the
+    // CPA can see the arithmetic close: savings − net fees − BH = card net.
+    var _excessCredit = analysis.excessLossFeeCredit || 0;
+    var _grossBrkFees = analysis.cardBrooklynFees + _excessCredit;  // pre-credit
+    var cardSummaryRows = '';
+    cardSummaryRows += '<tr><td>Gross tax savings</td><td class="admin-math-num">' + _fmtUSD(analysis.cardSavings) + '</td><td class="admin-math-note-cell">post-optimizer</td></tr>';
+    if (_excessCredit > 0) {
+      cardSummaryRows += '<tr><td>Brooklyn fees (gross)</td><td class="admin-math-num">' + _fmtUSD(_grossBrkFees) + '</td><td class="admin-math-note-cell">at deployed capital</td></tr>';
+      cardSummaryRows += '<tr><td>&nbsp;&nbsp;Excess-loss fee credit</td><td class="admin-math-num">&minus;' + _fmtUSD(_excessCredit) + '</td><td class="admin-math-note-cell">Strategy C: AM fee refunded on residual unused short-term loss (&gt;$10K)</td></tr>';
+      cardSummaryRows += '<tr><td>Brooklyn fees (net of credit)</td><td class="admin-math-num">' + _fmtUSD(analysis.cardBrooklynFees) + '</td><td class="admin-math-note-cell">used in NET BENEFIT below</td></tr>';
+    } else {
+      cardSummaryRows += '<tr><td>Brooklyn fees</td><td class="admin-math-num">' + _fmtUSD(analysis.cardBrooklynFees) + '</td><td class="admin-math-note-cell">post-optimizer</td></tr>';
+    }
+    cardSummaryRows += '<tr><td>Brookhaven fees</td><td class="admin-math-num">' + _fmtUSD(analysis.cardBrookhavenFees) + '</td><td></td></tr>';
+    cardSummaryRows += '<tr class="admin-math-total"><td><strong>NET BENEFIT (on card)</strong></td><td class="admin-math-num"><strong>' + _fmtUSD(analysis.cardNet) + '</strong></td><td class="admin-math-note-cell">savings − net fees</td></tr>';
     var cardSummary =
       '<p class="admin-math-subtitle" style="margin-top:10px;">Page 3 card values (post-optimizer):</p>' +
       '<table class="admin-math-table">' +
-        '<tbody>' +
-          '<tr><td>Gross tax savings</td><td class="admin-math-num">' + _fmtUSD(analysis.cardSavings) + '</td><td class="admin-math-note-cell">post-optimizer</td></tr>' +
-          '<tr><td>Brooklyn fees</td><td class="admin-math-num">' + _fmtUSD(analysis.cardBrooklynFees) + '</td><td class="admin-math-note-cell">post-optimizer</td></tr>' +
-          '<tr><td>Brookhaven fees</td><td class="admin-math-num">' + _fmtUSD(analysis.cardBrookhavenFees) + '</td><td></td></tr>' +
-          '<tr class="admin-math-total"><td><strong>NET BENEFIT (on card)</strong></td><td class="admin-math-num"><strong>' + _fmtUSD(analysis.cardNet) + '</strong></td><td class="admin-math-note-cell">savings − fees</td></tr>' +
-        '</tbody>' +
+        '<tbody>' + cardSummaryRows + '</tbody>' +
       '</table>';
     return '<div class="admin-math-section">' +
       '<h4>Strategy ' + letter + ' &mdash; ' + _esc(name) + ' &mdash; ' + _esc(comboLabel) + '</h4>' +
@@ -503,9 +656,10 @@
         '<tbody>' + pickRows.join('') + '</tbody>' +
       '</table>' +
       cardSummary +
+      _additionalFundsBlock(analysis) +
       _deploymentCallout(analysis) +
       '<p class="admin-math-subtitle" style="margin-top:10px;">Per-year engine output (Brooklyn fee reconciled to card; other columns are raw engine pre-optimizer):</p>' +
-      _perYearTable(cmp, analysis.projFees, analysis.optScale) +
+      _perYearTable(cmp, analysis.projFees, analysis.optScale, analysis.excessLossFeeCredit) +
       '<p class="admin-math-subtitle" style="margin-top:10px;">Per-tranche breakdown (each Brooklyn deposit aged through every year):</p>' +
       _perTrancheTable(cmp, analysis.projFees, analysis.optScale) +
       '<p class="admin-math-subtitle" style="margin-top:10px;">Brookhaven planning fee schedule (setup + quarterly accrual):</p>' +

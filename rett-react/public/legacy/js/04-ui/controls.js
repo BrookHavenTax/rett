@@ -318,7 +318,7 @@ function _bindCaseControls() {
     if (!window.confirm('Start a new client? The form will be cleared.')) return;
     window.__rettSuppressAutoSave = true;
     store.startNewCase();
-    resetAllInputs(true);
+    resetAllInputs(true, true);   // clear form but stay on the current tab
     _refreshCaseDropdown('');
     if (nameInput) {
       nameInput.value = '';
@@ -329,7 +329,7 @@ function _bindCaseControls() {
   });
 }
 
-function resetAllInputs(skipConfirm) {
+function resetAllInputs(skipConfirm, stayOnCurrentPage) {
   // Reset all editable form fields on Page 1 and Page 2 to their initial state.
   // Resets the underlying defaults selected in HTML — does NOT clear localStorage
   // (the app does not persist anything yet).
@@ -463,7 +463,7 @@ function resetAllInputs(skipConfirm) {
     setTimeout(function () { if (typeof hideBanner === 'function') hideBanner(); }, 2000);
   }
 
-  showPage('page-inputs');
+  if (!stayOnCurrentPage) showPage('page-inputs');
 }
 
 // Refresh the visual state of the three Strategy-Selection cards
@@ -1264,10 +1264,17 @@ function bindControls() {
    // Structured-sale duration caps the deferred recognition window —
    // changing it must re-run the pipeline so chart / pies / KPIs
    // reflect the new maturity year.
-   'structured-sale-duration-months'].forEach(function (fid) {
+   'structured-sale-duration-months',
+   // Additional Funds: the projection-page toggle folds extra liquid
+   // capital into availableCapital/investment (see inputs-collector.js).
+   // Flipping it — or editing the amount / account value / gains — must
+   // re-run the pipeline so the projection cards reflect the new capital.
+   'additional-funds-toggle', 'additional-funds', 'additional-account-value',
+   'additional-lt-gain', 'additional-st-gain'].forEach(function (fid) {
     const el = document.getElementById(fid);
     if (!el) return;
-    const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
+    const evt = (el.tagName === 'SELECT') ? 'change'
+              : (el.type === 'checkbox') ? 'change' : 'input';
     let _t;
     el.addEventListener(evt, function () {
       clearTimeout(_t);
@@ -1280,6 +1287,21 @@ function bindControls() {
             try { maybeAutoPick(); } catch (e) { if (typeof window !== "undefined" && typeof window.reportFailure === "function") window.reportFailure("non-fatal in controls.js", e); else if (typeof console !== "undefined") console.warn(e); }
           }
           runFullPipeline();
+          // runFullPipeline renders the KPI dashboard but NOT the
+          // Projection-page "Interested" cards (those come from
+          // renderInterestedSnapshot). Without this, a same-page input
+          // change — e.g. flipping the Additional Funds toggle — updates
+          // the engine (__lastResult) but leaves the visible card net
+          // values stale until the user navigates away and back.
+          if (typeof renderInterestedSnapshot === 'function') {
+            try { renderInterestedSnapshot(); } catch (e) { if (typeof window !== "undefined" && typeof window.reportFailure === "function") window.reportFailure("non-fatal in controls.js", e); else if (typeof console !== "undefined") console.warn(e); }
+          }
+          // Stage 1: re-gate the "Include additional funds" toggle (hide it
+          // when the entered amount yields no off-the-sale benefit). Cheap-
+          // exits when no additional funds are in play.
+          if (typeof window.rettSyncAFToggleVisibility === 'function') {
+            try { window.rettSyncAFToggleVisibility(); } catch (e) { /* */ }
+          }
           if (typeof syncPillSelection === 'function') syncPillSelection();
         } catch (e) { (window.reportFailure || console.warn)('Auto-recalculate failed', e); }
       }, 250);
@@ -1825,6 +1847,118 @@ function bindControls() {
   for (var _pun = 1; _pun <= 5; _pun++) _wirePersonalUseForBlock(_pun);
   _syncPersonalUseMirror();
 
+  // Per-property "Is there any amount still owed on the property?" wiring.
+  // Yes reveals the payoff Amount input; the entered amount subtracts from
+  // Available Capital (recompute fires via the listener array below, which
+  // reads __rettSumAmountOwed). On No, clear the amount so a stale value
+  // can't keep reducing capital while hidden.
+  function _wireAmountOwedForBlock(n) {
+    var yn = document.getElementById('amount-owed-yes-no-' + n);
+    var grp = document.getElementById('amount-owed-amount-group-' + n);
+    var amt = document.getElementById('amount-owed-amount-' + n);
+    if (!yn || !grp) return;
+    function _toggleVisibility() {
+      grp.hidden = (yn.value !== 'yes');
+      if (yn.value !== 'yes' && amt) amt.value = '';
+    }
+    yn.addEventListener('change', _toggleVisibility);
+    _toggleVisibility();
+  }
+  for (var _aon = 1; _aon <= 5; _aon++) _wireAmountOwedForBlock(_aon);
+
+  // §1245/§1250 recap split (Section 02 sub-block).
+  //   When the user enters a non-zero "Accelerated Depreciation Recapture",
+  //   reveal two sub-inputs so they can attribute the recap to its tax
+  //   character: §1245 (personal property / cost-seg short-life) gets
+  //   ordinary income treatment, while §1250 (real property / 39-yr shell)
+  //   gets the §1(h)(1)(E) 25% cap + capital-loss-offset eligibility.
+  //   The two sub-amounts SHOULD sum to the parent total; the validator
+  //   line shows the live delta so the CPA can confirm.
+  //   Backward compat: if the user leaves the sub-inputs blank, the engine
+  //   defaults the whole parent amount to §1250 (current behavior, since
+  //   that's what the engine has always assumed). So this is opt-in
+  //   precision without regressing existing saved cases.
+  function _wireRecapSplitForBlock(n) {
+    var suffix = (n === 1 ? '' : '-' + n);
+    var parent = document.getElementById('accelerated-depreciation' + suffix);
+    var row1245 = document.getElementById('recap-split-1245-row-' + n);
+    var row1250 = document.getElementById('recap-split-1250-row-' + n);
+    var inp1245 = document.getElementById('accelerated-depreciation-1245' + (n === 1 ? '' : '-' + n));
+    var inp1250 = document.getElementById('accelerated-depreciation-1250' + (n === 1 ? '' : '-' + n));
+    if (!parent || !row1245 || !row1250) return;
+
+    function _parseUSDsafe(v) {
+      return (typeof parseUSD === 'function' ? parseUSD(v) : Number(v)) || 0;
+    }
+    function _fmtUSDsafe(n) {
+      if (typeof fmtUSD === 'function') return fmtUSD(n);
+      var v = Math.round(Number(n) || 0);
+      return '$' + v.toLocaleString('en-US');
+    }
+
+    function _toggleSplitVisibility() {
+      // Reveal the §1245 / §1250 split sub-block ONLY when the parent
+      // "Accelerated Depreciation Recapture" field has a positive value.
+      // Uses a class (not [hidden]) so case-storage restore can't re-hide.
+      var total = _parseUSDsafe(parent.value);
+      var show = total > 0;
+      [row1245, row1250].forEach(function (r) {
+        if (!r) return;
+        if (show) r.classList.add('recap-split-active');
+        else r.classList.remove('recap-split-active');
+      });
+      // Parent went to $0 — clear sub-amounts so stale data can't poison
+      // cfg downstream once the split is hidden.
+      if (!show) {
+        if (inp1245) inp1245.value = '';
+        if (inp1250) inp1250.value = '';
+      }
+    }
+
+    // Auto-fill-the-other: when the user types in one box, fill the
+    // other with (parent recap − this box). User doesn't need a sum-
+    // validator line; the math holds by construction. Skip auto-fill
+    // when the user is actively typing in the OTHER input (avoid feedback
+    // loops) and when the parent is $0 / blank (no meaningful complement).
+    function _autoFillOther(typedInto, otherInput) {
+      if (!typedInto || !otherInput) return;
+      var total = _parseUSDsafe(parent.value);
+      if (total <= 0) return;
+      var typed = _parseUSDsafe(typedInto.value);
+      // Clamp negative or over-total to a valid complement so the other
+      // field never goes negative. If the user typed > total, set their
+      // value to total and the other to 0.
+      if (typed > total) {
+        typedInto.value = _fmtUSDsafe(total);
+        typed = total;
+      }
+      var other = Math.max(0, total - typed);
+      var newOtherVal = _fmtUSDsafe(other);
+      if (otherInput.value !== newOtherVal) {
+        otherInput.value = newOtherVal;
+        // No need to dispatch a synthetic event — collectInputs reads
+        // .value directly on each engine call. Avoid feedback loop.
+      }
+    }
+
+    parent.addEventListener('input',  _toggleSplitVisibility);
+    parent.addEventListener('change', _toggleSplitVisibility);
+    if (inp1245) {
+      var _do1245 = function () { _autoFillOther(inp1245, inp1250); };
+      inp1245.addEventListener('input',  _do1245);
+      inp1245.addEventListener('change', _do1245);
+    }
+    if (inp1250) {
+      var _do1250 = function () { _autoFillOther(inp1250, inp1245); };
+      inp1250.addEventListener('input',  _do1250);
+      inp1250.addEventListener('change', _do1250);
+    }
+    // Initial pass: reveal if saved cfg has a non-zero parent value.
+    _toggleSplitVisibility();
+  }
+  // Only Property 1 has the split sub-block today. Properties 2-5 will follow.
+  _wireRecapSplitForBlock(1);
+
   // Future Sale Loss Target (Section 05): the Yes/No question toggles
   // the conditional fields group. The optimizer reads cfg.futureSale to
   // decide how much of the current Brooklyn position should generate
@@ -2175,11 +2309,16 @@ function bindControls() {
     // #full-projection-region as an engine-only field). The model is:
     //   • "Investing everything?" = Yes  →  avail = sale (keep=0)
     //   • "Investing everything?" = No   →  avail = sale − amount-to-keep
+    //   • "Amount still owed?" = Yes      →  avail −= payoff (proceeds
+    //                                       retire the note before Brooklyn)
     //   • "Cover taxes from sale?" = Yes →  engine adds a Y0-only tax-
     //                                       reserve tranche (does NOT
     //                                       reduce avail here).
+    const owed = (typeof window.__rettSumAmountOwed === 'function')
+      ? (window.__rettSumAmountOwed() || 0)
+      : 0;
     if (!hasError && saleVal > 0) {
-      const newAvailNum = Math.max(0, saleVal - keep);
+      const newAvailNum = Math.max(0, saleVal - keep - owed);
       const newAvail = (typeof fmtUSD === 'function')
         ? fmtUSD(newAvailNum)
         : String(newAvailNum);
@@ -2299,6 +2438,13 @@ function bindControls() {
    'personal-use-yes-no-3', 'personal-use-amount-3',
    'personal-use-yes-no-4', 'personal-use-amount-4',
    'personal-use-yes-no-5', 'personal-use-amount-5',
+   // Per-property outstanding-debt payoff. Subtracts from Available
+   // Capital via _recomputeAvailableCapital (reads __rettSumAmountOwed).
+   'amount-owed-yes-no-1', 'amount-owed-amount-1',
+   'amount-owed-yes-no-2', 'amount-owed-amount-2',
+   'amount-owed-yes-no-3', 'amount-owed-amount-3',
+   'amount-owed-yes-no-4', 'amount-owed-amount-4',
+   'amount-owed-yes-no-5', 'amount-owed-amount-5',
    'filing-status', 'state-code', 'year1',
    'w2-wages', 'se-income', 'biz-revenue', 'rental-income',
    'dividend-income', 'retirement-distributions',

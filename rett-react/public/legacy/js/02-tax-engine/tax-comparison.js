@@ -200,6 +200,22 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
       // rental income pay the right NIIT every year.
       const _scaledInvOrd = (cfg.investmentIncomeOrdinary || 0);
       const _recap = Math.max(0, Number(recaptureThisYear) || 0);
+      // §1245/§1250 split (advisor 2026-06-04). When the user fills the
+      // recap split sub-inputs on Section 02, cfg carries both pieces:
+      //   cfg.acceleratedDepreciation1245 (ordinary income — full marginal,
+      //     NO 25% cap, NOT in NIIT base under active-trade/biz assumption)
+      //   cfg.acceleratedDepreciation1250 (per-slice 25% cap, in NIIT base)
+      // For multi-year scenarios where recaptureThisYear varies (e.g. Y0
+      // = full recap, Y1+ = 0), preserve the user-entered 1245/1250 RATIO
+      // and apply it to the year's recap amount. If the user didn't fill
+      // the split (both zero), default the whole recap to §1250 — that's
+      // what the engine has always assumed.
+      const _ad1245 = Math.max(0, Number(cfg.acceleratedDepreciation1245) || 0);
+      const _ad1250 = Math.max(0, Number(cfg.acceleratedDepreciation1250) || 0);
+      const _adSplitTotal = _ad1245 + _ad1250;
+      const _recap1245Ratio = _adSplitTotal > 0 ? (_ad1245 / _adSplitTotal) : 0;
+      const _recap1245 = _recap * _recap1245Ratio;
+      const _recap1250 = _recap - _recap1245;
       // Qualified dividends — recurring annual income, inflation-scaled
       // alongside other recurring streams. IRC §1(h)(11): preferential
       // LTCG rates, stacks on ordinary for bracket placement, in NIIT
@@ -243,7 +259,14 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             // _yearTaxes - acceptable for GA-first audience, P1 to
             // refine per-state SS exemption.
             ordinaryIncome: ordOverride + _taxableSS,
+            // Recapture: kept as a single backward-compat total. The split
+            // is carried in depreciationRecapture1245 / depreciationRecapture1250
+            // so tax-calc-federal can route §1245 to ordinary marginal rates
+            // and §1250 to the §1(h)(1)(E) 25% cap. Sum-equality invariant:
+            //   depreciationRecapture === depreciationRecapture1245 + depreciationRecapture1250
             depreciationRecapture: _recap,
+            depreciationRecapture1245: _recap1245,
+            depreciationRecapture1250: _recap1250,
             shortTermGain: shortOverride,
             longTermGain: ltAmt,
             qualifiedDividend: _scaledQualDiv,
@@ -259,15 +282,14 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             _grossSocialSecurity:   _scaledGrossSS,
             // NIIT base = LT gain + ST gain + §1250 unrecaptured gain +
             // passive ordinary (rental / non-qualified div / interest).
-            // Per §1411, depreciation recapture from a property sale IS
-            // net investment income (it's gain from disposition of
-            // property held in a passive activity / investment), so it
-            // belongs in the NIIT base. Previously omitted, which
-            // under-reported NIIT on recapture-heavy scenarios. Loss
-            // netting in _applyLossesToScenario / _applyLossesWithSTCfCap
-            // now subtracts offset amounts from this same base, keeping
-            // ledger consistent.
-            investmentIncome: ltAmt + Math.max(0, shortOverride) + _recap + _scaledInvOrd + _scaledQualDiv,
+            // §1250 unrecap is investment income (gain from disposition of
+            // real property). §1245 recapture is ORDINARY income from an
+            // active trade or business and is generally NOT subject to
+            // NIIT — the active-business assumption is the default for
+            // real-estate clients using cost segregation (advisor
+            // 2026-06-04 / research confirmed). Only _recap1250 enters
+            // here, NOT _recap1245.
+            investmentIncome: ltAmt + Math.max(0, shortOverride) + _recap1250 + _scaledInvOrd + _scaledQualDiv,
             // Additional-Medicare wage base. cfg.wages (W-2 + SE only)
             // when supplied — scaled by the same inflation factor as
             // baseOrdinaryIncome so wages grow alongside brackets.
@@ -320,6 +342,28 @@ function rettY0BaselineSnapshot() {
             state: cfg.state || 'NONE',
             ordTotal: scenario.ordinaryIncome,
             recap: scenario.depreciationRecapture,
+            // §1245/§1250 split (advisor 2026-06-04). Downstream tile
+            // renderers (baseline-table) route these to the engine so
+            // §1245 gets full marginal rates + excluded from NIIT, while
+            // §1250 keeps the 25% cap + NIIT inclusion.
+            //
+            // CRITICAL: when the user sets §1245 = 100% (so §1250 = $0),
+            // the bare `|| scenario.depreciationRecapture` fallback would
+            // mis-treat $0 as falsy and route the WHOLE recap as §1250 —
+            // double-counting. Use an explicit "has split" gate instead:
+            // if EITHER bucket is > 0, trust the split as authoritative;
+            // only when both are 0 do we default the legacy whole-amount-
+            // as-§1250 behavior (preserves backward compat with saved
+            // cases that predate the split).
+            recap1245: (function () {
+                  var a = scenario.depreciationRecapture1245 || 0;
+                  return a;
+            })(),
+            recap1250: (function () {
+                  var a = scenario.depreciationRecapture1245 || 0;
+                  var b = scenario.depreciationRecapture1250 || 0;
+                  return (a + b > 0) ? b : scenario.depreciationRecapture;
+            })(),
             stGain: scenario.shortTermGain,
             ltGain: scenario.longTermGain,
             qualifiedDividend: scenario.qualifiedDividend || 0,
@@ -345,6 +389,8 @@ function _yearTaxes(scenario) {
       const _lt  = Number(_s.longTermGain)   || 0;
       const _qd  = Number(_s.qualifiedDividend) || 0;
       const _rcp = Number(_s.depreciationRecapture) || 0;
+      const _rcp1245 = Number(_s.depreciationRecapture1245) || 0;
+      const _rcp1250 = Number(_s.depreciationRecapture1250) || 0;
       const _inv = (_s.investmentIncome != null) ? Number(_s.investmentIncome) : (_lt + _qd);
       const _w   = (_s.wages != null) ? Number(_s.wages) : 0;
       const _se  = Number(_s.seIncome) || 0;
@@ -364,6 +410,8 @@ function _yearTaxes(scenario) {
             _yr, _stat,
             { longTermGain: _lt, shortTermGain: _st, qualifiedDividend: _qd,
               depreciationRecapture: _rcp,
+              depreciationRecapture1245: _rcp1245,
+              depreciationRecapture1250: _rcp1250,
               investmentIncome: _inv, wages: _w,
               seIncome: _se,
               itemized: _itm });
@@ -406,6 +454,8 @@ function _yearTaxes(scenario) {
       //   total = federal + state.
       var _ord1 = Number(fed && fed.ordinaryTax) || 0;
       var _rcp1 = Number(fed && fed.recapTax)    || 0;
+      var _rcp1245Out = Number(fed && fed.recapTax1245) || 0;
+      var _rcp1250Out = Number(fed && fed.recapTax1250) || 0;
       var _lt1  = Number(fed && fed.ltTax)       || 0;
       var _amt1 = Number(fed && fed.amtTopUp)    || 0;
       return {
@@ -413,6 +463,8 @@ function _yearTaxes(scenario) {
             federalIncomeTax: _ord1 + _rcp1 + _lt1 + _amt1,
             ordinaryTax: _ord1,
             recapTax: _rcp1,
+            recapTax1245: _rcp1245Out,
+            recapTax1250: _rcp1250Out,
             ltTax: _lt1,
             amt: _amt1,
             niit: Number(fed && fed.niit) || 0,
@@ -442,20 +494,24 @@ function _applyLossesWithSTCfCap(scenario, lossAvailable, capOrdinary) {
       let loss = lossAvailable;
 
       // Loss ordering — Brooklyn short-term capital losses absorb gain
-      // buckets highest-rate first (taxpayer-favorable):
-      //   1) ST gain (ordinary rates, up to 37%)
+      // buckets per IRS Schedule D Tax Worksheet:
+      //   1) ST gain (ordinary rates)
       //   2) Regular LT gain (0/15/20%)
-      //   3) Ordinary income (capped at $3K / $1.5K MFS)
+      //   3) §1250 unrecaptured gain (capital-classified, 25% cap) —
+      //      taxpayer split rule per advisor 2026-06-04. §1250 unrecap
+      //      gain IS capital, so capital losses net against it without
+      //      the $3K limit. IRS Schedule D Tax Worksheet puts it AFTER
+      //      regular LT (losses reduce 0/15/20% gain first, then 25%
+      //      gain) — this is the worksheet's stated mechanic even
+      //      though it's slightly taxpayer-unfavorable per dollar.
+      //   4) Ordinary income (§1211(b) capped at $3K / $1.5K MFS).
       //
-      // Depreciation recapture is INTENTIONALLY NOT in this list
-      // (advisor 2026-05-27): the "accelerated depreciation recapture"
-      // input represents §1250(a)-style recapture recognized as ORDINARY
-      // income in the year of sale per §453(i). It is not a capital gain
-      // bucket Brooklyn's capital losses can offset — it stays fully
-      // taxed at its (25%-capped) rate regardless of the loss generated.
-      // Previously this function had a Step 2 that reduced
-      // depreciationRecapture by the loss, which zeroed the recapture
-      // tax on Tab 7 even with $200K of recapture present — wrong.
+      // §1245 recapture is INTENTIONALLY NOT in this list — it's
+      // ORDINARY income (not capital), so it can only be reached via
+      // the $3K §1211(b) cap, same as any other ordinary income. The
+      // depreciationRecapture1245 amount stays in the ordinary stack
+      // and is taxed at full marginal rates. (User confirmation
+      // 2026-06-04.)
 
       // Step 1: ST gain. ST cap gain is investment income for §1411 NIIT
       // purposes (per the same logic as LT below), so the NIIT base must
@@ -464,15 +520,38 @@ function _applyLossesWithSTCfCap(scenario, lossAvailable, capOrdinary) {
       out.shortTermGain = (out.shortTermGain || 0) - offsetShort;
       out.investmentIncome = Math.max(0, (out.investmentIncome || 0) - offsetShort);
       loss -= offsetShort;
+      let _shortOffsetApplied = offsetShort;
 
-      // Step 2: LT gain (the recognized property gain in year R). Note
-      // recapture is skipped — capital losses flow straight from ST gain
-      // to LT gain, leaving the ordinary recapture untouched.
+      // Step 2: Regular LT gain.
+      let _ltOffsetApplied = 0;
       if (loss > 0) {
             const offsetLong = Math.min(out.longTermGain || 0, loss);
             out.longTermGain = (out.longTermGain || 0) - offsetLong;
             out.investmentIncome = Math.max(0, (out.investmentIncome || 0) - offsetLong);
             loss -= offsetLong;
+            _ltOffsetApplied = offsetLong;
+      }
+
+      // Step 3: §1250 unrecaptured gain. The §1250 portion of the
+      // depreciation recapture is capital (taxed at LTCG rates capped
+      // at 25%). Brooklyn capital losses CAN net against it. Reduce
+      // BOTH the §1250 bucket and the legacy total `depreciationRecapture`
+      // (kept as backward-compat sum = §1245 + §1250) by the offset
+      // amount. NIIT base also shrinks (the §1250 piece was in
+      // investmentIncome upstream via _baseScenarioForYear).
+      let _recap1250OffsetApplied = 0;
+      if (loss > 0) {
+            const _r1250 = Number(out.depreciationRecapture1250) || 0;
+            const offset1250 = Math.min(_r1250, loss);
+            if (offset1250 > 0) {
+                  out.depreciationRecapture1250 = _r1250 - offset1250;
+                  out.depreciationRecapture = Math.max(0,
+                        (Number(out.depreciationRecapture) || 0) - offset1250);
+                  out.investmentIncome = Math.max(0,
+                        (out.investmentIncome || 0) - offset1250);
+                  loss -= offset1250;
+                  _recap1250OffsetApplied = offset1250;
+            }
       }
 
       // Step 4: ordinary income, capped at $3,000 (or $1,500 for MFS).
@@ -494,6 +573,18 @@ function _applyLossesWithSTCfCap(scenario, lossAvailable, capOrdinary) {
       out._lossUsed = lossAvailable - loss;
       out._lossUnused = loss;
       out._ordOffsetApplied = _ordOffsetApplied;
+      // Per-bucket offset breakdown so downstream renderers (Tab 7) can
+      // show LT-absorbed vs §1250-absorbed vs ordinary-absorbed as
+      // separate rows. Previously the temp page lumped everything under
+      // a single "Loss applied to LT capital gain" label, which on a
+      // scenario like LT $1.5M + Brooklyn loss $1.502M would show
+      // "Loss applied to LT capital gain $1,502,130" — misleading,
+      // since $1.5M went to LT and $2,130 actually went to ordinary
+      // via the §1211(b) cap. Now exposed: _shortOffsetApplied,
+      // _ltOffsetApplied, _recap1250OffsetApplied, _ordOffsetApplied.
+      out._shortOffsetApplied = _shortOffsetApplied;
+      out._ltOffsetApplied = _ltOffsetApplied;
+      out._recap1250OffsetApplied = _recap1250OffsetApplied;
       return out;
 }
 
@@ -885,6 +976,29 @@ function unifiedTaxComparison(cfg, opts) {
       const _y0DownPaymentCap = Math.max(0, (cfg.salePrice || 0) - Math.max(0, recapture));
       const _y0DownPayment = (_installmentPayments >= 1)
             ? Math.min(_y0DownPaymentRaw, _y0DownPaymentCap)
+            : 0;
+
+      // Forced Y0 payment (advisor 2026-06-01): when the seller carves
+      // proceeds off the table at closing — personal-use cash and/or
+      // outstanding-debt payoff (cfg.forcedY0Payment = personal-use +
+      // amount-owed, already netted out of availableCapital upstream) —
+      // those dollars ARE received at closing, so for a deferred sale
+      // (Strategy B §453 / Strategy C structured) they trigger a Y0
+      // taxable event: F × GP-ratio of LT gain is recognized in year
+      // zero, pulled forward out of the deferral pool. Unlike the
+      // optional Y0 down-payment above, this cash does NOT deploy to
+      // Brooklyn — it left the table to pay debt/personal use. (Brooklyn
+      // deployment is already gated by availableCapital, which excludes
+      // F.) Capped, together with any down-payment, at the contract
+      // price so we never recognize more than totalLT. Strategy A
+      // (immediate) is unaffected: it recognizes all gain Y0 regardless.
+      const _gpContractPrice = Math.max(0, (cfg.salePrice || 0) - Math.max(0, recapture));
+      const _forcedY0PaymentRaw = Math.max(0, Number(cfg.forcedY0Payment) || 0);
+      const _forcedY0Payment = isDeferred
+            ? Math.min(_forcedY0PaymentRaw, Math.max(0, _gpContractPrice - _y0DownPayment))
+            : 0;
+      const _forcedY0Gain = (_forcedY0Payment > 0 && _gpContractPrice > 0)
+            ? _forcedY0Payment * (totalLT / _gpContractPrice)
             : 0;
 
       let basisCash, _unparkedY1Gain, _parkedGain;
@@ -1306,9 +1420,37 @@ function unifiedTaxComparison(cfg, opts) {
                   // installment deferred reinvest depends on existingLoss
                   // (circular), so don't predict — _yearCombo lags by one
                   // year for that path. Strategy A has no reinvest.
+                  //
+                  // CRITICAL: use the NET deposit (post tax-carve, post
+                  // cover-tax set-aside, post optimizer reinvest cap) —
+                  // NOT the gross payment. The gross overshoots actual
+                  // cumulative and triggers premature tier-jumps (e.g.
+                  // T1 misclassified as 200/100 when actual cumulative
+                  // is only $2.88M, well below the $3M floor). The math
+                  // here mirrors lines 1537–1568 exactly so the
+                  // prediction equals the eventual `reinvested` value.
                   var newDeposit = 0;
                   if (_isInstallment && i >= startIdx && i <= maturityIdx) {
-                        newDeposit = _installmentPaymentForIdx(i - startIdx);
+                        var _pIdxPred = i - startIdx;
+                        var _basePred = _installmentPaymentForIdx(_pIdxPred);
+                        if (i === startIdx) _basePred += _y0RollToFirstInstallment;
+                        // Recognized gain this year (post-Y0-down weight).
+                        var _gpRatioPred = (_installmentContractPrice > 0)
+                              ? (totalLT / _installmentContractPrice) : 0;
+                        var _y0DownGainPred = (_y0DownPayment > 0 && _installmentContractPrice > 0)
+                              ? _y0DownPayment * _gpRatioPred : 0;
+                        var _postDownLTPred = Math.max(0, totalLT - _y0DownGainPred);
+                        var _gainPred = _postDownLTPred * _weightForPaymentIdx(_pIdxPred);
+                        if (i === 0) _gainPred += _y0DownGainPred;
+                        var _taxCarvePred = _gainPred * _gainTaxRate;
+                        var _coverCarvePred = (_coverTax && _isInstallment)
+                              ? Math.max(0, _priorYearSaleTax) : 0;
+                        var _setAsidePred = Math.min(_coverCarvePred,
+                              Math.max(0, _basePred - _taxCarvePred));
+                        newDeposit = Math.max(0, _basePred - _taxCarvePred - _setAsidePred);
+                        if (_remainingReinvestCap !== null) {
+                              newDeposit = Math.min(newDeposit, _remainingReinvestCap);
+                        }
                   }
                   var projected = active + newDeposit;
                   if (projected > _peakCumulativeForTier) _peakCumulativeForTier = projected;
@@ -1453,6 +1595,13 @@ function unifiedTaxComparison(cfg, opts) {
                   gainRecThisYear += _y0DownGain;
                   gainRemaining   -= _y0DownGain;
             }
+            // Forced Y0 payment gain (Strategy B): debt-payoff/personal-use
+            // cash carved off at closing recognizes F × GP-ratio of LT gain
+            // in year zero, pulled forward out of the installment stream.
+            if (i === 0 && _isInstallment && _forcedY0Gain > 0) {
+                  gainRecThisYear += _forcedY0Gain;
+                  gainRemaining   -= _forcedY0Gain;
+            }
             if (_isInstallment && i >= startIdx && i <= maturityIdx) {
                   // Per-year gain recognition uses the weight for this
                   // payment index (0-based from startIdx). Weights apply
@@ -1462,7 +1611,7 @@ function unifiedTaxComparison(cfg, opts) {
                   // when D = 0.
                   var _pIdx = i - startIdx;
                   var _postDownLT = Math.max(0, totalLT - (_y0DownPayment > 0 && _installmentContractPrice > 0
-                        ? _y0DownPayment * (totalLT / _installmentContractPrice) : 0));
+                        ? _y0DownPayment * (totalLT / _installmentContractPrice) : 0) - _forcedY0Gain);
                   var _installmentGainThisYear = _postDownLT * _weightForPaymentIdx(_pIdx);
                   gainRecThisYear += _installmentGainThisYear;
                   gainRemaining   -= _installmentGainThisYear;
@@ -1475,6 +1624,18 @@ function unifiedTaxComparison(cfg, opts) {
             if (i === 0 && isDeferred && !_isInstallment && _unparkedY1Gain > 0) {
                   gainRecThisYear += _unparkedY1Gain;
                   gainRemaining   -= _unparkedY1Gain;
+            }
+            // Forced Y0 payment gain (Strategy C): debt-payoff/personal-use
+            // cash carved off at closing pulls parked gain forward into
+            // year zero (F × GP-ratio), capped at the still-parked balance
+            // so we never double-count gain already unparked as Y0 closing
+            // cash. Shrinks _parkedGain so the MetLife schedule below
+            // spreads only the residual.
+            if (i === 0 && isDeferred && !_isInstallment && _forcedY0Gain > 0 && _parkedGain > 0) {
+                  var _forcedCGain = Math.min(_forcedY0Gain, _parkedGain);
+                  gainRecThisYear += _forcedCGain;
+                  gainRemaining   -= _forcedCGain;
+                  _parkedGain     -= _forcedCGain;
             }
             if (!_isInstallment && i >= startIdx && i <= maturityIdx && gainRemaining > 0) {
                   const maxAbsorbable = Math.max(0, (stCF + existingLoss - _recapDrag) / denom);
@@ -1712,6 +1873,17 @@ function unifiedTaxComparison(cfg, opts) {
                   reinvestedThisYear: reinvested,
                   lossGenerated: yearLoss,
                   lossApplied: withStrat._lossUsed || 0,
+                  // Per-bucket offset breakdown so Tab 7 can show each
+                  // application separately ("$1.5M to LT capital gain",
+                  // "$250K to §1250 unrecap", "$3K to ordinary") instead
+                  // of one misleading "Loss applied to LT capital gain"
+                  // line that lumps everything. _applyLossesWithSTCfCap
+                  // sets these on the with-strategy SCENARIO object, but
+                  // _yearTaxes returns a tax-only object and drops them.
+                  shortOffsetApplied:        Math.max(0, Number(withStrat._shortOffsetApplied) || 0),
+                  ltOffsetApplied:           Math.max(0, Number(withStrat._ltOffsetApplied) || 0),
+                  recap1250OffsetApplied:    Math.max(0, Number(withStrat._recap1250OffsetApplied) || 0),
+                  ordOffsetApplied:          Math.max(0, Number(withStrat._ordOffsetApplied) || 0),
                   stCarryForward: stCF,
                   investmentThisYear: yearInvested,
                   trancheBreakdown: trancheRows,
@@ -1759,6 +1931,65 @@ function unifiedTaxComparison(cfg, opts) {
             totalFees += (r.fee || 0);
             totalBrookhaven += (r.brookhavenFee || 0);
       });
+
+      // Post-horizon tax catch-up. Any gain still on the books at the
+      // end of the projection window (gainRemaining > 0) will be taxed
+      // in real life — the user owes LT capital-gains tax on it the
+      // year it's actually recognized. totalWith currently sums only
+      // in-horizon withStrategy taxes; if gain is deferred past horizon
+      // it disappears from the model. A plan that defers MORE gain
+      // past horizon then falsely looks better than one that recognizes
+      // in-horizon.
+      //
+      // totalBaseline doesn't need adjustment — the do-nothing baseline
+      // already taxes ALL gain in Y0 (it's the "you sold day 1" world,
+      // which has no unrecognizedGain).
+      //
+      // Mitigation: synthesize a year-(horizon+1) tax bill on the
+      // unrecognized chunk and add it ONLY to totalWith. Net effect:
+      //   • Plans that fully recognize in-horizon (gainRemaining=0):
+      //     unchanged. Auto-pick today behaves this way.
+      //   • Plans that defer past horizon: phantom net benefit is
+      //     neutralized — the deferred chunk pays its tax in the model.
+      //
+      // An HONEST §453 benefit still survives: recognizing later
+      // places gain into wider / inflation-adjusted brackets, which
+      // is a real tax-deferral edge. What disappears is the silent
+      // "gain that's tax-free outside the window" hallucination.
+      var _postHorizonGain = Math.max(0, gainRemaining || 0);
+      var _postHorizonTax = 0;
+      if (_postHorizonGain > 0) {
+            // Year just past the horizon — _y0 + horizon would be
+            // year1+horizon (1 year past last in-horizon year).
+            var _phYear = _y0 + horizon;
+            var _phScenario = _baseScenarioForYear(cfg, _phYear, _postHorizonGain, 0);
+            // Mirror the do-nothing NIIT-base recompute so the post-
+            // horizon LT gain enters NIIT correctly (same pattern as
+            // dnBaseline above).
+            var _phInflRate = (typeof TAX_DATA !== 'undefined' && TAX_DATA && typeof TAX_DATA.inflationRate === 'number')
+                  ? TAX_DATA.inflationRate
+                  : ((typeof window !== 'undefined' && window.TAX_DATA && typeof window.TAX_DATA.inflationRate === 'number')
+                        ? window.TAX_DATA.inflationRate : 0);
+            var _phScaledInvOrd = (cfg.investmentIncomeOrdinary || 0) * Math.pow(1 + _phInflRate, Math.max(0, horizon));
+            var _phScaledQualDiv = (cfg.qualifiedDividend || 0) * Math.pow(1 + _phInflRate, Math.max(0, horizon));
+            _phScenario.investmentIncome = (_phScenario.longTermGain || 0)
+                  + Math.max(0, _phScenario.shortTermGain || 0)
+                  + (_phScenario.depreciationRecapture || 0)
+                  + _phScaledInvOrd + _phScaledQualDiv;
+            // Counterpart no-gain scenario for the SAME year, so we
+            // measure the marginal tax of the unrecognized chunk
+            // (not the whole year's tax including ordinary income).
+            var _phNoGainScenario = _baseScenarioForYear(cfg, _phYear, 0, 0);
+            _phNoGainScenario.investmentIncome = (_phNoGainScenario.longTermGain || 0)
+                  + Math.max(0, _phNoGainScenario.shortTermGain || 0)
+                  + (_phNoGainScenario.depreciationRecapture || 0)
+                  + _phScaledInvOrd + _phScaledQualDiv;
+            var _phWithTax = _yearTaxes(_phScenario).total;
+            var _phNoGainTax = _yearTaxes(_phNoGainScenario).total;
+            _postHorizonTax = Math.max(0, _phWithTax - _phNoGainTax);
+            // Add ONLY to totalWith — see comment above.
+            totalWith     += _postHorizonTax;
+      }
 
       // G2 invariant guard. Three checks, fire loudly if violated —
       // they catch the regression patterns that surfaced F12/F14 in the
@@ -1823,6 +2054,13 @@ function unifiedTaxComparison(cfg, opts) {
             recognitionSchedule: recognitionSchedule,
             durationYears: durationYears,
             unrecognizedGain: gainRemaining,
+            // Tax accrued in the synthetic year-(horizon+1) on gain
+            // deferred past horizon. Already folded into totalWith
+            // (so totalSavings already reflects it). Surfaced so the
+            // admin can show it as a separate line — "year-N+1 catch-
+            // up tax: $X" — and CPAs can see why a plan that defers
+            // past horizon doesn't get the silent win it once did.
+            postHorizonTax: _postHorizonTax,
             deferred: isDeferred,
             // Cover-taxes-from-sale (advisor 2026-05-28): total cash held
             // back from January installment payments to pay the sale tax

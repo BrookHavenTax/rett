@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `4efeb0fcfd896c20841d0710b96287c9f0670704` |
-| Upstream short SHA | `4efeb0f` |
-| Upstream message | Optimizer: dial-back-aware combo selection for B/C |
-| Upstream committed | 2026-05-29 |
-| Synced to React on | 2026-05-29 |
+| Upstream SHA | `cd22150f1722bb220b2c8cacad0de52f12ff096d` |
+| Upstream short SHA | `cd22150f` |
+| Upstream message | Saturation-aware supplemental selection: don't waste capital on crowded-out supps |
+| Upstream committed | 2026-06-05 |
+| Synced to React on | 2026-06-05 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  4efeb0fcfd896c20841d0710b96287c9f0670704..origin/main
+  cd22150f1722bb220b2c8cacad0de52f12ff096d..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -153,7 +153,42 @@ that one element until you re-point the override.
 
 ## Sync history
 
-### 2026-05-29 — `4efeb0f` (current)
+### 2026-06-05 — `cd22150f` (current)
+
+**57 upstream commits** absorbed (`4efeb0f..cd22150f`): 29 legacy files
+changed, ~2,900 insertions. Engine-heavy sync — tax comparison, master
+solver, supplemental extra, projection dashboard, temp page, and baseline
+table all advanced. React DOM ports were needed only where upstream
+`index.html` gained new field IDs or Tab 2 layout chrome.
+
+**Engine highlights (rsync only — no loader changes):**
+
+| Area | What changed |
+| --- | --- |
+| Tax engine | §1250 inside AMT now flat 25%; double-count fix for finite ordinary-income pool across supplementals; saturation-aware supplemental selection |
+| Tab 1 inputs | §1245/§1250 recap split on Property 1; amount-owed payoff Yes/No + amount on all 5 properties; sale price label "(net of commission)" |
+| Tab 2 baseline | Proceeds bar (sale anatomy) + click-to-reveal before 3-tile row; title renamed "Sale and Tax Baseline" |
+| Supplementals | Business-income gating for PTET/Augusta/Farm; Farm draws capital; card order + UX polish |
+| Additional funds | Toggle visibility gated on `rettAdditionalFundsBenefit()`; override preservation on Yes/No restore |
+
+**Loader (`useLegacyEngine.ts`):** unchanged. `pmq-handler.js` still
+intentionally omitted (React uses W2Uploader + `/api/gemini/extract-w2`).
+`pmq-questions.js` still on disk but not loaded (upstream dropped it from
+`index.html`).
+
+**React component ports:**
+
+| Page | What changed |
+| --- | --- |
+| `PageInputs.tsx` | Property 1 §1245/§1250 recap split rows; amount-owed fields all properties; sale price label |
+| `PageBaseline.tsx` | Proceeds bar + reveal button/spacer; `.baseline-reveal-target` on tile row; title "Sale and Tax Baseline" |
+| `additional-funds-ui.js` | Synced inline script from upstream `index.html`: `_syncToggleVisibility`, `_afGateTimer`, override preservation in `_syncYesNo`, `window.rettSyncAFToggleVisibility` |
+
+**Theme note:** upstream `styles.css` grew (+433 lines, proceeds bar +
+recap-split + baseline-reveal rules). `brand-theme.css` overrides ride on
+top unchanged — smoke each tab after sync.
+
+### 2026-05-29 — `4efeb0f`
 
 **Huge sync.** Absorbed **130 upstream commits** across ~10 days
 (`24b93fb..4efeb0f`): 49 files changed, 8,487 insertions, 867 deletions.

@@ -203,6 +203,22 @@ if (typeof window !== 'undefined') {
             }
             return false;
       };
+      // Outstanding debt / payoff per property. Like personal-use, this is
+      // a Y0 reduction of available capital (proceeds go to retire the
+      // mortgage/note, so they never reach Brooklyn). Summed across active
+      // properties where the "amount still owed" toggle is yes.
+      window.__rettSumAmountOwed = function () {
+            let total = 0;
+            for (let n = 1; n <= 5; n++) {
+                  if (!_propertyIsActive(n)) continue;
+                  const yn = document.getElementById('amount-owed-yes-no-' + n);
+                  if (!yn || yn.value !== 'yes') continue;
+                  const amt = document.getElementById('amount-owed-amount-' + n);
+                  if (!amt) continue;
+                  total += parseUSD(amt.value) || 0;
+            }
+            return total;
+      };
 }
 
 // Most income inputs are clamped to >= 0 (a negative wage / dividend
@@ -299,6 +315,16 @@ function collectInputs() {
                 // fallback only — stops stale saved-state values from
                 // overriding the user's current Available Capital edit.
                 investment:          (_val('available-capital') !== '' ? parseUSD(_val('available-capital')) : null) ?? parseUSD(_val('invested-capital')),
+                // Forced Y0 payment = personal-use cash + outstanding-debt
+                // payoff carved off the sale proceeds at closing. Already
+                // netted out of availableCapital upstream; the engine uses
+                // this to recognize F × GP-ratio of gain at Y0 for the
+                // deferred strategies (B/C) since that cash was received at
+                // closing rather than deferred. Not deployed to Brooklyn.
+                forcedY0Payment: (
+                      ((typeof window.__rettSumPersonalUseAmount === 'function') ? (window.__rettSumPersonalUseAmount() || 0) : 0) +
+                      ((typeof window.__rettSumAmountOwed === 'function') ? (window.__rettSumAmountOwed() || 0) : 0)
+                ),
                 tierKey:             _val('strategy-select') || 'beta1',
                 // leverage default; the Schwab-combo and variable-leverage
                 // blocks below override this with the actual selection.
@@ -363,6 +389,21 @@ function collectInputs() {
                 salePrice:               _sumPropertyField('sale-price'),
                 costBasis:               _sumPropertyField('cost-basis'),
                 acceleratedDepreciation: _sumPropertyField('accelerated-depreciation'),
+                // §1245/§1250 split (UI sub-block under acceleratedDepreciation).
+                //   §1245 (personal property / cost-seg 5-7-15-yr) → ordinary
+                //     income rates, NOT subject to NIIT (active trade/business
+                //     assumption), AMT lumps into ordinary slice (26/28%).
+                //   §1250 (real property / 39-yr building shell) → unrecaptured
+                //     §1250 gain, taxed at per-slice min(marginal, 25%) via
+                //     §1(h)(1)(E), included in NIIT base, capital losses can
+                //     offset it via §1(h) netting.
+                //   Backward compat: if the split fields are blank, the engine
+                //     defaults the whole acceleratedDepreciation to §1250
+                //     (current behavior). Sum validator in controls.js flags
+                //     mismatch but doesn't block; engine trusts the split when
+                //     either field is non-blank.
+                acceleratedDepreciation1245: parseUSD(_val('accelerated-depreciation-1245')) || 0,
+                acceleratedDepreciation1250: parseUSD(_val('accelerated-depreciation-1250')) || 0,
                 // Multi-property year-of-sale schedule (Q1-extended).
                 // Empty array when every property closes in the same
                 // calendar year — engine falls through to the legacy
@@ -530,9 +571,18 @@ function collectInputs() {
       // baseLongTermGain / baseShortTermGain (which now accept negatives as
       // §1211 capital losses). Toggle OFF ⇒ zero impact (cfg identical to
       // pre-feature). See ADDITIONAL_FUNDS_OPTIMIZER_SPEC.md §2.
+      // __rettAdditionalFundsOverride: the per-strategy amount sweep (in
+      // buildInterestedSummary) sets this to a specific liquidation amount so
+      // it can measure each strategy's net at a candidate amount (0 = decline,
+      // a tier gap, or the entered amount) regardless of the toggle/DOM value.
+      // A finite override wins over the toggle; override 0 ⇒ no fold.
+      var _afOverride  = (typeof window !== 'undefined') ? window.__rettAdditionalFundsOverride : undefined;
+      var _hasAfOver   = (typeof _afOverride === 'number' && isFinite(_afOverride) && _afOverride >= 0);
       var _addFundsToggle = document.getElementById('additional-funds-toggle');
-      if (_addFundsToggle && _addFundsToggle.checked) {
-            var _addFunds = parseUSD(_val('additional-funds')) || 0;
+      var _doAddFunds  = _hasAfOver ? (_afOverride > 0)
+                                    : !!(_addFundsToggle && _addFundsToggle.checked);
+      if (_doAddFunds) {
+            var _addFunds = _hasAfOver ? _afOverride : (parseUSD(_val('additional-funds')) || 0);
             var _acctVal  = parseUSD(_val('additional-account-value')) || 0;
             var _acctLT   = parseUSD(_val('additional-lt-gain')) || 0;   // signed
             var _acctST   = parseUSD(_val('additional-st-gain')) || 0;   // signed

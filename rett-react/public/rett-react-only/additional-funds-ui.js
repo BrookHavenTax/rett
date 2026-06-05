@@ -1,31 +1,5 @@
 // React-only mirror of the inline <script> block at the bottom of upstream
-// index.html (after the additional-funds.js solver was added, 2026-05-28).
-// Upstream runs it as an inline <script>; we can't host inline <script>s
-// the same way in a React/Vite build, so this is a verbatim copy of the
-// IIFE body with two adjustments:
-//
-//   1. The DOMContentLoaded handler is rewrapped with a `readyState ===
-//      "loading"` guard so it self-inits when our loader injects it after
-//      the document has already loaded.
-//   2. Comments updated to call out (1) and the file location.
-//
-// IMPORTANT: this file lives outside public/legacy/js/ on purpose — the
-// sync-from-upstream rsync mirror uses --delete on those subfolders, and
-// would wipe this file on every sync. Keep it under
-// public/rett-react-only/.
-//
-// Wires the Additional Funds (Tab 1 Section 03) UI:
-//   - Yes/No gate reveals/hides the field group (mirrors Future Sale).
-//   - Derived Cost Basis = Account Value − LT gain − ST gain (live).
-//   - Proportional realized-gain breakdown when an Additional Funds
-//     amount is entered (lt = X × lt/av, st = X × st/av, basis returned
-//     = rest).
-//   - Auto-populates the "Additional Funds" field with the optimal
-//     liquidation amount from window.rettSuggestAdditionalFunds()
-//     (additional-funds.js). The advisor can type their own number to
-//     override; clearing the field resumes auto-population.
-//   - Debounces re-population on any income / sale / strategy /
-//     custodian / state input change.
+// index.html (synced cd22150f). See useLegacyEngine.ts REACT_ONLY_SCRIPTS.
 (function () {
   function _el(id) { return document.getElementById(id); }
   function _num(v) {
@@ -39,8 +13,8 @@
     return sign + '$' + Math.round(Math.abs(n)).toLocaleString('en-US');
   }
 
-  var _afUserOverride = false;   // advisor typed their own Additional Funds amount
-  var _afProgrammatic = false;   // guard while we write the field ourselves
+  var _afUserOverride = false;
+  var _afProgrammatic = false;
 
   function _sync() {
     var av = _el('additional-account-value'), cb = _el('additional-cost-basis-derived');
@@ -51,6 +25,7 @@
     cb.value = (avV === 0 && ltV === 0 && stV === 0) ? '' : _fmtUSD(avV - ltV - stV);
     _syncBreakdown(avV, ltV, stV);
   }
+
   function _syncBreakdown(avV, ltV, stV) {
     var bd = _el('additional-funds-breakdown'), fundsEl = _el('additional-funds');
     if (!bd || !fundsEl) return;
@@ -68,7 +43,7 @@
   function _autoPopulate() {
     var fundsEl = _el('additional-funds'), note = _el('additional-funds-auto-note');
     if (!fundsEl) return;
-    if (_afUserOverride) { if (note) note.hidden = true; return; }
+    if (_afUserOverride) { if (note) note.hidden = true; _syncToggleVisibility(); return; }
     var sug = null;
     if (typeof window.rettSuggestAdditionalFunds === 'function') {
       try { sug = window.rettSuggestAdditionalFunds(); } catch (e) { sug = null; }
@@ -76,7 +51,7 @@
     _afProgrammatic = true;
     if (sug != null && isFinite(sug) && sug > 0) {
       fundsEl.value = _fmtUSD(sug);
-      if (note) { note.textContent = 'optimal \u00b7 editable'; note.hidden = false; }
+      if (note) { note.textContent = 'optimal — editable'; note.hidden = false; }
     } else {
       fundsEl.value = '';
       if (note) note.hidden = true;
@@ -84,8 +59,35 @@
     fundsEl.dispatchEvent(new Event('change', { bubbles: true }));
     _afProgrammatic = false;
     _sync();
+    _syncToggleVisibility();
   }
+
+  function _syncToggleVisibility() {
+    var label = document.querySelector('.proj-addfunds-toggle');
+    var toggle = _el('additional-funds-toggle');
+    if (!label || !toggle) return;
+    if (window.__rettAFProbing) return;
+    var qualifies = false;
+    if (typeof window.rettAdditionalFundsBenefit === 'function') {
+      try { qualifies = !!(window.rettAdditionalFundsBenefit() || {}).qualifies; }
+      catch (e) { qualifies = false; }
+    }
+    if (qualifies) {
+      label.hidden = false;
+      label.style.display = '';
+    } else {
+      label.hidden = true;
+      label.style.display = 'none';
+      if (toggle.checked) {
+        toggle.checked = false;
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  }
+  window.rettSyncAFToggleVisibility = _syncToggleVisibility;
+
   var _afTimer = null;
+  var _afGateTimer = null;
   function _autoPopulateDebounced() {
     if ((_el('additional-funds-yes-no') || {}).value !== 'yes') return;
     clearTimeout(_afTimer);
@@ -97,7 +99,11 @@
     if (!yn || !grp) return;
     var on = (yn.value === 'yes');
     grp.hidden = !on;
-    if (on) { _afUserOverride = false; _autoPopulateDebounced(); }
+    if (on) {
+      var _fEl = _el('additional-funds');
+      _afUserOverride = !!(_fEl && String(_fEl.value).trim() !== '');
+      _autoPopulateDebounced();
+    }
   }
 
   function _init() {
@@ -117,11 +123,14 @@
         if (_afProgrammatic) return;
         _afUserOverride = (String(fundsEl.value).trim() !== '');
         _sync();
+        clearTimeout(_afGateTimer);
+        _afGateTimer = setTimeout(_syncToggleVisibility, 450);
       });
     }
 
     _syncYesNo();
     _sync();
+    _syncToggleVisibility();
 
     document.addEventListener('change', function (e) {
       if (e && e.target && /^(sale-price|cost-basis|accelerated-depreciation|short-term-gain|long-term-gain|w2-wages|interest-income|dividend-income|retirement-distributions|social-security|rental-income|business-income-amount|available-capital|invested-capital|strategy-select|leverage-cap-select|custodian-select|state-code|filing-status|additional-account-value|additional-lt-gain|additional-st-gain)$/.test(e.target.id)) {
@@ -130,10 +139,6 @@
     }, true);
   }
 
-  // (1) Self-init guard — upstream relies on inline-script timing (parsed
-  // before DOMContentLoaded); we run this module via dynamic <script>
-  // injection from useLegacyEngine.ts AFTER the document has loaded, so
-  // listening for DOMContentLoaded would no-op forever.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', _init);
   } else {

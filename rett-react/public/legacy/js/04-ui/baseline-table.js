@@ -111,13 +111,36 @@
     // treatment (recap caps at §1250 25%; STG folds into the ordinary
     // stack).
     var ord = ordTotal;
+    // §1245/§1250 recap split (advisor 2026-06-04). The snapshot
+    // exposes both pieces; pass them through so the engine routes §1245
+    // to ordinary marginal rates (not 25% capped) and excludes §1245
+    // from NIIT (active trade/business default).
+    //
+    // CRITICAL: when the user sets §1245 = 100% (so §1250 = $0), the
+    // bare `Number(snap.recap1250) || recap` fallback treated $0 as
+    // falsy and mis-routed the whole recap as §1250 in the engine call,
+    // double-counting (engine sees recap1245=$X, recap1250=$X, totaling
+    // 2X). Use an explicit "has split" gate instead: if either snap
+    // bucket > 0, trust the split verbatim; only fall back when both
+    // are 0 (legacy default = all §1250).
+    var _snap1245 = snap ? Number(snap.recap1245) || 0 : 0;
+    var _snap1250 = snap ? Number(snap.recap1250) || 0 : 0;
+    var _hasSplit = (_snap1245 + _snap1250) > 0;
+    var recap1245 = _snap1245;
+    var recap1250 = _hasSplit ? _snap1250 : recap;
+    var nIIT_base_split = Math.max(0, ltGain) + stGain + recap1250 + qualDiv
+                  + Math.max(0, _num('rental-income'))
+                  + Math.max(0, _num('dividend-income'))
+                  + Math.max(0, _num('interest-income'));
     var fedB = (typeof computeFederalTaxBreakdown === 'function')
       ? computeFederalTaxBreakdown(ord, year, status, {
           longTermGain: ltGain,
           shortTermGain: stGain,
           depreciationRecapture: recap,
+          depreciationRecapture1245: recap1245,
+          depreciationRecapture1250: recap1250,
           qualifiedDividend: qualDiv,
-          investmentIncome: nIIT_base,
+          investmentIncome: nIIT_base_split,
           wages: wages,
           seIncome: seInc
         })
@@ -182,6 +205,25 @@
     _set('bt-setax',   _fmt(seTax));
     _showRow('bt-setax', seTax > 0);
     _set('bt-tot',     _fmt(total));
+
+    // -----------------------------------------------------------------
+    // Proceeds bar — sale anatomy (2026-06-03)
+    // -----------------------------------------------------------------
+    // Stacked horizontal bar across the full sale price. Segments:
+    //   adjusted basis · §1245 recap · §1250 recap · LT gain
+    // Top bracket = Sale Price (full width).
+    // Bottom bracket = Original Purchase Price (basis = adjBasis +
+    //                  recap1245 + recap1250).
+    // Hidden when there's no sale, sale ≤ adjusted basis, or basis = 0
+    // (loss on sale — bar makes no visual sense in that case).
+    _renderProceedsBar({
+      sale:       sale,
+      basis:      basis,
+      depr:       depr,
+      recap1245:  recap1245,
+      recap1250:  recap1250,
+      ltGain:     ltGain
+    });
 
     // -----------------------------------------------------------------
     // Three-block delta display (Blake spec): compute the "without sale"
@@ -410,6 +452,162 @@
     document.addEventListener('change', debounced, true);
     // Initial paint.
     render();
+    // Wire the click-to-reveal button for the 3-tile row on Tab 2.
+    _initRevealButton();
+  }
+
+  // -----------------------------------------------------------------
+  // Proceeds bar renderer (2026-06-03). Stacked sale-anatomy bar with
+  // top + bottom brackets. Inspired by the friend's HTML RETT calc.
+  // -----------------------------------------------------------------
+  // Bar segments stack along the full sale price:
+  //   adjBasis (return of capital) · §1245 · §1250 · LT gain
+  //   adjBasis + recap1245 + recap1250 + ltGain == sale   ✓ identity
+  // Top bracket spans the full bar (= Sale Price).
+  // Bottom bracket spans (adjBasis + recap1245 + recap1250) = original
+  // basis. Everything past it = taxable gain (the "aha").
+  //
+  // Hidden when sale ≤ 0 or sale ≤ adjBasis (no gain). The §1245/§1250
+  // segments collapse to width 0 (and drop out of the key) when their
+  // respective amount is 0, so all-§1250 / all-§1245 / no-recap each
+  // render cleanly without empty visual slots.
+  function _renderProceedsBar(d) {
+    var wrap = document.getElementById('baseline-proceeds-wrap');
+    if (!wrap) return;
+    var sale  = Math.max(0, Number(d.sale)  || 0);
+    var basis = Math.max(0, Number(d.basis) || 0);
+    var depr  = Math.max(0, Number(d.depr)  || 0);
+    var r45   = Math.max(0, Number(d.recap1245) || 0);
+    var r50   = Math.max(0, Number(d.recap1250) || 0);
+    // Adjusted basis = original basis − accumulated depreciation
+    // (the part of the sale that's a tax-free return of capital).
+    var adjBasis = Math.max(0, basis - depr);
+    // LT gain is the residual after basis + recap segments.
+    // Use sale − basis − stPropGain when available; here we derive from
+    // identity sale - (adjBasis + recap1245 + recap1250) to keep the
+    // bar always summing exactly to sale even if ltGain prop drifted.
+    var ltSeg = Math.max(0, sale - adjBasis - r45 - r50);
+
+    // Hide bar if there's no sale, no original basis, or sale doesn't
+    // exceed adjusted basis (loss territory — bracket math collapses).
+    if (sale <= 0 || basis <= 0 || sale <= adjBasis) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+
+    var segs = [
+      { key: 'basis', nm: 'Return of Basis',  amt: adjBasis, col: 'var(--pb-basis)' },
+      { key: '1245',  nm: '§1245 Recap', amt: r45,      col: 'var(--pb-1245)'  },
+      { key: '1250',  nm: '§1250 Recap', amt: r50,      col: 'var(--pb-1250)'  },
+      { key: 'lt',    nm: 'Long-Term Gain',   amt: ltSeg,    col: 'var(--pb-lt)'    }
+    ];
+
+    // Non-linear width scaling so small recap segments stay readable
+    // even when the LT gain dwarfs them. Each non-zero segment gets a
+    // guaranteed minimum (~11% of the bar); the rest of the width
+    // distributes by dollar share. Ordering by size is preserved
+    // (the largest segment is still visibly largest) but $400K next
+    // to $6M no longer collapses to "$" with truncated label.
+    var MIN_PCT = 11;
+    var nonZero = segs.filter(function (s) { return s.amt > 0; });
+    var totalAmt = nonZero.reduce(function (a, s) { return a + s.amt; }, 0) || 1;
+    var reserved = MIN_PCT * nonZero.length;
+    var remaining = Math.max(0, 100 - reserved);
+    nonZero.forEach(function (s) {
+      s.visualPct = MIN_PCT + (s.amt / totalAmt) * remaining;
+    });
+    segs.forEach(function (s) {
+      if (s.amt <= 0) s.visualPct = 0;
+    });
+
+    var bar = document.getElementById('baseline-proceeds-bar');
+    if (bar) {
+      bar.innerHTML = segs.map(function (s) {
+        if (s.amt <= 0) return '';
+        // Show the segment name only when the visual width can fit
+        // ~10 chars of caption. Below that, dollar alone (with tooltip).
+        var showName = s.visualPct >= 10;
+        var title = s.nm + ' — ' + _fmt(s.amt);
+        return '<div class="pseg" style="flex:0 0 ' + s.visualPct.toFixed(3) +
+               '%;background:' + s.col + '" title="' +
+               title.replace(/"/g, '&quot;') + '">' +
+                 '<span class="pamt">' + _fmt(s.amt) + '</span>' +
+                 (showName ? '<span class="pnm">' + s.nm + '</span>' : '') +
+               '</div>';
+      }).join('');
+    }
+
+    // Brackets — anchored to the VISUAL widths of the bar, not the
+    // dollar ratios, so the bottom bracket always lines up with the
+    // visual end of the basis + recap segments after min-pct scaling.
+    var basisTotal = adjBasis + r45 + r50; // == original basis
+    var basisPct   = segs.slice(0, 3).reduce(function (a, s) {
+      return a + (s.amt > 0 ? s.visualPct : 0);
+    }, 0);
+    var topEl    = document.getElementById('baseline-bracket-top');
+    var bottomEl = document.getElementById('baseline-bracket-bottom');
+    if (topEl) {
+      topEl.innerHTML =
+        '<div class="bk" style="left:0;width:100%"></div>' +
+        '<div class="bk-label" style="left:0;width:100%">' +
+          'Sale Price · ' + _fmt(sale) +
+        '</div>';
+    }
+    if (bottomEl) {
+      bottomEl.innerHTML =
+        '<div class="bk" style="left:0;width:' + basisPct.toFixed(3) + '%"></div>' +
+        '<div class="bk-label" style="left:0;width:' + basisPct.toFixed(3) + '%">' +
+          'Original Purchase Price · ' + _fmt(basisTotal) +
+        '</div>';
+    }
+
+    // Key (legend) — one row per non-zero segment, with dollar amount.
+    var keyEl = document.getElementById('baseline-proceeds-key');
+    if (keyEl) {
+      keyEl.innerHTML = segs.filter(function (s) { return s.amt > 0; })
+        .map(function (s) {
+          return '<div class="pk">' +
+                   '<span class="sw" style="background:' + s.col + '"></span>' +
+                   s.nm +
+                   ' — <span class="pk-amt">' + _fmt(s.amt) + '</span>' +
+                 '</div>';
+        }).join('');
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // Click-to-reveal: the 3-tile baseline-pie-row starts hidden behind
+  // a centered "Show Tax Breakdown" button. Click → button drops out,
+  // spacer expands so the tiles arrive on their own beat, and the
+  // page scrolls the tile row into view. Wired once on first attach;
+  // idempotent (second click is a no-op).
+  // -----------------------------------------------------------------
+  function _initRevealButton() {
+    var btn      = document.getElementById('baseline-reveal-btn');
+    var btnWrap  = document.getElementById('baseline-reveal-btn-wrap');
+    var spacer   = document.getElementById('baseline-reveal-spacer');
+    var targets  = document.querySelectorAll('.baseline-reveal-target');
+    if (!btn || !btnWrap || !targets.length) return;
+    if (btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', function () {
+      // 1) Spacer expands first so the tiles don't slam into the bar.
+      if (spacer) spacer.classList.add('is-active');
+      // 2) Reveal tiles (CSS keyframe animation fades + slides them in).
+      targets.forEach(function (el) {
+        el.classList.add('baseline-reveal-shown');
+      });
+      // 3) Drop the button itself.
+      btnWrap.classList.add('is-revealed');
+      // 4) Smooth-scroll the tile row into view so the eye follows.
+      setTimeout(function () {
+        var firstTarget = targets[0];
+        if (firstTarget && typeof firstTarget.scrollIntoView === 'function') {
+          firstTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 80);
+    });
   }
 
   // Donut renderer (advisor 2026-05-27). Denominator = GAIN

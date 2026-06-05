@@ -74,33 +74,6 @@
   // (oilGas, delphi, ptet, slot09) are NOT in this map — they don't
   // need a prompt because warm-up handles them.
   var CHIPS_CONFIG = {
-    charitableGifts: {
-      primaryField: 'giftAmount',
-      prompt:       'Approximate annual giving',
-      picks: [
-        { label: '$10K',  value: 10000 },
-        { label: '$25K',  value: 25000 },
-        { label: '$100K', value: 100000 }
-      ]
-    },
-    slot05: {
-      primaryField: 'purchasePrice',
-      prompt:       'Real estate basis',
-      picks: [
-        { label: '$500K', value: 500000 },
-        { label: '$1M',   value: 1000000 },
-        { label: '$2M',   value: 2000000 }
-      ]
-    },
-    slot06: {
-      primaryField: 'vehicleCost',
-      prompt:       'Vehicle cost',
-      picks: [
-        { label: '$80K',  value: 80000 },
-        { label: '$120K', value: 120000 },
-        { label: '$200K', value: 200000 }
-      ]
-    },
     slot07: {
       primaryField: 'investmentAmount',
       prompt:       'Investment amount',
@@ -117,24 +90,6 @@
         { label: '$1,000', value: 1000 },
         { label: '$1,500', value: 1500 },
         { label: '$2,500', value: 2500 }
-      ]
-    },
-    slot10: {
-      primaryField: 'aircraftCost',
-      prompt:       'Aircraft acquisition cost',
-      picks: [
-        { label: '$2M', value: 2000000 },
-        { label: '$3M', value: 3000000 },
-        { label: '$5M', value: 5000000 }
-      ]
-    },
-    slot11: {
-      primaryField: 'propertyCost',
-      prompt:       'Property cost',
-      picks: [
-        { label: '$1M',   value: 1000000 },
-        { label: '$1.5M', value: 1500000 },
-        { label: '$2.5M', value: 2500000 }
       ]
     },
     slot12: {
@@ -178,44 +133,16 @@
         stateRate:             5.49,
         saltCapacityRemaining: 0,        // unused individual SALT cap headroom
         creditPct:             100,       // % of PTET creditable on owner state return (MA = 90)
-        annualRecurring:       false      // true + Strategy B/C → benefit repeats each recognition year
+        annualRecurring:       true       // PTET recurs every recognition year of the viewed strategy
+                                          // (Strategy A → Y0 only via _strategyYearCount; B/C → each year)
       },
       detailRows: [
         { id: 'taxableIncome',         label: 'Pass-through income',                 kind: 'usd', placeholder: '1,000,000' },
         { id: 'stateRate',             label: 'State PTET rate (%)',                 kind: 'pct', placeholder: '5.49' },
         { id: 'saltCapacityRemaining', label: 'Unused individual SALT cap',          kind: 'usd', placeholder: '0' },
-        { id: 'creditPct',             label: 'PTET-to-owner credit (%)',            kind: 'pct', placeholder: '100' },
-        { id: 'annualRecurring',       label: 'Recurs each year (multi-year)?',      kind: 'yesno' }
-      ]
-    },
-    {
-      id: 'charitableGifts',
-      num: '05',
-      name: 'Charitable Gifts',
-      shortName: 'Charitable Gifts',
-      keyaspect: 'Charitable Deduction',
-      descriptor: 'Gifts of cash or appreciated assets unlock a §170 deduction and avoid capital gains on the appreciation.',
-      audience: 'Any donor',
-      bucket: 'charity',
-      // No investmentField — gifts leave the estate but don't
-      // compete with Brooklyn for sale-proceed capital (tax-side).
-      defaults: {
-        giftAmount:    100000,
-        giftType:      'cash',     // 'cash' | 'appreciated' | 'daf'
-        appreciation:  0,           // dollars of unrealized gain (appreciated path)
-        agi:           0,           // donor AGI for §170 percentage caps
-        annualGiving:  false        // when true + Strategy B/C, gift repeats each recognition year
-      },
-      detailRows: [
-        { id: 'giftAmount',   label: 'Gift amount',                        kind: 'usd',   placeholder: '100,000' },
-        { id: 'giftType',     label: 'Gift type',                          kind: 'select', options: [
-            { value: 'cash',         label: 'Cash (60% AGI cap)' },
-            { value: 'appreciated',  label: 'Appreciated stock / asset (30% AGI cap)' },
-            { value: 'daf',          label: 'Donor-advised fund (60% AGI cap)' }
-        ] },
-        { id: 'appreciation', label: 'Unrealized gain (appreciated only)', kind: 'usd',   placeholder: '0' },
-        { id: 'agi',          label: 'Donor AGI (for AGI cap, optional)',  kind: 'usd',   placeholder: '0' },
-        { id: 'annualGiving', label: 'Annual giving (repeat each year)?',  kind: 'yesno' }
+        { id: 'creditPct',             label: 'PTET-to-owner credit (%)',            kind: 'pct', placeholder: '100' }
+        // (No "Recurs each year?" toggle — PTET always recurs over the
+        // viewed strategy's horizon; the calc forces it unconditionally.)
       ]
     },
     // ----------------------------------------------------------------
@@ -229,71 +156,12 @@
     // entry. No layout work required at swap-in.
     // ----------------------------------------------------------------
     {
-      id: 'slot05',
-      num: '06',
-      name: 'Cost Segregation Study',
-      shortName: 'Cost Seg',
-      keyaspect: 'Accelerated Depreciation',
-      descriptor: 'Each dollar of building basis generates 25&ndash;35&cent; in year-one bonus depreciation against ordinary income.',
-      audience: 'Real estate owner',
-      bucket: 'capital',
-      investmentField: 'purchasePrice',
-      defaults: {
-        purchasePrice: 2000000,
-        landPct:       20,
-        propertyType:  'apartment',
-        newlyAcquired: true
-      },
-      detailRows: [
-        { id: 'purchasePrice', label: 'Property purchase price',        kind: 'usd', placeholder: '2,000,000' },
-        { id: 'landPct',       label: 'Land allocation (%)',            kind: 'pct', placeholder: '20' },
-        { id: 'propertyType',  label: 'Property type',                  kind: 'select', options: [
-            { value: 'apartment',     label: 'Apartment / Multifamily (~25%)' },
-            { value: 'hotel',         label: 'Hotel (~30%)' },
-            { value: 'office',        label: 'Office (~22%)' },
-            { value: 'retail',        label: 'Retail (~26%)' },
-            { value: 'industrial',    label: 'Manufacturing / Industrial (~35%)' },
-            { value: 'restaurant',    label: 'Restaurant (~35%)' },
-            { value: 'medical',       label: 'Medical / Dental (~30%)' },
-            { value: 'selfStorage',   label: 'Self-Storage (~35%)' },
-            { value: 'shortTerm',     label: 'STR / Vacation Rental (~30%)' }
-        ] },
-        { id: 'newlyAcquired', label: 'Newly acquired this year?',      kind: 'yesno' }
-      ]
-    },
-    {
-      id: 'slot06',
-      num: '07',
-      name: 'Heavy Vehicle Deduction',
-      shortName: 'Heavy Vehicle',
-      keyaspect: 'Vehicle Expensing',
-      descriptor: 'Each dollar of business-use vehicle cost fully expenses in year one through &sect;179 plus 100% bonus.',
-      audience: 'Business owner',
-      bucket: 'asset',
-      defaults: {
-        vehicleCost:  120000,
-        vehicleClass: 'suvHeavy',
-        bizUsePct:    100
-      },
-      detailRows: [
-        { id: 'vehicleCost',  label: 'Vehicle cost',                  kind: 'usd', placeholder: '120,000' },
-        { id: 'vehicleClass', label: 'Vehicle class',                 kind: 'select', options: [
-            { value: 'lightAuto',   label: 'Light auto / truck (≤6,000 lb GVWR)' },
-            { value: 'suvHeavy',    label: 'Heavy SUV (6,001-14,000 lb)' },
-            { value: 'heavyPickup', label: 'Heavy pickup w/ ≥6-ft bed' },
-            { value: 'cargoVan',    label: 'Cargo van (no rear seats)' },
-            { value: 'over14000',   label: 'Vehicle &gt;14,000 lb GVWR' }
-        ] },
-        { id: 'bizUsePct',    label: 'Business use (%)',              kind: 'pct', placeholder: '100' }
-      ]
-    },
-    {
       id: 'slot07',
       num: '08',
       name: 'Equipment Leasing Fund',
       shortName: 'Equip Leasing',
       keyaspect: 'Bonus Pass-Through',
-      descriptor: 'Each dollar invested generates ~90&cent; in year-one K-1 losses that offset active income with material participation.',
+      descriptor: 'Through active participation, an investment offsets ordinary income or generates income deductions.',
       audience: 'Active investor',
       bucket: 'capital',
       investmentField: 'investmentAmount',
@@ -326,79 +194,14 @@
       defaults: {
         daysRented:      14,
         fmvPerDay:       1500,
-        annualRecurring: false      // Augusta is structurally annual; toggle multiplies benefit across the strategy horizon
+        annualRecurring: true       // Augusta is structurally annual — recurs every recognition year of the
+                                    // viewed strategy (Strategy A → Y0 only via _strategyYearCount; B/C → each year)
       },
       detailRows: [
         { id: 'daysRented',     label: 'Days rented (max 14)',                kind: 'num', placeholder: '14' },
-        { id: 'fmvPerDay',      label: 'FMV rental per day',                  kind: 'usd', placeholder: '1,500' },
-        { id: 'annualRecurring',label: 'Recurs each year (multi-year)?',      kind: 'yesno' }
-      ]
-    },
-    {
-      id: 'slot09',
-      num: '04',
-      name: '401(k) + Profit Sharing',
-      shortName: '401(k) + PS',
-      keyaspect: 'Retirement Deferral',
-      descriptor: 'Each dollar deferred reduces taxable income now and grows tax-deferred &mdash; up to $72,000 annual addition for the owner.',
-      audience: 'Business owner',
-      bucket: 'ordinary',
-      defaults: {
-        compensation:    300000,
-        ownerAge:        55,
-        priorYearWages:  200000,
-        annualRecurring: false      // 401(k) contributions repeat annually; toggle multiplies benefit across the strategy horizon
-      },
-      detailRows: [
-        { id: 'compensation',    label: 'Eligible compensation / SE earnings', kind: 'usd', placeholder: '300,000' },
-        { id: 'ownerAge',        label: 'Owner age',                            kind: 'num', placeholder: '55' },
-        { id: 'priorYearWages',  label: 'Prior-year FICA wages',                kind: 'usd', placeholder: '200,000' },
-        { id: 'annualRecurring', label: 'Recurs each year (multi-year)?',       kind: 'yesno' }
-      ]
-    },
-    {
-      id: 'slot10',
-      num: '10',
-      name: 'Aircraft Purchase',
-      shortName: 'Aircraft',
-      keyaspect: 'Business Aviation Bonus',
-      descriptor: 'Each dollar of aircraft cost expenses 100% in year one when business use exceeds 50%.',
-      audience: 'Business aviation user',
-      bucket: 'asset',
-      // No investmentField — aircraft is a physical-asset purchase the
-      // client wants anyway; doesn't compete with Brooklyn for capital.
-      // The depreciation tax savings flow into net benefit; the asset
-      // cost surfaces in the Page-5 physical-asset breakdown.
-      defaults: {
-        aircraftCost: 3000000,
-        qbuPct:       75
-      },
-      detailRows: [
-        { id: 'aircraftCost', label: 'Aircraft acquisition cost',     kind: 'usd', placeholder: '3,000,000' },
-        { id: 'qbuPct',       label: 'Qualified business use (%)',    kind: 'pct', placeholder: '75' }
-      ]
-    },
-    {
-      id: 'slot11',
-      num: '11',
-      name: 'Short-Term Rental',
-      shortName: 'STR',
-      keyaspect: 'Non-Passive Loss',
-      descriptor: 'Each dollar of property basis generates ~30&cent; in year-one paper losses against W-2 income (≤7-day stays + material participation).',
-      audience: 'STR investor',
-      bucket: 'capital',
-      investmentField: 'propertyCost',
-      defaults: {
-        propertyCost:    1500000,
-        landPct:         20,
-        avgUseDays:      5,
-        materialPart:    true
-      },
-      detailRows: [
-        { id: 'propertyCost', label: 'Property cost',                       kind: 'usd', placeholder: '1,500,000' },
-        { id: 'landPct',      label: 'Land allocation (%)',                 kind: 'pct', placeholder: '20' },
-        { id: 'avgUseDays',   label: 'Avg guest stay (days)',               kind: 'num', placeholder: '5' },
-        { id: 'materialPart', label: 'Material participation (any test)?', kind: 'yesno' }
+        { id: 'fmvPerDay',      label: 'FMV rental per day',                  kind: 'usd', placeholder: '1,500' }
+        // (No "Recurs each year?" toggle — Augusta always recurs over the
+        // viewed strategy's horizon; the calc forces it unconditionally.)
       ]
     },
     {
@@ -630,26 +433,25 @@
         '<span class="supp-details-arrow-label">' + (st.valueOpen ? 'Hide value' : 'See value') + '</span>' +
       '</button>';
 
-    // Quick-pick chips: shown inline when Interested AND the primary
-    // dollar input is still $0. Click a chip to set the field +
-    // mark user-touched + recompute. "Custom" opens Details.
-    var chipsBlock = '';
+    // Inline amount box: when Interested, show a single input for the
+    // strategy's primary dollar figure (investment / equipment cost /
+    // daily FMV). Replaces the prior quick-pick chips ($250K/$500K/Custom)
+    // per advisor — advisors type the exact number rather than picking a
+    // suggested amount. Bound to the same data-supx-input the Details
+    // panel uses, so the host 'input' listener updates state WITHOUT a
+    // re-render (caret stays put while typing). Stays visible while
+    // Interested (not just at $0) so the figure can be edited in place.
+    var amountBlock = '';
     var chipsCfg = CHIPS_CONFIG[spec.id];
     if (!isPlaceholder && chipsCfg && iState[spec.id] === true) {
       var primaryVal = Number(st[chipsCfg.primaryField]) || 0;
-      if (primaryVal === 0) {
-        var chipsHtml = chipsCfg.picks.map(function (p) {
-          return '<button type="button" class="supx-chip" data-supx-chip-target="' + spec.id + '" data-supx-chip-field="' + chipsCfg.primaryField + '" data-supx-chip-value="' + p.value + '">' + p.label + '</button>';
-        }).join('');
-        chipsBlock =
-          '<div class="supx-chips-row">' +
-            '<span class="supx-chips-prompt">' + chipsCfg.prompt + ':</span>' +
-            '<div class="supx-chips">' +
-              chipsHtml +
-              '<button type="button" class="supx-chip supx-chip-custom" data-supx-chip-custom="' + spec.id + '">Custom</button>' +
-            '</div>' +
-          '</div>';
-      }
+      amountBlock =
+        '<div class="supx-chips-row supx-amount-row">' +
+          '<span class="supx-chips-prompt">' + chipsCfg.prompt + ':</span>' +
+          '<div class="currency-input supx-amount-input-wrap">' +
+            '<input type="text" class="supx-amount-input" data-supx-input="' + spec.id + ':' + chipsCfg.primaryField + '" inputmode="numeric" autocomplete="off" value="' + (primaryVal > 0 ? _fmtUSD(primaryVal) : '') + '" placeholder="0">' +
+          '</div>' +
+        '</div>';
     }
 
     var hiddenCls = (root.__rettSuppHidden && root.__rettSuppHidden[spec.id]) ? ' is-supp-hidden' : '';
@@ -674,17 +476,45 @@
           '<button type="button" class="strategy-pick-btn supp-pick-btn' + _btnActiveClass(spec.id, 'interested') + '"' + disAttrInt + ' data-supx-pick-action="interested" data-supx-pick-target="' + spec.id + '">&#10003; Interested</button>' +
           '<button type="button" class="strategy-pick-btn supp-pick-btn' + _btnActiveClass(spec.id, 'not-interested') + '"' + disAttrInt + ' data-supx-pick-action="not-interested" data-supx-pick-target="' + spec.id + '">Not Interested</button>' +
         '</div>' +
-        chipsBlock +
+        amountBlock +
         detailsBlock +
         valueArrow +
         _renderResultRow(spec, st) +
       '</div>';
   }
 
+  // Business-income gate (advisor 2026-06-03). Three strategies only
+  // make sense when the client runs an operating business / pass-
+  // through: PTET (entity pays state tax), Augusta §280A(g) (rent home
+  // to your business), and Farm/Business Equipment §179 (capped by
+  // business income). They stay OFF the rail until the Page-1 business-
+  // income field has a value. The other four (Oil & Gas, Delphi,
+  // Charitable Gifts, Equipment Leasing) are generic and always show.
+  var BUSINESS_GATED = { ptet: true, slot08: true, slot12: true };
+
+  function _businessIncomePresent() {
+    // Fail OPEN (show) when inputs aren't ready yet, so a load-time
+    // race never permanently buries a card. On a real cfg read, the
+    // gate is strictly business income > 0.
+    if (typeof root.collectInputs !== 'function') return true;
+    try {
+      var cfg = root.collectInputs();
+      if (!cfg) return true;
+      return (Number(cfg.businessIncomeAmount) || 0) > 0;
+    } catch (e) { return true; }
+  }
+
+  function _specVisible(spec) {
+    if (BUSINESS_GATED[spec.id] && !_businessIncomePresent()) return false;
+    return true;
+  }
+
   function _renderHost() {
     var host = document.getElementById('supplemental-extra-host');
     if (!host) return;
     var iState = _interestState();
+    // Drop business-gated cards entirely when business income is blank.
+    var visibleSpecs = SPECS.filter(_specVisible);
     // Sort:
     //   1. Not-interested cards drop to the very end.
     //   2. Cards that need a chip-pick (Independent strategies whose
@@ -692,7 +522,7 @@
     //      that auto-fill from sale data / wages — so the advisor
     //      can rapid-fire Interested/Not Interested on the easy ones
     //      first, then deal with the chip-prompt cards.
-    var sorted = SPECS.slice().sort(function (a, b) {
+    var sorted = visibleSpecs.slice().sort(function (a, b) {
       var aNo = iState[a.id] === false ? 1 : 0;
       var bNo = iState[b.id] === false ? 1 : 0;
       if (aNo !== bNo) return aNo - bNo;
@@ -903,6 +733,15 @@
     if (navSupp) navSupp.addEventListener('click', function () {
       setTimeout(_renderHost, 0);
     });
+    // Re-render the rail when the Page-1 business-income field changes
+    // so the business-gated cards (PTET / Augusta / Farm) appear or
+    // disappear live. Safe to fire while the user types on Page 1 —
+    // the rail host isn't focused, so no caret is lost.
+    var bizInput = document.getElementById('business-income-amount');
+    if (bizInput) {
+      bizInput.addEventListener('input',  function () { setTimeout(_renderHost, 0); });
+      bizInput.addEventListener('change', function () { setTimeout(_renderHost, 0); });
+    }
   }
 
   if (document.readyState === 'loading') {

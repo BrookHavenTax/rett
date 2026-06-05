@@ -60,11 +60,29 @@
 
   function _solverSection() {
     if (typeof root.runMasterSolver !== 'function') return '';
-    // Pass the primary net (Strategy Summary's Brooklyn-only net) for
-    // the rivalry decisions. Use 0 here - the absolute value doesn't
-    // matter for per-supp display, but rivalry decisions ARE keyed off
-    // it. Read from window.__rettPrimaryNetBenefit if set; otherwise 0.
+    // Primary (Brooklyn-only) net for the CHOSEN strategy. This feeds the
+    // "Combined primary + supplementals" total below (runMasterSolver
+    // returns totalCombinedNetBenefit = primary + funded-supp benefit).
+    // __rettPrimaryNetBenefit was never set by any caller — it always
+    // read 0, which silently dropped the entire Brooklyn primary net from
+    // the combined line so admin showed only the supp benefit (e.g.
+    // $13,000 where the client hero showed $3,015,935). Derive primary
+    // from buildInterestedSummary's chosen-strategy metrics.net, exactly
+    // as the client temp-page reconciliation does, so the combined total
+    // matches what the client sees. (The per-supp rivalry decisions and
+    // totalSupplementalBenefit do NOT depend on this value — only the
+    // combined total does.)
     var primary = _num(root.__rettPrimaryNetBenefit);
+    if (!primary && typeof root.buildInterestedSummary === 'function') {
+      try {
+        var _sum = root.buildInterestedSummary();
+        var _chosen = root.__rettChosenStrategy || 'A';
+        var _ent = (_sum && _sum.entries || []).find(function (e) { return e.type === _chosen; });
+        if (_ent && _ent.metrics && Number.isFinite(Number(_ent.metrics.net))) {
+          primary = _num(_ent.metrics.net);
+        }
+      } catch (e) { /* leave primary at its prior value */ }
+    }
     var solver;
     try { solver = root.runMasterSolver(primary); } catch (e) {
       return '<p class="admin-math-error">runMasterSolver threw: ' + _esc(e.message || e) + '</p>';
@@ -90,14 +108,25 @@
     var body = supps.map(function (s) {
       var rivalryReason = (s.rivalry && (s.rivalry.reason || (s.rivalry.funded ? 'funded' : '?'))) || '—';
       var fundedLabel = s.rivalry && s.rivalry.funded ? 'funded' : 'NOT funded';
-      var contrib = (s.enabled && s.available && s.rivalry && s.rivalry.funded) ? s.netBenefit : 0;
+      // Realized (post-saturation) benefit is what actually flows into the
+      // combined total — when several ord-offset supps share the finite Y0
+      // ordinary pool, a crowded-out supp's realized benefit is scaled
+      // below its raw net (often to $0). Show realized; note the raw when
+      // they differ so the advisor sees the pool saturation at work.
+      var realized = Number(s.realizedNetBenefit);
+      if (!Number.isFinite(realized)) {
+        realized = (s.enabled && s.available && s.rivalry && s.rivalry.funded) ? s.netBenefit : 0;
+      }
+      var rawNote = (s.rivalry && s.rivalry.funded && Math.abs(realized - s.netBenefit) > 1)
+        ? ' <span class="admin-math-note-cell">(raw ' + _fmtUSD(s.netBenefit) + ', clipped by shared ordinary pool)</span>'
+        : '';
       return '<tr>' +
         '<td><strong>' + _esc(s.name) + '</strong><br><span class="admin-math-note-cell">' + _esc(s.descriptor || '') + '</span></td>' +
         '<td>' + (s.interested ? 'Yes' : '—') + '</td>' +
         '<td>' + (s.enabled ? 'Yes' : 'No') + '</td>' +
         '<td>' + _esc(fundedLabel) + ' (' + _esc(rivalryReason) + ')</td>' +
-        '<td class="admin-math-num">' + _fmtUSD(s.netBenefit) + '</td>' +
-        '<td class="admin-math-note-cell">contributes ' + _fmtUSD(contrib) + ' to combined</td>' +
+        '<td class="admin-math-num">' + _fmtUSD(realized) + rawNote + '</td>' +
+        '<td class="admin-math-note-cell">contributes ' + _fmtUSD(realized) + ' to combined</td>' +
       '</tr>';
     }).join('');
     body +=

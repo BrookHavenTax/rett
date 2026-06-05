@@ -101,6 +101,83 @@
     _enabledState()[id] = !!on;
   }
 
+  // ---- Shared ordinary-income pool saturation ----------------------
+  // Several supplementals offset the SAME finite Year-0 ordinary income:
+  // Oil & Gas (IDC), Equipment Leasing (slot07), Farm §179 (slot12),
+  // Augusta rent (slot08), PTET entity tax, and Delphi's ordinary
+  // recharacterization. Each calc independently caps its own deduction
+  // at the FULL pool, and the solver used to SUM their net benefits — so
+  // stacking two that each absorb the whole pool double-counted the same
+  // income (Strategy Summary net overstated ~2.5x when several stack).
+  //
+  // Fix: treat the Year-0 ordinary income as one shared pool and allocate
+  // it across the funded ord-offset supps BEST-FIRST (highest realized $
+  // saved per $ of deduction). Each supp earns its per-dollar rate only on
+  // the deduction it actually receives; once the pool is exhausted the
+  // next supp realizes ~$0. That both removes the double-count and picks
+  // the best combination (high-rate Farm/Equipment/Oil&Gas win the pool;
+  // low-rate Delphi/PTET get crowded out when capital is the constraint).
+  function _y0OrdPool(cfg) {
+    if (!cfg) return 0;
+    return Math.max(0,
+      (Number(cfg.baseOrdinaryIncome) || 0) +
+      (Number(cfg.acceleratedDepreciation) || 0));
+  }
+  // Per-supp ordinary-deduction demand + realized per-dollar rate.
+  // `demand` is the supp's UNCAPPED desired ordinary offset; `rate` is the
+  // $ saved per $ of deduction it actually realized (net / basis, where
+  // basis is the deduction that produced its reported net). Returns null
+  // for supps that don't offset ordinary income (they keep full net).
+  function _ordInfoOf(id, result, net) {
+    if (!result) return null;
+    var d = result.detail || {};
+    var al = result.allocations || {};
+    var py = (Array.isArray(result.perYear) && result.perYear[0]) || {};
+    var demand = 0, basis = 0;
+    if (id === 'oilGas') {
+      demand = Number(py.deduction) || Number(py.absorbed) || 0;
+      basis  = Number(py.absorbed) || demand;
+    } else if (id === 'delphi') {
+      demand = Number(al.ordinaryExpense) || 0; basis = demand;
+    } else if (id === 'ptet') {
+      demand = Number(d.ordOffsetY0) || 0; basis = demand;
+    } else if (id === 'slot07') {
+      demand = Number(d.nonPassiveUncapped) || Number(d.nonPassive) || 0;
+      basis  = Number(d.nonPassive) || demand;
+    } else if (id === 'slot08') {
+      demand = Number(d.ordOffsetY0) || Number(d.businessRent) || 0; basis = demand;
+    } else if (id === 'slot12') {
+      demand = Number(d.totalUncapped) || Number(d.total) || 0;
+      basis  = Number(d.total) || demand;
+    } else {
+      return null;
+    }
+    if (demand <= 0 || basis <= 0) return null;
+    return { demand: demand, rate: (Number(net) || 0) / basis };
+  }
+  // Allocate the shared Y0 ordinary pool across funded supps best-first.
+  // Input items: [{ id, netBenefit, ordInfo }]. Returns
+  //   { total, realized: { id -> realizedNet } }.
+  // Supps with no ordInfo keep their full net (they don't touch the pool).
+  function _saturateOrdinary(items, pool) {
+    var realized = {};
+    var ordList = [];
+    items.forEach(function (s) {
+      if (s.ordInfo) ordList.push(s);
+      else realized[s.id] = Math.round(Number(s.netBenefit) || 0);
+    });
+    ordList.sort(function (a, b) { return b.ordInfo.rate - a.ordInfo.rate; });
+    var remaining = Math.max(0, Number(pool) || 0);
+    ordList.forEach(function (s) {
+      var take = Math.min(s.ordInfo.demand, remaining);
+      realized[s.id] = Math.round(take * s.ordInfo.rate);
+      remaining -= take;
+    });
+    var total = 0;
+    Object.keys(realized).forEach(function (k) { total += realized[k]; });
+    return { total: Math.round(total), realized: realized };
+  }
+
   // Rivalry optimizer — for each Interested supplemental, compare its
   // net-benefit-per-dollar against Brooklyn's net-benefit-per-dollar at
   // full Available Capital. Greedy-allocate from highest rate down,
@@ -164,8 +241,18 @@
         var inv = (typeof spec.getInvestment === 'function')
           ? Number(spec.getInvestment(result)) || 0 : 0;
         var rate = (inv > 0) ? net / inv : 0;
-        return { id: spec.id, available: !!result, investment: inv, netBenefit: net, rate: rate };
+        return { id: spec.id, available: !!result, investment: inv, netBenefit: net, rate: rate,
+                 ordInfo: _ordInfoOf(spec.id, result, net) };
       });
+
+    // Shared Y0 ordinary-income pool — the rival subset objective below is
+    // saturation-aware so it won't commit capital to an ord-offset supp
+    // that would be crowded out of the pool (realizing ~$0 for real
+    // dollars deployed). `alwaysOnOrd` are the investment-free supps
+    // (PTET / Augusta) that are funded unconditionally but still draw from
+    // the shared pool, so every subset's saturation must include them.
+    var ordPool = _y0OrdPool(cfg);
+    var alwaysOnOrd = [];
 
     var decisions = {};
 
@@ -188,6 +275,8 @@
           decisions[c.id] = { funded: true, reason: 'free-benefit',
             granted: 0, rate: 0, brooklynRate: brooklynYieldRate,
             netBenefit: c.netBenefit, requested: 0 };
+          // Investment-free but still consumes the shared ordinary pool.
+          if (c.ordInfo) alwaysOnOrd.push({ id: c.id, netBenefit: c.netBenefit, ordInfo: c.ordInfo });
         } else {
           decisions[c.id] = { funded: false, reason: 'no-result-or-zero',
             granted: 0, rate: c.rate, brooklynRate: brooklynYieldRate,
@@ -222,19 +311,28 @@
     // implementation for the advisor).
     var k = rivals.length;
     var bestMask = 0;
-    var bestObj = 0;
     var bestInv = 0;
+    // Baseline: fund no rivals — Brooklyn keeps all capital and only the
+    // investment-free pool supps realize benefit. Any rival subset must
+    // beat this saturated baseline net of the capital it pulls.
+    var bestObj = _saturateOrdinary(alwaysOnOrd, ordPool).total;
     if (k > 0 && k <= 20) {
       var subsetCount = 1 << k;
       for (var m = 1; m < subsetCount; m++) {
-        var sumInv = 0, sumNet = 0;
+        var sumInv = 0;
+        var items = alwaysOnOrd.slice();
         for (var i = 0; i < k; i++) {
           if ((m >> i) & 1) {
             sumInv += rivals[i].investment;
-            sumNet += rivals[i].netBenefit;
+            items.push({ id: rivals[i].id, netBenefit: rivals[i].netBenefit, ordInfo: rivals[i].ordInfo });
           }
         }
         if (sumInv > avail) continue;
+        // Saturation-aware combined supp net for this subset (shared pool
+        // allocated best-first), minus the Brooklyn yield foregone on the
+        // capital the subset pulls. A crowded-out ord supp adds ~$0
+        // saturated net but costs sumInv*brooklynRate, so it loses here.
+        var sumNet = _saturateOrdinary(items, ordPool).total;
         var obj = sumNet - sumInv * brooklynYieldRate;
         if (obj > bestObj || (obj === bestObj && sumInv < bestInv)) {
           bestObj = obj;
@@ -337,11 +435,33 @@
     // Combined net only counts FUNDED supps. Strategies that lose to
     // Brooklyn (rivalry says brooklyn-beats) contribute zero — the
     // dollar stays with Brooklyn instead.
-    var totalSupp = supplementals
-      .filter(function (s) {
-        return s.enabled && s.available && s.rivalry && s.rivalry.funded;
-      })
-      .reduce(function (sum, s) { return sum + s.netBenefit; }, 0);
+    //
+    // Shared ordinary-income pool: the funded ord-offset supps don't get
+    // to each independently claim the full Y0 ordinary income. Saturate
+    // the shared pool best-first so the total reflects what's actually
+    // realizable (no double-count), and annotate each supp with its
+    // realized benefit so downstream consumers report the same figure.
+    var fundedSupps = supplementals.filter(function (s) {
+      return s.enabled && s.available && s.rivalry && s.rivalry.funded;
+    });
+    var sat = _saturateOrdinary(
+      fundedSupps.map(function (s) {
+        return { id: s.id, netBenefit: s.netBenefit,
+                 ordInfo: _ordInfoOf(s.id, s.result, s.netBenefit) };
+      }),
+      _y0OrdPool(cfg)
+    );
+    supplementals.forEach(function (s) {
+      s.realizedNetBenefit = Object.prototype.hasOwnProperty.call(sat.realized, s.id)
+        ? sat.realized[s.id]
+        : 0;
+      // Scale factor consumers can apply to per-year / per-bucket figures
+      // (1 when unsaturated; <1 when the shared pool clipped this supp).
+      s.saturationScale = (Number(s.netBenefit) > 0)
+        ? (s.realizedNetBenefit / s.netBenefit)
+        : (s.realizedNetBenefit > 0 ? 1 : 0);
+    });
+    var totalSupp = sat.total;
 
     return {
       primaryNetBenefit:        primary,

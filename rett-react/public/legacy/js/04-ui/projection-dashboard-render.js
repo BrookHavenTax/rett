@@ -78,6 +78,74 @@
     return sign + '$' + Math.round(abs).toLocaleString('en-US');
   }
 
+  // Human-readable payment / gain-recognition schedule for the deferred
+  // §453 installment strategies (B Installment Sale, C Structured Sale).
+  // Returns null for the immediate strategy (A) or any non-installment
+  // cfg. Derived PURELY from the cfg fields the engine itself consumes
+  // (tax-comparison.js ~764-911: totalLT, _gpContractPrice, the GP ratio,
+  // y0DownPayment, installmentScheduleWeights), so the terms displayed to
+  // the advisor are exactly what the optimizer modeled — no re-derivation
+  // that could drift from the engine.
+  //
+  //   contractPrice (GP) = salePrice − recapture
+  //   GP ratio           = totalLT / contractPrice
+  //   Y0 (sale year)     = down payment D + recapture cash; D recognizes
+  //                        D × GP of LT gain, recap is Y0 ordinary
+  //   Installment year i = (contractPrice − D) × weight[i] cash, which
+  //                        recognizes that × GP of LT gain (Jan 1 dates)
+  function _describeInstallmentSchedule(cfg) {
+    if (!cfg) return null;
+    var N = Math.max(0, Math.min(3, Number(cfg.installmentPayments) || 0));
+    if (N < 1) return null;                 // immediate (A) — no schedule
+    var sale  = Math.max(0, Number(cfg.salePrice) || 0);
+    var basis = Math.max(0, Number(cfg.costBasis) || 0);
+    var recap = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
+    var stp   = Math.max(0, Number(cfg.shortTermPropertyGain) || 0);
+    var totalLT  = Math.max(0, sale - basis - recap - stp);
+    var contract = Math.max(0, sale - recap);          // §453 GP contract price
+    var gp = contract > 0 ? totalLT / contract : 0;
+    var D = Math.max(0, Math.min(Number(cfg.y0DownPayment) || 0, contract));
+    // Forced Y0 payment — sale proceeds the seller must take at closing to
+    // pay off outstanding debt / personal-use cash (cfg.forcedY0Payment =
+    // amount-owed + personal-use, summed in inputs-collector.js). That cash
+    // is received at closing, so for a §453 deferral it recognizes F × GP
+    // of LT gain in Y0 and is NOT available to deploy to Brooklyn. Capped,
+    // together with the down payment, at the contract price — mirrors the
+    // engine's _forcedY0Payment handling (tax-comparison.js ~904-911), so
+    // the schedule reflects the same Y0 gain the engine recognizes.
+    var F = Math.max(0, Math.min(Number(cfg.forcedY0Payment) || 0, Math.max(0, contract - D)));
+    var y0 = Number(cfg.year1) || (new Date()).getFullYear();
+    var weights = (Array.isArray(cfg.installmentScheduleWeights)
+          && cfg.installmentScheduleWeights.length === N)
+          ? cfg.installmentScheduleWeights : null;
+    var remaining = Math.max(0, contract - D - F);
+    var rows = [];   // { year, cash, ltGain, recap, downPayment, debtPayoff, atClosing }
+    if (D > 0.5 || F > 0.5 || recap > 0.5) {
+      rows.push({ year: y0, cash: D + F + recap, ltGain: (D + F) * gp,
+        recap: recap, downPayment: D, debtPayoff: F, atClosing: true });
+    }
+    for (var i = 0; i < N; i++) {
+      var w = weights ? Math.max(0, Number(weights[i]) || 0) : (1 / N);
+      var pay = remaining * w;
+      rows.push({ year: y0 + 1 + i, cash: pay, ltGain: pay * gp,
+        recap: 0, downPayment: 0, debtPayoff: 0, atClosing: false });
+    }
+    return { gpRatio: gp, totalLT: totalLT, downPayment: D, debtPayoff: F, payments: N, rows: rows };
+  }
+
+  // One-line "Recommended terms: …" summary for the comparison table and
+  // the temp page. Empty string when there's no installment schedule.
+  function _scheduleSummaryLine(cfg) {
+    var s = _describeInstallmentSchedule(cfg);
+    if (!s || !s.rows.length) return '';
+    var parts = s.rows.map(function (r) {
+      if (!r.atClosing) return _fmt(r.cash) + ' on Jan 1, ' + r.year;
+      var note = (r.debtPayoff > 0.5) ? ', incl. ' + _fmt(r.debtPayoff) + ' debt payoff' : '';
+      return _fmt(r.cash) + ' at closing (' + r.year + note + ')';
+    });
+    return 'Recommended terms: ' + parts.join('  +  ');
+  }
+
   function _kpiTile(label, value, sub, kind) {
     var cls = 'rett-kpi-tile';
     if (kind === 'positive') cls += ' kpi-positive';
@@ -760,13 +828,15 @@
       type: 'B', rec: 2, maxRec: 1,
       label: 'Installment Sale',
       sub: 'Gain hits Year 2 naturally — no structured-sale product needed',
-      metrics: mB
+      metrics: mB,
+      cfg: pickedB && pickedB.cfg
     });
     if (bestC) rows.push({
       type: 'C', rec: bestRecC, maxRec: null,
       label: 'Structured Installment Sale (' + userDuration + ' months)',
       sub: 'Insurance product defers gain to Year ' + bestRecC + ' under the legal window',
-      metrics: bestC
+      metrics: bestC,
+      cfg: pickedC && pickedC.cfg
     });
 
     if (!rows.length) return '';
@@ -901,6 +971,11 @@
       if (isNetNegative) html += ' <span class="rett-scenario-badge rett-scenario-badge-warn">NET NEGATIVE</span>';
       html += '</div>';
       html += '<div class="rett-scenario-sub">' + row.sub + '</div>';
+      // Deferred strategies (B / C): surface the optimizer's recommended
+      // payment terms so the advisor knows what to negotiate, and so this
+      // table reconciles with the temp/tax-implication page.
+      var _sched = row.cfg ? _scheduleSummaryLine(row.cfg) : '';
+      if (_sched) html += '<div class="rett-scenario-schedule">' + _sched + '</div>';
       html += '</td>';
       html += '<td class="num">' + _fmt(row.metrics.tax) + '</td>';
       html += '<td class="num">' + _fmt(row.metrics.fees) + '</td>';
@@ -1305,6 +1380,37 @@
               coarseBest = { D: D, net: mc.net };
             }
           }
+          // BOUNDARY-VALUE PASS (advisor 2026-06-01): the net(D) curve has
+          // SPIKES at the Schwab combo minimums ($1M for 145/45, $3M for
+          // 200/100). At D = combo_min, the Y0 deposit opens that combo
+          // exactly at the floor, generating the maximum age-0 loss
+          // density. Between spikes net drops by ~$15K because the Y0
+          // tranche either over-shoots the floor (wasted capacity vs
+          // restarting fresh at the next tier) or under-shoots (cash
+          // rolls into Y1 with no Y0 absorption). The 10% coarse grid
+          // can step OVER these spikes (e.g. with $4.9M D_max it samples
+          // $0, $490K, $980K, $1.47M — missing $1M and $3M). Explicitly
+          // probe the combo-min boundaries so the optimum lands on the
+          // spike when it dominates.
+          if (typeof root.listSchwabCombosForStrategy === 'function') {
+            try {
+              var _stratKeyC = (cfgSection.tierKey || cfgSection.strategyKey || 'beta1');
+              var _allCombos = root.listSchwabCombosForStrategy(_stratKeyC) || [];
+              var _userCapC = Number(cfgSection.leverageCap != null ? cfgSection.leverageCap
+                              : (cfgSection.leverage != null ? cfgSection.leverage : 1));
+              _allCombos.forEach(function (c) {
+                if (!c || !Number.isFinite(c.minInvestment) || c.minInvestment <= 0) return;
+                if (Number(c.leverage) > _userCapC + 1e-6) return;
+                var Dbound = Math.round(c.minInvestment);
+                if (Dbound > _dMax) return;
+                if (!_firstDepositLegalC(Dbound)) return;
+                var mb = _evalD(Dbound);
+                if (mb && (!coarseBest || mb.net > coarseBest.net)) {
+                  coarseBest = { D: Dbound, net: mb.net };
+                }
+              });
+            } catch (e) { /* keep coarse winner */ }
+          }
           // Fine pass ±10% of D_max in 2% steps around coarse peak.
           var fineBest = coarseBest;
           if (coarseBest) {
@@ -1385,9 +1491,16 @@
             _recordCombo(_pk, out.metrics.net);
             if (!best || out.metrics.net > best.net) best = _pk;
           }
-          function _sweepBD(lockedWeights) {
-            if (_bDMax <= 0) return;
-            // Coarse 10% steps.
+          // Coarse 10%-step down-payment sweep on a fixed weight set.
+          // Returns the best { metrics, weights, D } found (or null).
+          // Also probes the Schwab combo minimums ($1M / $3M) as boundary
+          // values — the net(D) curve spikes at those D values because
+          // the Y0 deposit opens that tier exactly at the floor (max
+          // age-0 loss density). The 10% grid can step over these spikes
+          // (e.g. with $4.9M D_max it samples $980K + $1.47M, missing
+          // $1M). Mirror of the same fix on Strategy C above.
+          function _sweepBDCoarse(lockedWeights) {
+            if (_bDMax <= 0) return null;
             var coarseBest = null;
             for (var ci = 0; ci <= 10; ci++) {
               var D = Math.round(_bDMax * (ci / 10));
@@ -1396,21 +1509,41 @@
               if (m && (!coarseBest || m.metrics.net > coarseBest.metrics.net)) coarseBest = m;
               _maybeUpdateBest(m);
             }
-            // Fine ±10% in 2% steps.
-            var fineBest = coarseBest;
-            if (coarseBest) {
-              for (var f = 1; f <= 5; f++) {
-                [-1, 1].forEach(function (sign) {
-                  var D = Math.round(coarseBest.D + sign * f * 0.02 * _bDMax);
-                  if (D < 0 || D > _bDMax) return;
-                  if (!_firstDepositLegalB(lockedWeights, D)) return;
-                  var m = _evalB(lockedWeights, D);
-                  if (m && (!fineBest || m.metrics.net > fineBest.metrics.net)) fineBest = m;
-                  _maybeUpdateBest(m);
+            if (typeof root.listSchwabCombosForStrategy === 'function') {
+              try {
+                var _stratKeyB = (cfgSection.tierKey || cfgSection.strategyKey || 'beta1');
+                var _allCombosB = root.listSchwabCombosForStrategy(_stratKeyB) || [];
+                var _userCapB = Number(cfgSection.leverageCap != null ? cfgSection.leverageCap
+                                : (cfgSection.leverage != null ? cfgSection.leverage : 1));
+                _allCombosB.forEach(function (c) {
+                  if (!c || !Number.isFinite(c.minInvestment) || c.minInvestment <= 0) return;
+                  if (Number(c.leverage) > _userCapB + 1e-6) return;
+                  var Dbound = Math.round(c.minInvestment);
+                  if (Dbound > _bDMax) return;
+                  if (!_firstDepositLegalB(lockedWeights, Dbound)) return;
+                  var mb = _evalB(lockedWeights, Dbound);
+                  if (mb && (!coarseBest || mb.metrics.net > coarseBest.metrics.net)) coarseBest = mb;
+                  _maybeUpdateBest(mb);
                 });
-              }
+              } catch (e) { /* keep coarse winner */ }
             }
-            // Ultra ±2% in 0.5% steps.
+            return coarseBest;
+          }
+          // Fine (±10% @ 2%) + ultra (±2% @ 0.5%) refinement around a
+          // coarse winner, for a fixed weight set.
+          function _sweepBDRefine(lockedWeights, coarseBest) {
+            if (!coarseBest) return;
+            var fineBest = coarseBest;
+            for (var f = 1; f <= 5; f++) {
+              [-1, 1].forEach(function (sign) {
+                var D = Math.round(coarseBest.D + sign * f * 0.02 * _bDMax);
+                if (D < 0 || D > _bDMax) return;
+                if (!_firstDepositLegalB(lockedWeights, D)) return;
+                var m = _evalB(lockedWeights, D);
+                if (m && (!fineBest || m.metrics.net > fineBest.metrics.net)) fineBest = m;
+                _maybeUpdateBest(m);
+              });
+            }
             if (fineBest) {
               for (var u = 1; u <= 4; u++) {
                 [-1, 1].forEach(function (sign) {
@@ -1421,6 +1554,38 @@
                 });
               }
             }
+          }
+          function _sweepBD(lockedWeights) {
+            _sweepBDRefine(lockedWeights, _sweepBDCoarse(lockedWeights));
+          }
+          // Joint (weights × down-payment) coverage (2026-06-01). The
+          // best weights at D=0 are NOT necessarily the best weights at
+          // the optimal down-payment. The decisive case: some weight
+          // splits are ILLEGAL at D=0 (first deposit < the $1M Schwab
+          // account-opening minimum) yet become legal — and optimal —
+          // once a mid down-payment lifts the first deposit over $1M
+          // (e.g. [0.2,0.6,0.2] @ ~$300K down, a real ~0.5% win that a
+          // two-stage "weights@D=0 then D" search can never see, because
+          // those weights return null at D=0 and never enter its
+          // candidate set).
+          //
+          // Fix: sweep the FULL coarse weight grid jointly with the
+          // coarse down-payment sweep. _sweepBDCoarse skips D's where the
+          // first deposit is illegal, so an illegal-at-D=0 weight is
+          // still scored at the D where it becomes legal. Pick the global
+          // best (weights, D), then refine the down-payment around it.
+          // The separate 2D fine/ultra weight passes above already
+          // sharpen the D=0 weight peak, so coarse weight resolution here
+          // is enough to GUARANTEE the joint optimum is contained.
+          function _sweepBDJoint(weightGrid) {
+            if (_bDMax <= 0 || !weightGrid || !weightGrid.length) return;
+            var jointBest = null;
+            weightGrid.forEach(function (w) {
+              if (!w) return;
+              var cb = _sweepBDCoarse(w);
+              if (cb && (!jointBest || cb.metrics.net > jointBest.metrics.net)) jointBest = cb;
+            });
+            if (jointBest) _sweepBDRefine(jointBest.weights, jointBest);
           }
 
           if (nForHor === 1) {
@@ -1462,9 +1627,15 @@
                 if (w1U <= 0.05 || w1U >= 0.95) continue;
                 _maybeUpdateBest(_evalB([w1U, Math.round((1 - w1U) * 1000) / 1000]));
               }
-              // Y0 down sweep on the locally-best weights from the
-              // ultra-fine pass.
-              _sweepBD(fineBestB2.weights);
+              // Joint (weights × Y0 down-payment) sweep over the FULL
+              // coarse weight grid plus the ultra-fine D=0 winner — so
+              // splits that are illegal at D=0 but optimal at a mid
+              // down-payment are still found (closes ~0.5% gap).
+              var gridB2 = coarseW2.map(function (w1) {
+                return [w1, Math.round((1 - w1) * 1000) / 1000];
+              });
+              gridB2.push(fineBestB2.weights);
+              _sweepBDJoint(gridB2);
             }
           } else { // nForHor === 3
             // 3-pass 2D sweep on (w1, w2) with w3 = 1 − w1 − w2:
@@ -1518,9 +1689,22 @@
                   _maybeUpdateBest(_evalB([w1uf, w2uf, w3uf]));
                 }
               }
-              // Y0 down sweep on locally-best N=3 weights from the
-              // 2D ultra-fine pass.
-              _sweepBD(fineBestB3.weights);
+              // Joint (weights × Y0 down-payment) sweep over the FULL
+              // coarse 2D weight grid plus the 2D ultra-fine D=0 winner —
+              // closes the ~0.5% joint-optimum gap where a split that is
+              // illegal at D=0 (first deposit < $1M) wins once a mid
+              // down-payment lifts its first deposit over the $1M floor
+              // (e.g. [0.2,0.6,0.2] @ ~$300K down).
+              var gridB3 = [];
+              coarseW3.forEach(function (w1) {
+                coarseW3.forEach(function (w2) {
+                  var w3 = Math.round((1 - w1 - w2) * 1000) / 1000;
+                  if (w3 < 0.05 || w3 > 0.9) return;
+                  gridB3.push([w1, w2, w3]);
+                });
+              });
+              gridB3.push(fineBestB3.weights);
+              _sweepBDJoint(gridB3);
             }
             // C-coverage guarantee (advisor 2026-05-27): Strategy C is
             // locked to [0.40, 0.40, 0.20] + a Y0-down sweep. B's
@@ -1537,8 +1721,10 @@
           // cfg fallback so downstream callers always have something.
           var typedCfg2 = _scenarioCfgFor(type, cfgSection, 2, userDurationFallback);
           var m2 = _scenarioMetrics(typedCfg2);
-          if (m2 && (!best || m2.net > best.net)) {
-            best = { horizon: hor, shortPct: p.shortPct, comboId: p.comboId, bestRecC: 2, net: m2.net, durationMonths: userDurationFallback };
+          if (m2) {
+            var _pkA = { horizon: hor, shortPct: p.shortPct, comboId: p.comboId, bestRecC: 2, net: m2.net, durationMonths: userDurationFallback };
+            _recordCombo(_pkA, m2.net);   // F25: feed A into dial-back refinement
+            if (!best || m2.net > best.net) best = _pkA;
           }
         }
       });
@@ -1548,8 +1734,11 @@
     // best-FULL candidate at its dial-back optimum and switch `best` to the
     // genuinely net-best — so the optimizer doesn't lock in a combo that
     // wins at full deployment but loses once dialed back (the structured
-    // sale's 200/100-vs-145/45 mis-pick). B/C only; A has no dial-back.
-    if (best && (type === 'B' || type === 'C')) {
+    // sale's 200/100-vs-145/45 mis-pick). F25 (2026-06-01): A IS dialed
+    // back too (buildInterestedSummary line ~3215), so it gets the same
+    // refinement — fixes the cap=$8M combo mis-pick where A locked a combo
+    // at full deployment that lost once scaled down.
+    if (best && (type === 'A' || type === 'B' || type === 'C')) {
       var _comboKeys = Object.keys(_bestPerComboFull);
       if (_comboKeys.length > 1 && typeof _netMaxDeployFraction === 'function') {
         var _dialedNetForPick = function (pk) {
@@ -2345,6 +2534,10 @@
   }
 
   root.renderProjectionDashboard = renderProjectionDashboard;
+  // Exposed so the temp / tax-implication page can render the SAME
+  // recommended payment terms as the comparison table (single source).
+  root.__rettDescribeInstallmentSchedule = _describeInstallmentSchedule;
+  root.__rettScheduleSummaryLine = _scheduleSummaryLine;
 
   // -------------------------------------------------------------------
   // Page-3 minimal view: filter to scenarios marked Interested on Page 2,
@@ -2869,6 +3062,87 @@
   // cards) and Page 4 (Strategy Summary). Returns null when inputs
   // aren't ready yet. Callers are responsible for filtering by interest
   // and rendering — this function only computes.
+  // Strategy C over-harvests Brooklyn short-term loss: even after the
+  // optimizer dials deployment back, a residual unused carryforward can
+  // remain. The FIRST $3,000 ($1,500 MFS) of that residual is usable next
+  // year as a §1211(b) ordinary offset, and is valued separately by
+  // _carryoverOffsetCredit. Everything ABOVE that one-year offset is
+  // genuinely unusable within the horizon — rather than claim its
+  // far-future value (≈30¢/$ is too hand-wavy), we REFUND the AM fee spent
+  // generating it, credited back to net. The two credits are complementary
+  // and split at the §1211(b) boundary (no double-count): below it we VALUE
+  // the offset, above it we REFUND the fee. Floor is the offset amount
+  // itself ($3,000 / $1,500), and we subtract it before prorating the fee.
+  // C-only by design; B is verified never to leave a material carryforward.
+  // Returns the fee credit (a positive dollar amount) or 0. Mirrors the
+  // deferred path of _scenarioMetrics (direct unifiedTaxComparison, no
+  // immediate-path flavoring) so it operates on the same numbers that
+  // produced e.metrics.brooklynFees.
+  function _excessLossFeeCredit(e) {
+    if (!e || e.type !== 'C' || !e.cfg || !e.metrics) return 0;
+    var bf = Math.max(0, Number(e.metrics.brooklynFees) || 0);
+    if (bf <= 0) return 0;   // scale=0 / below account floor → no fee to refund
+    var dep = (e._partialDeploy && Number.isFinite(Number(e._partialDeploy.deployed)))
+      ? Math.max(0, Math.round(Number(e._partialDeploy.deployed)))
+      : Math.round(Number(e.cfg.availableCapital) || 0);
+    if (dep <= 0) return 0;
+    if (typeof window === 'undefined' || typeof window.unifiedTaxComparison !== 'function') return 0;
+    var ecfg = Object.assign({}, e.cfg, { availableCapital: dep, investment: dep, investedCapital: dep });
+    var comp;
+    try { comp = window.unifiedTaxComparison(ecfg); } catch (err) { return 0; }
+    if (!comp || !Array.isArray(comp.rows) || !comp.rows.length) return 0;
+    var rows = comp.rows;
+    var residual = Math.max(0, Number(rows[rows.length - 1].stCarryForward) || 0);
+    var status = e.cfg.filingStatus || 'mfj';
+    var ordCap = (status === 'mfs' || status === 'married_separate') ? 1500 : 3000;
+    var excess = residual - ordCap;   // keep one usable offset year; refund fee on the rest
+    if (excess <= 0) return 0;
+    var totalLossGen = 0;
+    rows.forEach(function (r) { totalLossGen += Math.max(0, Number(r && r.lossGenerated) || 0); });
+    if (totalLossGen <= 0) return 0;
+    return Math.round(bf * (excess / totalLossGen));
+  }
+
+  // Carryover-loss net-benefit credit (A/B/C). When the projection ends
+  // with a residual short-term loss carryforward, the FIRST idle year
+  // after deployment (when we'd otherwise show a blank temporary page)
+  // still gets one §1211(b) $3,000 ordinary offset ($1,500 MFS) for free.
+  // We put a real dollar value on that single year: tax on the flat
+  // recurring income vs. that income minus the creditable offset
+  // (whatever residual remains, capped at the annual limit). Federal-only
+  // by design (conservative — no state conformity assumptions). "This can
+  // only be for one year" — we do NOT carry it further. Complementary to
+  // _excessLossFeeCredit, split at the offset boundary: this VALUES the
+  // first $3,000 / $1,500 of residual as a usable offset; the fee credit
+  // REFUNDS the AM fee on anything above that. No double-count.
+  function _carryoverOffsetCredit(e) {
+    if (!e || !e.cfg || !e.metrics) return 0;
+    if (typeof window === 'undefined' ||
+        typeof window.unifiedTaxComparison !== 'function' ||
+        typeof window.computeFederalTax !== 'function') return 0;
+    var dep = (e._partialDeploy && Number.isFinite(Number(e._partialDeploy.deployed)))
+      ? Math.max(0, Math.round(Number(e._partialDeploy.deployed)))
+      : Math.round(Number(e.cfg.availableCapital) || 0);
+    if (dep <= 0) return 0;
+    var ecfg = Object.assign({}, e.cfg, { availableCapital: dep, investment: dep, investedCapital: dep });
+    var comp;
+    try { comp = window.unifiedTaxComparison(ecfg); } catch (err) { return 0; }
+    if (!comp || !Array.isArray(comp.rows) || !comp.rows.length) return 0;
+    var rows = comp.rows;
+    var lastRow = rows[rows.length - 1];
+    var residual = Math.max(0, Number(lastRow.stCarryForward) || 0);
+    if (residual <= 0) return 0;
+    var status = e.cfg.filingStatus || 'mfj';
+    var ordCap = (status === 'mfs' || status === 'married_separate') ? 1500 : 3000;
+    var creditable = Math.min(residual, ordCap);
+    if (creditable <= 0) return 0;
+    var idleYear = (Number(lastRow.year) || 0) + 1;
+    var ord = Math.max(0, Number(e.cfg.baseOrdinaryIncome) || 0);
+    var t0 = Number(window.computeFederalTax(ord, idleYear, status)) || 0;
+    var t1 = Number(window.computeFederalTax(Math.max(0, ord - creditable), idleYear, status)) || 0;
+    return Math.max(0, Math.round(t0 - t1));
+  }
+
   function buildInterestedSummary() {
     if (typeof collectInputs !== 'function') return null;
     var currentCfg;
@@ -3112,6 +3386,222 @@
       }
     });
 
+    // Excess-carryover-loss fee credit (Strategy C). Refund the AM fee
+    // spent generating residual unused short-term loss ABOVE the one-year
+    // §1211(b) offset ($3,000 / $1,500 MFS) by
+    // reducing the displayed fees and adding the same amount back to net.
+    // Single source of truth: _excessLossFeeCredit runs the engine at the
+    // entry's deployed capital. Applied AFTER the optimizer/floors (so it
+    // operates on final deployment) and BEFORE ranking (so the honest,
+    // credited net drives the recommendation). The raw excess loss + this
+    // credit are surfaced on Tab 7 via metrics._excessLossFeeCredit.
+    entries.forEach(function (e) {
+      var credit = _excessLossFeeCredit(e);
+      e.metrics._excessLossFeeCredit = credit || 0;
+      if (credit > 0) {
+        e.metrics.brooklynFees = Math.max(0, (e.metrics.brooklynFees || 0) - credit);
+        e.metrics.fees         = Math.max(0, (e.metrics.fees || 0) - credit);
+        e.metrics.net          = (e.metrics.net || 0) + credit;
+      }
+    });
+
+    // Carryover-loss net-benefit credit (A/B/C). Value the one free
+    // §1211(b) $3,000 ($1,500 MFS) ordinary offset the residual
+    // carryforward buys in the first idle year after deployment.
+    // Federal-only; complementary to the fee credit above (it values the
+    // first $3k/$1.5k, the fee credit refunds the AM fee on the rest).
+    // Applied AFTER optimizer/floors and BEFORE ranking so the optimizer
+    // naturally favors configs that leave ~$3k of residual to harvest.
+    entries.forEach(function (e) {
+      if (!e.metrics || !Number.isFinite(e.metrics.net) || e.metrics.net === 0) {
+        if (e.metrics) e.metrics._carryoverOffsetCredit = 0;
+        return;
+      }
+      var credit = _carryoverOffsetCredit(e);
+      e.metrics._carryoverOffsetCredit = credit || 0;
+      if (credit > 0) e.metrics.net = (e.metrics.net || 0) + credit;
+    });
+
+    // ---- Additional Funds: phantom-free net (Stage 2, advisor 2026-05-28)
+    // When the advisor folded additional funds in (toggle ON →
+    // collectInputs set additionalFundsApplied + the one-time Y0 gains),
+    // each strategy's displayed savings includes Brooklyn OFFSETTING that
+    // self-created liquidation gain. That's circular ("phantom") — the
+    // client only owes that tax because they chose to liquidate. Net
+    // benefit must be measured OFF THE SALE only, so we subtract the
+    // one-time liquidation tax from each deployed entry's net.
+    //
+    //   triggeredTax = doNothingTax(with funds) − doNothingTax(without)
+    //
+    // computed here via two unifiedTaxComparison baselines (NO recursion
+    // into buildInterestedSummary). Skipped while additional-funds.js is
+    // probing (root.__rettAFProbing) — the probe wants the raw net and
+    // subtracts triggeredTax itself, so stripping here too would
+    // double-count. Result: displayed-net(funds ON) − displayed-net(OFF)
+    // == the phantom-free netBenefit. Entries that didn't deploy
+    // (net === 0) never realized the liquidation, so they're left alone.
+    var _afApplied = Math.max(0, Number(currentCfg && currentCfg.additionalFundsApplied) || 0);
+    if (_afApplied > 0 && !root.__rettAFProbing &&
+        typeof window !== 'undefined' && typeof window.unifiedTaxComparison === 'function') {
+      var _afTriggeredTax = 0;
+      try {
+        var _cmpWith = window.unifiedTaxComparison(currentCfg);
+        var _cfgNoFunds = Object.assign({}, currentCfg, {
+          additionalY0LongGain:  0,
+          additionalY0ShortGain: 0,
+          additionalFundsApplied: 0,
+          availableCapital: Math.max(0, (Number(currentCfg.availableCapital) || 0) - _afApplied),
+          investment:       Math.max(0, (Number(currentCfg.investment) || 0) - _afApplied),
+          investedCapital:  Math.max(0, (Number(currentCfg.investedCapital) || 0) - _afApplied)
+        });
+        var _cmpNo = window.unifiedTaxComparison(_cfgNoFunds);
+        _afTriggeredTax = Math.max(0,
+          (Number(_cmpWith && _cmpWith.totalBaseline) || 0) -
+          (Number(_cmpNo && _cmpNo.totalBaseline) || 0));
+      } catch (e) { _afTriggeredTax = 0; }
+      if (_afTriggeredTax > 0) {
+        entries.forEach(function (e) {
+          if (!e.metrics || !Number.isFinite(e.metrics.net) || e.metrics.net === 0) return;
+          e.metrics._additionalFundsTriggeredTax = _afTriggeredTax;
+          e.metrics.net = e.metrics.net - _afTriggeredTax;
+        });
+      }
+    }
+
+    // ---- Additional Funds: PER-STRATEGY amount sweep (advisor 2026-06-02) ---
+    // Toggling "Include Additional Funds" on means CONSIDER the funds for each
+    // strategy — it must never make a card worse, and it shouldn't force every
+    // card to use the SAME amount. The phantom-strip above subtracts the
+    // one-time liquidation tax from every deployed card, so a strategy that
+    // can't put the extra capital to good use would otherwise drop below its
+    // no-funds net. Instead, let each strategy independently pick the
+    // liquidation amount that maximizes ITS OWN phantom-free net.
+    //
+    // Candidates = { 0 (decline), reachable Schwab tier gaps, the entered
+    // amount }. We deliberately do NOT sweep arbitrary fractions — per
+    // additional-funds.js, deploying past "cover the sale" only washes the
+    // self-created liquidation gains (phantom). Tier bumps ($1M → 145/45,
+    // $3M → 200/100) are the clean lever, so those gaps + the advisor's entered
+    // amount + 0 are the only candidates worth probing.
+    //
+    // Each candidate is scored by re-running buildInterestedSummary at that
+    // amount via the __rettAdditionalFundsOverride hook (collectInputs folds
+    // the override instead of the DOM value). __rettAFSweeping guards against
+    // recursion (the sub-runs skip this block). Because 0 is always a
+    // candidate, no card can land below its no-funds net — improve-or-flat,
+    // never a drop. Skipped during additional-funds.js probes (__rettAFProbing).
+    if (_afApplied > 0 && !root.__rettAFProbing &&
+        typeof window !== 'undefined' && !window.__rettAFSweeping) {
+      // Account value + the base (no-funds) Brooklyn capital, used to compute
+      // which tier gaps are reachable by liquidating part of the account.
+      var _avEl = (typeof document !== 'undefined') ? document.getElementById('additional-account-value') : null;
+      var _avSweep = _avEl ? ((typeof root.parseUSD === 'function')
+                        ? (root.parseUSD(_avEl.value) || 0)
+                        : (parseFloat(String(_avEl.value).replace(/[^0-9.\-]/g, '')) || 0)) : 0;
+      var _baseCapNoFunds = Math.max(0, (Number(currentCfg.availableCapital) || 0) - _afApplied);
+
+      // Build the candidate amount set: 0 (decline), the entered amount,
+      // reachable Schwab tier gaps, and fractional account amounts (so a
+      // capital-constrained strategy can pick the slice that offsets the most
+      // REAL gain even when no tier unlock is involved — matches the broadened
+      // suggestion logic in additional-funds.js).
+      var _cands = [0, _afApplied];
+      try {
+        var _tierKey = (currentCfg && currentCfg.tierKey) || 'beta1';
+        if (typeof root.listSchwabCombosForStrategy === 'function') {
+          (root.listSchwabCombosForStrategy(_tierKey) || []).forEach(function (c) {
+            var min = Number(c && c.minInvestment) || 0;
+            var gap = Math.round(min - _baseCapNoFunds);
+            if (gap > 0 && gap <= _avSweep) _cands.push(gap);
+          });
+        }
+      } catch (e) { /* tier gaps optional — entered + 0 always present */ }
+      [0.25, 0.5, 0.75, 1].forEach(function (f) {
+        var amt = Math.round(_avSweep * f);
+        if (amt > 0 && amt <= _avSweep) _cands.push(amt);
+      });
+
+      // Score per candidate, per strategy: { amount -> { type -> {net, trig} } }.
+      // The entered amount is already computed (it's what `entries` holds now).
+      // _entByCand parallels _byCand but holds the candidate's full ENTRY
+      // (cfg + _partialDeploy) so a strategy that adopts a different amount
+      // can also pick up that amount's CONFIG — see the adoption loop below.
+      var _byCand = {};
+      var _entByCand = {};
+      _byCand[_afApplied] = {};
+      _entByCand[_afApplied] = {};
+      entries.forEach(function (e) {
+        if (e.metrics && Number.isFinite(e.metrics.net)) {
+          _byCand[_afApplied][e.type] = {
+            net:  e.metrics.net,
+            trig: Number(e.metrics._additionalFundsTriggeredTax) || 0
+          };
+          _entByCand[_afApplied][e.type] = e;
+        }
+      });
+
+      window.__rettAFSweeping = true;
+      var _prevOverride = window.__rettAdditionalFundsOverride;
+      _cands.forEach(function (c) {
+        if (_byCand.hasOwnProperty(c)) return;           // dedup (incl. entered)
+        window.__rettAdditionalFundsOverride = c;
+        try {
+          var r = buildInterestedSummary();
+          var m = {};
+          var em = {};
+          if (r && Array.isArray(r.entries)) {
+            r.entries.forEach(function (e) {
+              if (e.metrics && Number.isFinite(e.metrics.net)) {
+                m[e.type] = { net: e.metrics.net, trig: Number(e.metrics._additionalFundsTriggeredTax) || 0 };
+                em[e.type] = e;
+              }
+            });
+          }
+          _byCand[c] = m;
+          _entByCand[c] = em;
+        } catch (e) { /* keep entered-amount numbers if a candidate run fails */ }
+      });
+      window.__rettAdditionalFundsOverride = _prevOverride;
+      window.__rettAFSweeping = false;
+
+      // Each strategy adopts its best candidate (ties prefer the smaller
+      // amount — the efficient minimum, matching the suggestion logic).
+      entries.forEach(function (e) {
+        var enteredNet = (e.metrics.net || 0);            // funds-on at entered amount
+        var bestAmt = _afApplied, bestNet = enteredNet, bestTrig = Number(e.metrics._additionalFundsTriggeredTax) || 0;
+        Object.keys(_byCand).forEach(function (k) {
+          var amt = Number(k);
+          var rec = _byCand[k] && _byCand[k][e.type];
+          if (!rec || !Number.isFinite(rec.net)) return;
+          if (rec.net > bestNet + 0.5 || (Math.abs(rec.net - bestNet) <= 0.5 && amt < bestAmt)) {
+            bestNet = rec.net; bestAmt = amt; bestTrig = rec.trig;
+          }
+        });
+        e.metrics._netBeforeFloor            = enteredNet;     // what it'd be at the entered amount
+        e.metrics.net                        = bestNet;
+        e.metrics._additionalFundsUsed       = bestAmt;
+        e.metrics._additionalFundsTriggeredTax = bestTrig;
+        e.metrics._additionalFundsFloored    = (bestAmt !== _afApplied);  // chose a different amount
+        // Adopt the chosen amount's CONFIG, not just its net. Every
+        // downstream reader of e.cfg — chiefly the temp / tax-implication
+        // page, which re-runs unifiedTaxComparison(entry.cfg) — must see the
+        // additional-funds amount this strategy ACTUALLY chose. Without this,
+        // a strategy that declined (bestAmt 0) or under-used the funds still
+        // carried the ENTERED-amount fold (full availableCapital +
+        // additionalY0LongGain), so the tax page showed a phantom Year-0
+        // liquidation gain (e.g. the full $500K) the strategy never realized.
+        // The candidate sub-run's entry is internally consistent (cfg folded
+        // at bestAmt + matching _partialDeploy), so swap both together.
+        if (bestAmt !== _afApplied) {
+          var _be = _entByCand[bestAmt] && _entByCand[bestAmt][e.type];
+          if (_be && _be.cfg) {
+            e.cfg = _be.cfg;
+            e._partialDeploy = _be._partialDeploy;
+          }
+        }
+      });
+    }
+
     var maxNet = -Infinity, recIdx = -1;
     entries.forEach(function (e, i) {
       if (e.metrics.net > maxNet) { maxNet = e.metrics.net; recIdx = i; }
@@ -3133,6 +3623,14 @@
   // continues to render the auto-picked combo's positive net (F20).
   root._autoPickSection      = _autoPickSection;
   root._scenarioCfgFor       = _scenarioCfgFor;
+  // Debug/verification hooks (2026-06-01): expose the engine's own
+  // per-scenario scorer and the net-max deployment sweep so an external
+  // brute-force can score arbitrary lever combos (strategy / combo /
+  // horizon / recognition / down-payment / deployment fraction) using the
+  // EXACT same math the optimizer uses — confirming the auto-pick lands on
+  // the global net optimum. Read-only computational helpers.
+  root._scenarioMetrics      = _scenarioMetrics;
+  root._netMaxDeployFraction = _netMaxDeployFraction;
   root.buildInterestedSummary = buildInterestedSummary;
   // Tier-migration display helpers (2026-05-28). Exposed so the admin
   // panels show the EFFECTIVE operating tier instead of the auto-pick

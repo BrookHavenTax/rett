@@ -51,12 +51,9 @@ function CurrencyInput({ id }: { id: string }) {
   );
 }
 
-// Per-property block. Property 1 keeps the unsuffixed legacy IDs so
-// direct-DOM readers in the calculator engine continue to work; properties
-// 2–5 use -N suffixes and stay hidden until the user clicks the "+ Add"
-// btn at the bottom of Section 02 (currently HIDDEN per advisor — the
-// multi-property feature is parked until per-property tranche routing
-// lands in the engine).
+// Per-property block. Property 1 keeps unsuffixed legacy IDs; properties
+// 2–5 use -N suffixes. 2026-06-03 sync: Property 1 adds §1245/§1250 recap
+// split rows; all properties add amount-owed payoff fields.
 function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
   const suf = n === 1 ? '' : `-${n}`;
   return (
@@ -68,7 +65,7 @@ function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
         </div>
       )}
       <div className="input-row">
-        <div className="label">Expected Sales Price</div>
+        <div className="label">Expected Sales Price (net of commission)</div>
         <CurrencyInput id={`sale-price${suf}`} />
       </div>
       <div className="input-row">
@@ -79,6 +76,18 @@ function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
         <div className="label">Accelerated Depreciation Recapture</div>
         <CurrencyInput id={`accelerated-depreciation${suf}`} />
       </div>
+      {n === 1 && (
+        <>
+          <div className="input-row recap-split recap-split-1" id="recap-split-1245-row-1">
+            <div className="label">Amount of §1245</div>
+            <CurrencyInput id="accelerated-depreciation-1245" />
+          </div>
+          <div className="input-row recap-split recap-split-1" id="recap-split-1250-row-1">
+            <div className="label">Amount of §1250</div>
+            <CurrencyInput id="accelerated-depreciation-1250" />
+          </div>
+        </>
+      )}
       <div className="input-row">
         <div className="label">Has this property been held a year?</div>
         <select id={`holding-period-${n}`} className="yes-no" defaultValue="yes">
@@ -93,6 +102,17 @@ function PropertyBlock({ n, hidden }: { n: number; hidden?: boolean }) {
       <div className="input-row">
         <div className="label">Strategy Implementation Date</div>
         <input type="date" id={`strategy-implementation-date${suf}`} />
+      </div>
+      <div className="input-row">
+        <div className="label">Is there any amount still owed on the property?</div>
+        <select id={`amount-owed-yes-no-${n}`} className="yes-no" defaultValue="no">
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </div>
+      <div className="input-row" id={`amount-owed-amount-group-${n}`} hidden>
+        <div className="label">Amount</div>
+        <CurrencyInput id={`amount-owed-amount-${n}`} />
       </div>
       <div className="input-row">
         <div className="label">Any sale proceeds needed for personal use?</div>

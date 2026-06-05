@@ -144,18 +144,29 @@ function _computeAmt(amti, year, status, ltAmount, recapAmount, recapTaxRegular)
           const rcap = Math.max(0, Number(recapAmount) || 0);
           const recapInSlice = Math.min(rcap, Math.max(0, taxable - lt));
           const ordinarySlice = Math.max(0, taxable - lt - recapInSlice);
-          // §1250 unrecaptured gain inside AMT (Form 6251 Part III) runs
-          // through the SAME §1(h) worksheet as regular tax — taxed at the
-          // lesser of the ordinary bracket rate or 25%, NOT a flat 25%.
-          // When the caller supplies the regular-tax recap dollar amount
-          // (recapTaxRegular), reuse its effective rate so the recapture
-          // nets out of the AMT top-up. A flat 25% over-stated the top-up
-          // by (25% − bracketRate) × recap whenever the bracket landed
-          // below 25% (advisor 2026-05-27). Fallback to 25% if the regular
-          // amount isn't passed (preserves the §1(h)(1)(E) ceiling).
-          const _recapEffRate = (rcap > 0 && recapTaxRegular != null && isFinite(recapTaxRegular))
-                ? (recapTaxRegular / rcap)
-                : 0.25;
+          // §1250 unrecaptured gain inside AMT — FLAT 25%.
+          //
+          // §1(h)(1)(E) sets a 25% MAXIMUM rate on §1250 unrecap gain. In
+          // regular tax that's a per-slice ceiling: when the §1250 lands
+          // in a 22-24% bracket the cap doesn't bind, so the recap pays
+          // 22-24%. But INSIDE AMT the surrounding ordinary rate is the
+          // AMT band (26% up to the breakpoint, 28% above). 26% > 25% and
+          // 28% > 25%, so the cap ALWAYS binds inside AMT regardless of
+          // where the §1250 sits relative to the regular brackets.
+          //
+          // Form 6251 mechanically arrives at the same answer via the AMT
+          // QDCG Worksheet, which multiplies the §1250 amount by 25%
+          // directly (no bracket comparison) — the worksheet hard-codes
+          // the cap because at AMT band rates it always binds.
+          //
+          // Prior version reused the regular-tax effective rate
+          // (recapTaxRegular / rcap), which understated AMT §1250 by
+          // (25% − regBracketRate) × recap whenever the §1250 landed in
+          // a sub-25% regular bracket. Caught by the CPA on a $200K §1250
+          // / $230K W-2+rental MFJ scenario where the engine showed
+          // AMT §1250 = $47,728 but Form 6251 / AMT QDCG = $50,000
+          // (advisor 2026-06-04).
+          const _recapEffRate = 0.25;
           const recapAmt = recapInSlice * _recapEffRate;
           if (ordinarySlice <= 0) return recapAmt;
           const ordAmt = ordinarySlice <= a.rate26Threshold
@@ -317,17 +328,43 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
               : (opts.ltcg != null ? opts.ltcg : opts.lt);
       var _st = opts.shortTermGain != null ? opts.shortTermGain
               : (opts.stcg != null ? opts.stcg : opts.st);
-      // §1(h)(1)(E) unrecaptured §1250 gain — depreciation recapture
-      // on real estate. Caller passes it separately from
-      // ordinaryIncome so the engine can apply the 25% cap; if it
-      // were bundled into ordinaryIncome it would silently pay full
-      // marginal rates (up to 37%), over-taxing high-bracket clients
-      // by 12+ percentage points on the recapture slice.
-      var _recap = Math.max(0, Number(
+      // Depreciation recapture — TWO buckets with very different tax
+      // treatment (advisor + research 2026-06-04):
+      //   §1245 (personal property / cost-seg 5-7-15-yr assets): taxed at
+      //     FULL marginal ordinary rates. No 25% cap. NOT subject to NIIT
+      //     under the active-trade/business assumption that's standard for
+      //     real-estate clients (the property is held in an active LLC).
+      //     For AMT, lumps into the ordinary slice at 26/28% (no carve-out).
+      //   §1250 unrecap (real property / 39-yr building shell): taxed via
+      //     §1(h)(1)(E) per-slice 25% cap. Subject to NIIT (it's capital
+      //     gain). For AMT, carved out at the 25% effective rate (Form
+      //     6251 Part III).
+      //
+      // Backward compat: callers that pass opts.depreciationRecapture
+      // alone (no split) get the OLD behavior — whole amount routed as
+      // §1250. Callers that pass either opts.depreciationRecapture1245
+      // or opts.depreciationRecapture1250 (or both) get the split path.
+      var _recapTotal = Math.max(0, Number(
             opts.depreciationRecapture != null
                   ? opts.depreciationRecapture
                   : (opts.depRecapture != null ? opts.depRecapture : 0)
       ) || 0);
+      var _recap1245In = Math.max(0, Number(opts.depreciationRecapture1245) || 0);
+      var _recap1250In = Math.max(0, Number(opts.depreciationRecapture1250) || 0);
+      // Reconcile: if the split is provided, use it; otherwise default
+      // 100% to §1250 (legacy). Sum invariant check — if the caller
+      // supplied a split that doesn't sum to the total, prefer the split.
+      var _recap1245, _recap1250;
+      if (_recap1245In + _recap1250In > 0) {
+            _recap1245 = _recap1245In;
+            _recap1250 = _recap1250In;
+      } else {
+            _recap1245 = 0;
+            _recap1250 = _recapTotal;
+      }
+      // Total recap for stack-position calcs (§1245 + §1250 both stack on
+      // top of W-2/etc., they just pay different rates).
+      var _recap = _recap1245 + _recap1250;
       // §1211(b) loss offset: up to $3,000/yr ($1,500 MFS) of net
       // capital loss reduces ordinary income; the remainder carries
       // forward. Both this-year LT loss AND a prior-year carried loss
@@ -449,13 +486,35 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       // falls into a bracket above 25% (the over-25% portion gets
       // capped; the below-25% portion does NOT get pulled up to 25%
       // by the worksheet's all-or-nothing comparison).
-      const _recapInTaxable = Math.min(_recap, taxableOrdinary);
-      const _taxableOrdExRecap = Math.max(0, taxableOrdinary - _recapInTaxable);
-      const ordinaryTaxExRecap = _flatBracketTax(_taxableOrdExRecap, ordBrk);
-      const ordinaryTaxIncRecap = _flatBracketTax(taxableOrdinary, ordBrk);
-      const recapTax = (_recapInTaxable > 0)
-            ? _flatBracketTaxCapped(_recapInTaxable, _taxableOrdExRecap, ordBrk, 0.25)
+      // Stack order for the bracket calc:
+      //   1. baseOrdinaryIncome + ST gain + §1245 recap  (full marginal rates)
+      //   2. §1250 recap                                  (per-slice 25% cap)
+      //   3. LT gain + qual div (LTCG brackets, layered below)
+      //
+      // §1245 sits at the same stack position as ordinary income — it
+      // pays full marginal rates, NO cap. §1250 then stacks on top with
+      // the per-slice min(rate, 25%) treatment.
+      //
+      // To compute this cleanly:
+      //   ordinaryStackPostStdDed  = taxableOrdinary excluding both recaps
+      //   stackWith1245            = + §1245 (full marginal)
+      //   stackWith1245AndPlus1250 = + §1250 (capped at 25% per slice)
+      const _recap1245InTaxable = Math.min(_recap1245, taxableOrdinary);
+      const _recap1250InTaxable = Math.min(_recap1250, Math.max(0, taxableOrdinary - _recap1245InTaxable));
+      const _recapInTaxable     = _recap1245InTaxable + _recap1250InTaxable;
+      const _taxableOrdExRecap  = Math.max(0, taxableOrdinary - _recapInTaxable);
+      const _taxableOrdExRecap1250 = Math.max(0, taxableOrdinary - _recap1250InTaxable); // stack base for §1250
+      const ordinaryTaxExRecap    = _flatBracketTax(_taxableOrdExRecap, ordBrk);
+      const ordinaryTaxIncRecap   = _flatBracketTax(taxableOrdinary, ordBrk);
+      const ordinaryTaxInc1245    = _flatBracketTax(_taxableOrdExRecap + _recap1245InTaxable, ordBrk);
+      // §1245 recap tax = full marginal on the §1245 slice (no cap).
+      const recapTax1245 = Math.max(0, ordinaryTaxInc1245 - ordinaryTaxExRecap);
+      // §1250 recap tax = per-slice 25% cap, stacked on top of (ord + §1245).
+      const recapTax1250 = (_recap1250InTaxable > 0)
+            ? _flatBracketTaxCapped(_recap1250InTaxable, _taxableOrdExRecap + _recap1245InTaxable, ordBrk, 0.25)
             : 0;
+      // Combined for backward-compat callers + cross-checks.
+      const recapTax = recapTax1245 + recapTax1250;
       // Keep these for AMT-comparison and other call sites that read them.
       const _recapTaxAtOrdinary = Math.max(0, ordinaryTaxIncRecap - ordinaryTaxExRecap);
       const _recapTaxCapped = _recapInTaxable * 0.25;
@@ -501,8 +560,63 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       // owe top-up on a real return.
       const _stdDedAddback = (deduction === stdDed && stdDed > 0) ? stdDed : 0;
       const amtAmti     = taxableOrdinary + _stdDedAddback + ltAmount;
-      const amtOrdOnly  = _computeAmt(amtAmti, year, status, ltAmount, _recapInTaxable, recapTax);
-      const amtTotal    = amtOrdOnly + ltTax;
+      // AMT slice routing:
+      //   §1245 stays in the ORDINARY AMTI slice (26/28% rate, no carve-
+      //     out) — it's ordinary income for both regular and AMT.
+      //   §1250 is carved out at its effective rate (≤ 25%) just like
+      //     regular tax, via _computeAmt's recap-slice handling.
+      // Pass only the §1250 portion as the "recap" carve so §1245's
+      // contribution stays in the 26/28% ordinary slice via the
+      // taxable - lt - recapInSlice subtraction inside _computeAmt.
+      const amtOrdOnly  = _computeAmt(amtAmti, year, status, ltAmount, _recap1250InTaxable, recapTax1250);
+
+      // === AMT preferential-rate layer (TMT capital-gains stacking) ===
+      // INTENTIONAL DEPARTURE FROM Form 6251 Part III line 44.
+      //
+      // Form 6251 positions the LTCG brackets using line 44 = "line 5 of
+      // the Qualified Dividends & Cap Gain Tax Worksheet (as figured for
+      // the regular tax)" — i.e. regular taxable ordinary income, which is
+      // NET of the standard deduction. Reusing the regular `ltTax` (stacked
+      // on `taxableOrdinary`) would reproduce that.
+      //
+      // Per advisor (CPA-confirmed 2026-06-03): the standard deduction is
+      // disallowed for AMT, full stop — it must not reduce the LTCG stacking
+      // base any more than it reduces the 26/28% ordinary slice. The 26%
+      // ordinary slice already runs on the FULL ordinary AMTI ($230k, std
+      // ded added back via _stdDedAddback); the gains must stack on that
+      // same $230k base, NOT on the regular $197,800. So we recompute the
+      // LTCG layer here with the std-deduction add-back baked into both the
+      // stacking base AND the leftover-deduction shift.
+      //
+      // Mirrors the regular LTCG bracket walk above exactly, but:
+      //   stackBase   = taxableOrdinary + _stdDedAddback  (full AMTI ordinary)
+      //   taxableLt   = ltAmount - _amtLeftoverDeduction  (std ded NOT shifting floors)
+      // For an ITEMIZED filer _stdDedAddback = 0, so this reduces to the
+      // regular ltTax (itemized deductions are retained for AMT) — the
+      // departure only bites when the standard deduction is in play.
+      const _amtDeduction = Math.max(0, deduction - _stdDedAddback);
+      const _amtTaxableOrd = Math.max(0, ordinaryGross - _amtDeduction - _carriedLossOrdOffset);
+      const _amtDeductionConsumedOnOrd = Math.max(0, ordinaryGross - _amtTaxableOrd - _carriedLossOrdOffset);
+      const _amtLeftoverDeduction = Math.max(0, _amtDeduction - _amtDeductionConsumedOnOrd);
+      let _amtLtTax = 0;
+      if (ltAmount > 0 && ltBrk && ltBrk.length) {
+            const _amtTaxableLt = Math.max(0, ltAmount - _amtLeftoverDeduction);
+            let remaining = _amtTaxableLt;
+            let stackBase = _amtTaxableOrd;
+            let prevMax = 0;
+            for (const b of ltBrk) {
+                  const cap = b[0], rate = b[1];
+                  if (remaining <= 0) break;
+                  const slabRoom = Math.max(0, cap - Math.max(stackBase, prevMax));
+                  if (slabRoom <= 0) { prevMax = cap; continue; }
+                  const slabUse = Math.min(slabRoom, remaining);
+                  _amtLtTax += slabUse * rate;
+                  remaining -= slabUse;
+                  stackBase += slabUse;
+                  prevMax = cap;
+            }
+      }
+      const amtTotal    = amtOrdOnly + _amtLtTax;
       // Regular tax for AMT comparison includes recapTax — without
       // it the AMT top-up double-counts the recapture portion.
       const amtTopUp    = Math.max(0, amtTotal - (ordinaryTax + recapTax + ltTax));
@@ -548,7 +662,9 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       const tentativeMinimumTax = amtTotal;
       return {
             ordinaryTax: ordinaryTax,
-            recapTax: recapTax,
+            recapTax: recapTax,                // total (1245 + 1250) — backward compat
+            recapTax1245: recapTax1245,        // §1245: full marginal, no cap
+            recapTax1250: recapTax1250,        // §1250: per-slice 25% cap (§1(h)(1)(E))
             ltTax: ltTax,
             // Post-§1211-netting capital gains (>= 0), exposed so the
             // state-tax caller can build a conforming base when a capital

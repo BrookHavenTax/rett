@@ -1,29 +1,36 @@
-// Tax Implications page (page header: "Tax Baseline without Strategies").
-// 2026-05-27 sync (upstream commit 5148dd5 + leader-line follow-ups):
-// the old 3-tile equation row is replaced with a redesigned 3-card row.
-//   - Left  — red "Tax Due from the Sale" hero tile (bt-delta).
-//   - Middle — blue "Cash Kept from Sale" tile (bt-cash-kept).
-//   - Right — donut showing share of GAIN kept vs lost. Denominator is
-//             salePrice − basis (economic gain on the property). Blue
-//             slice = gain kept, red slice = gain lost. Center =
-//             percent of gain lost to tax. Leader lines carry the
-//             $ amounts + percents next to each slice — no separate
-//             legend block.
-// Legacy IDs (#bt-without, #bt-without-sub, #bt-total, #baseline-year-
-// sub, #bt-pie-keep-amt, #bt-pie-tax-amt, #bt-pie-keep-pct,
-// #bt-pie-tax-pct) are PRESERVED as hidden spans so baseline-table.js
-// writes don't throw.
+// Tax Implications page (upstream title: "Sale and Tax Baseline").
+// 2026-06-03 sync (cd22150f): proceeds bar + click-to-reveal before the
+// 3-tile row. baseline-table.js drives #baseline-proceeds-* and
+// .baseline-reveal-target visibility.
 export default function PageBaseline() {
   return (
     <section id="page-baseline" className="page" role="tabpanel" aria-labelledby="nav-baseline">
-      <h2 className="page-inputs-title">Tax Baseline without Strategies</h2>
+      <h2 className="page-inputs-title">Sale and Tax Baseline</h2>
 
-      {/* 3-card row redesign 2026-05-27 (upstream 5148dd5). */}
-      <div className="baseline-pie-row" aria-live="polite">
+      {/* Proceeds bar — sale anatomy (2026-06-03 upstream Tab 2). */}
+      <div id="baseline-proceeds-wrap" className="proceeds-wrap" hidden>
+        <div className="proceeds-eyebrow">How the Sale Price Breaks Down</div>
+        <div className="proceeds-frame">
+          <div className="bracket top" id="baseline-bracket-top" />
+          <div className="proceeds-bar" id="baseline-proceeds-bar" />
+          <div className="bracket bottom" id="baseline-bracket-bottom" />
+        </div>
+        <div className="proceeds-key" id="baseline-proceeds-key" />
+      </div>
+
+      <div id="baseline-reveal-spacer" className="baseline-reveal-spacer" />
+      <div id="baseline-reveal-btn-wrap" className="baseline-reveal-btn-wrap">
+        <button type="button" id="baseline-reveal-btn" className="baseline-reveal-btn">
+          Show Tax Breakdown <span className="chev" aria-hidden="true">&darr;</span>
+        </button>
+      </div>
+
+      {/* 3-card row — hidden until reveal click (.baseline-reveal-target). */}
+      <div className="baseline-pie-row baseline-reveal-target" aria-live="polite">
         <div className="baseline-tile baseline-tile--delta baseline-tile--hero">
           <div className="baseline-tile-label">Tax Due from the Sale</div>
           <div className="baseline-tile-value" id="bt-delta">$0</div>
-          <div className="baseline-tile-sub" id="bt-delta-sub">Recap &middot; LT &middot; NIIT &middot; State</div>
+          <div className="baseline-tile-sub" id="bt-delta-sub">Recap — LT — NIIT — State</div>
         </div>
         <div className="baseline-tile baseline-tile--cash-kept">
           <div className="baseline-tile-label">Cash Kept from Sale</div>

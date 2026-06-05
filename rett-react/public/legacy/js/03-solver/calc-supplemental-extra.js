@@ -158,6 +158,16 @@
   // ----------------------------------------------------------------
   function _calcPtet() {
     var cfg = _cfg(); if (!cfg) return _writeResult('ptet', null);
+    // PTET routes STATE income tax through a pass-through ENTITY, so it
+    // requires pass-through / business income to exist. With no business
+    // income there is no entity to route through and the strategy has no
+    // benefit. Gate here at the calc level (not just by hiding the card
+    // in supplemental-extra-render.js's BUSINESS_GATED visual filter) so
+    // the master solver, temp page, admin math, and Strategy Summary all
+    // exclude it consistently. Without this gate a PTET left "interested"
+    // from a prior business-income scenario kept funding off the state
+    // tax on the capital gain alone — surfacing benefit on a hidden card.
+    if (_num(cfg.businessIncomeAmount) <= 0) return _writeResult('ptet', null);
     var st = _state('ptet');
     var income = Math.max(0, _num(st.taxableIncome));
     var rate = Math.max(0, _num(st.stateRate)) / 100;
@@ -170,7 +180,14 @@
     var qbi     = _qbiHaircut(cfg);
     var saltCap = Math.max(0, _num(st.saltCapacityRemaining));
     var creditPct = Math.max(0, Math.min(100, _num(st.creditPct) || 100)) / 100;
-    var annualRecurring = !!st.annualRecurring;
+    // PTET always recurs over the VIEWED strategy's horizon — it's a tax
+    // paid every recognition year, so its benefit spans the same window
+    // the sale strategy deploys over. _strategyYearCount returns 1 for a
+    // normal sale (Strategy A → Y0 only) and the recognition-year count
+    // for installment strategies (B/C → benefit each of those years).
+    // Unconditional (not gated on a per-case toggle) so the behavior is
+    // automatic and isn't left stale by previously-saved state.
+    var annualRecurring = true;
 
     // Per-year marginal rates. Y0 has the §1250 recap added to the
     // ordinary baseline (sale year), pushing the federal bracket up.
@@ -554,12 +571,24 @@
   // ----------------------------------------------------------------
   function _calcAugusta() {
     var cfg = _cfg(); if (!cfg) return _writeResult('slot08', null);
+    // Augusta Rule rents the owner's residence to the OWNER'S BUSINESS
+    // (§280A(g)) — it needs a business to pay (and deduct) the rent. Block
+    // without business income so a hidden, still-"interested" card can't
+    // fund off rental days alone. Consistent with PTET / Farm and the
+    // BUSINESS_GATED visual filter in supplemental-extra-render.js.
+    if (_num(cfg.businessIncomeAmount) <= 0) return _writeResult('slot08', null);
     var st = _state('slot08');
     var days = Math.min(14, Math.max(0, _num(st.daysRented)));
     var fmv = Math.max(0, _num(st.fmvPerDay));
     if (days <= 0 || fmv <= 0) return _writeResult('slot08', null);
     var businessRent = days * fmv;
-    var annualRecurring = !!st.annualRecurring;
+    // Augusta is structurally annual — the §280A(g) rental recurs every
+    // recognition year of the VIEWED strategy. _strategyYearCount returns
+    // 1 for a normal sale (Strategy A → Y0 only) and the recognition-year
+    // count for installment strategies (B/C). Unconditional (not gated on
+    // a per-case toggle) so the behavior is automatic and isn't left stale
+    // by previously-saved state.
+    var annualRecurring = true;
 
     // Per-year marginals (recap-pushed Y0 vs no-recap Y1+).
     var baseOrd = _num(cfg.baseOrdinaryIncome);
@@ -741,6 +770,13 @@
   // ----------------------------------------------------------------
   function _calcFarmEquipment() {
     var cfg = _cfg(); if (!cfg) return _writeResult('slot12', null);
+    // §179 expensing is limited to BUSINESS taxable income and requires a
+    // trade or business. Block without business income (consistent with
+    // PTET / Augusta and the BUSINESS_GATED visual filter) so a hidden,
+    // still-"interested" card can't fund off the baseOrdinaryIncome
+    // fallback proxy below (which would otherwise let §179 deduct against
+    // the sale's ordinary income with no actual business present).
+    if (_num(cfg.businessIncomeAmount) <= 0) return _writeResult('slot12', null);
     var st = _state('slot12');
     var cost = Math.max(0, _num(st.equipmentCost));
     if (cost <= 0) return _writeResult('slot12', null);
@@ -762,9 +798,19 @@
     var totalRaw = sec179 + bonus;
     var total = _capDeductionAtOrdPool(cfg, totalRaw);
     var marginal = _fedMarginal(cfg) + _stateMarginal(cfg);
+    // investment = the equipment purchase price. Farm DOES draw from the
+    // sale-proceeds capital pool: a dollar spent on farm equipment can't
+    // also fund Brooklyn (same rivalry as Oil & Gas / Delphi). Reporting
+    // the cost as `investment` (not 0) makes the allocator subtract it
+    // from Brooklyn's deployable capital (allocatedToSupplementals →
+    // brooklynRemaining → engine cfg.investment) when Farm is funded.
+    // Unlike PTET / Augusta, which are genuine free-benefits (investment 0,
+    // no outlay). The equipment outlay is also carried on `assetCost` /
+    // detail.assetCost so a drill-down on the tax benefit can show the
+    // cash-vs-equipment split for the client.
     _writeResult('slot12', {
       netBenefit: Math.max(0, Math.round(total * marginal)),
-      investment: 0,
+      investment: Math.round(cost),
       assetCost: Math.round(cost),
       marginalRate: marginal,
       detail: {
@@ -781,16 +827,17 @@
     });
   }
 
+  // Hidden per advisor 2026-06-03: Cost Seg (slot05), Heavy Vehicle
+  // (slot06), 401(k)+PS (slot09), Aircraft (slot10), STR (slot11), and
+  // Charitable Gifts (charitableGifts) are pulled from the rail. Their
+  // calc fns above are kept dormant (not mapped → never run, never
+  // registered) so reviving one is a single line back into this map +
+  // the matching SPECS entry. (Charitable is parked for a future
+  // redesign per advisor.)
   var _CALCS = {
     ptet:            _calcPtet,
-    charitableGifts: _calcCharitableGifts,
-    slot05:          _calcCostSeg,
-    slot06:          _calcHeavyVehicle,
     slot07:          _calcEquipmentLeasing,
     slot08:          _calcAugusta,
-    slot09:          _calc401k,
-    slot10:          _calcAircraft,
-    slot11:          _calcStrLoophole,
     slot12:          _calcFarmEquipment
   };
 

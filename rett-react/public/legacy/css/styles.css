@@ -56,14 +56,22 @@
   --paper:      #fbfcfe;
   --paper-cool: #f0f4fa;
   --paper-warm: #e9eff8;
-  --rule:       #cfdae8;
-  --rule-soft:  #e2e9f2;
-  --muted:      #5b6680;
+  --rule:       #d8e1ec;  /* softer dividers (was #cfdae8) */
+  --rule-soft:  #ebf0f7;  /* even softer subtle divider (was #e2e9f2) */
+  --muted:      #6B7A99;  /* warmer blue-gray that harmonizes with --rett-navy (was #5b6680, slightly cool/purple) */
   --green:      #2d8659;
   --green-soft: #4ba376;
   --red:        #c44545;
-  --shadow:    0 1px 3px rgba(14,34,64,0.07),  0 8px 24px rgba(14,34,64,0.06);
-  --shadow-lg: 0 4px 12px rgba(14,34,64,0.10), 0 20px 50px rgba(14,34,64,0.12);
+  /* "Cushion" shadows (advisor 2026-05-29): three soft layers — a tight
+     contact shadow, a medium ambient, and a wide soft halo — so cards feel
+     gently bubbled out / floating rather than sitting flat on the surface.
+     Same dark-blue tint as before; just layered for depth. */
+  --shadow:    0 2px 4px rgba(14,34,64,0.06),
+               0 6px 16px rgba(14,34,64,0.07),
+               0 20px 40px rgba(14,34,64,0.05);
+  --shadow-lg: 0 4px 10px rgba(14,34,64,0.08),
+               0 12px 28px rgba(14,34,64,0.10),
+               0 32px 60px rgba(14,34,64,0.08);
 
   --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-display: 'Fraunces', Georgia, serif;
@@ -1456,6 +1464,12 @@ body.rett-multi-property #property-1 .property-remove-btn { display: none; }
 .rett-scenario-sub {
   font-size: 0.82em;
   color: #8fb3e0;
+}
+.rett-scenario-schedule {
+  font-size: 0.82em;
+  color: #d6e4f7;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
 }
 .rett-scenario-winner {
   background: rgba(95, 217, 126, 0.08);
@@ -3527,6 +3541,13 @@ body { font-size: 16px; }
     margin-top: 4px;
     line-height: 1.4;
 }
+.rett-scenario-schedule {
+    color: var(--ink);
+    font-size: 0.86em;
+    margin-top: 4px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
 .rett-scenario-badge {
     background: var(--ink);
     color: var(--paper);
@@ -4434,8 +4455,14 @@ body { font-size: 16px; }
    filled-bold treatment so the click "holds" visually, instead of
    reverting to the resting state. */
 .supp-pick-btn.is-active[data-supx-pick-action="interested"] {
-    background: var(--ink);
-    border-color: var(--ink);
+    /* Match the core Oil & Gas / Delphi "Interested" treatment
+       (.strategy-pick-btn.is-interested = var(--rett-amber), the light
+       blue #5BA9FF) so every supplemental card's Interested button reads
+       the same light blue when picked — the extra cards previously went
+       dark navy (var(--ink)), which looked inconsistent next to the core
+       cards. */
+    background: var(--rett-amber);
+    border-color: var(--rett-amber);
     color: var(--paper);
 }
 .supp-pick-btn.is-active[data-supx-pick-action="not-interested"] {
@@ -4487,6 +4514,16 @@ body { font-size: 16px; }
 .supx-chip-custom {
     border-style: dashed;
     color: var(--muted);
+}
+/* Inline amount box that replaced the quick-pick chips: a single typed
+   input for the strategy's primary dollar figure. Reuses .supx-chips-row's
+   framed container; the currency box fills the row width. */
+.supx-amount-row .supx-amount-input-wrap {
+    width: 100%;
+}
+.supx-amount-row .supx-amount-input {
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .strategy-pick-actions {
@@ -7579,6 +7616,24 @@ body { font-size: 16px; }
 .supp-all-grid > #supplemental-strategies-host,
 .supp-all-grid > #supplemental-extra-host { display: contents; }
 .supp-all-grid .supp-strategies-grid { display: contents; }
+/* Fixed presentation order across the two hosts (advisor 2026-06-05).
+   The base three (always shown) lead, then the business-gated three.
+   Equipment Leasing (slot07) lives in the EXTRA host but must sit
+   between Oil & Gas and Delphi (both PRIMARY host) — impossible by DOM
+   order since the primary host always precedes the extra host. CSS
+   `order` reorders the unified grid items regardless of which host
+   rendered them, so each card keeps its own host + event wiring.
+   Row 1: Oil & Gas · Equipment Leasing · Delphi
+   Row 2: Augusta · PTET · Farm Equipment (when business income > 0).
+   Specificity here is (0,3,0); the is-not-interested sink rule below is
+   also (0,3,0) and comes LATER in source, so a Not-Interested card
+   still wins the order:100 sink. */
+.supp-all-grid .strategy-pick-card[data-supp-strategy="oilGas"] { order: 1; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot07"] { order: 2; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="delphi"] { order: 3; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot08"] { order: 4; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="ptet"]   { order: 5; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot12"] { order: 6; }
 /* Not-Interested cards float to the bottom of the unified grid via
    CSS order. Neutral and Interested stay at their natural DOM
    position (order: 0). Not-Interested gets a high order value so
@@ -7861,6 +7916,14 @@ body { font-size: 16px; }
     color: var(--ink);
 }
 .temp-strategy-pill.temp-pill-empty { color: var(--muted); border-style: dashed; }
+.temp-strategy-schedule {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.5;
+}
 
 .temp-baselines { display: flex; flex-direction: column; gap: 14px; }
 .temp-empty {
@@ -8180,6 +8243,55 @@ body { font-size: 16px; }
     padding-top: 6px;
 }
 
+/* Strategy C excess-carryover-loss callout — identifies the fee cost of
+   the unused short-term loss the structure over-generated. Set apart from
+   the fees panel with a left rule so it reads as an advisory sideboard,
+   not part of the net-benefit math. */
+.temp-excess-loss-panel {
+    margin-top: 18px;
+    padding: 14px 18px;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-left: 4px solid #b45309;
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+}
+.temp-excess-loss-head {
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #b45309;
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+}
+.temp-excess-loss-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 4px 0;
+}
+.temp-excess-loss-amt {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 1.05em;
+    min-width: 120px;
+    text-align: right;
+    color: var(--ink);
+}
+.temp-excess-loss-amt.temp-excess-loss-credit { color: #1f7a3a; }
+.temp-excess-loss-label {
+    color: var(--muted);
+    font-size: 0.92em;
+}
+.temp-excess-loss-note {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 0.84em;
+    line-height: 1.45;
+}
+
 /* ============================================================
    ADMIN math reveal panel (admin-math-panel.js, Chunk 0).
    Hidden by default; appears below the active page when admin
@@ -8423,6 +8535,20 @@ body { font-size: 16px; }
 .supp-strategy-card .strategy-pick-num .num-big::before {
     content: counter(supp-num, decimal-leading-zero);
 }
+/* Fixed badge numbers matching the CSS-`order` visual sequence above
+   (advisor 2026-06-05). The supp-num counter increments in DOM order,
+   which no longer matches the visual order once `order` reorders the
+   grid — so for the six known cards we pin the badge number to the
+   visual slot. Higher specificity (0,4,1) overrides the generic counter
+   rule. Note: a card hidden via click-to-hide leaves a number gap here
+   rather than resequencing the remainder (the counter path did that);
+   acceptable for the fixed-order layout. */
+.supp-all-grid .strategy-pick-card[data-supp-strategy="oilGas"] .num-big::before { content: "01"; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot07"] .num-big::before { content: "02"; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="delphi"] .num-big::before { content: "03"; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot08"] .num-big::before { content: "04"; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="ptet"]   .num-big::before { content: "05"; }
+.supp-all-grid .strategy-pick-card[data-supp-strategy="slot12"] .num-big::before { content: "06"; }
 /* Clickable affordance on the badge. */
 .supp-strategy-card .supp-num-clickable {
     cursor: pointer;
@@ -8636,3 +8762,296 @@ body { font-size: 16px; }
         align-items: center;
     }
 }
+
+/* §1245 / §1250 recap split sub-block (Section 02).
+   Hidden by default; revealed when the parent "Accelerated Depreciation
+   Recapture" field has a non-zero value (controls.js sets the .recap-
+   split-active class on each .recap-split row). Using a class (not the
+   [hidden] attribute) so case-storage restore can't silently re-hide
+   the rows on its own pass — the class survives the restore. */
+.recap-split { display: none; }
+/* When revealed, inherit .input-row's grid layout so the §1245/§1250
+   input boxes line up with all the other input boxes in the same
+   right-side column. Was display:flex, which broke the column. */
+.recap-split.recap-split-active {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+/* ============================================================
+   Tab 2 — Proceeds Bar (Sale Anatomy)
+   ------------------------------------------------------------
+   Stacked horizontal bar across the full sale price, segmented
+   into return-of-basis · §1245 recap · §1250 recap · LT gain.
+   Top bracket spans the bar (Sale Price). Bottom bracket spans
+   basis + recap (Original Purchase Price) so the taxable gain
+   becomes visually obvious as "everything past the original
+   purchase price bracket."
+   ============================================================ */
+.proceeds-wrap {
+  /* Brand-aligned palette using only existing RETT tokens — no green.
+     Reads as a tonal progression: light slate → danger red →
+     brand cyan → brand navy. Anchored by --rett-navy (the dominant
+     brand color) on the largest typical segment (LT gain). */
+  --pb-basis:     #8b97ad;             /* light slate — return of capital */
+  --pb-1245:      var(--rett-danger);  /* danger red — full marginal      */
+  --pb-1250:      var(--rett-cyan);    /* brand cyan — 25% capped         */
+  --pb-lt:        var(--rett-navy);    /* brand navy — 20% LTCG (anchor)  */
+  /* Match width + margins of the 3-tile baseline-pie-row below so
+     they line up left/right edge. */
+  max-width: 1280px;
+  margin: 24px auto 28px;
+  padding: 26px 32px 24px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.proceeds-eyebrow {
+  font-family: 'JetBrains Mono', 'Spline Sans Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.proceeds-frame { margin-top: 8px; }
+.proceeds-bar {
+  height: 64px;
+  display: flex;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.04);
+}
+.proceeds-bar .pseg {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 10px;
+  color: #fff;
+  min-width: 0;
+  overflow: hidden;
+  transition: flex-basis .25s ease;
+}
+.proceeds-bar .pseg .pamt {
+  font-family: 'JetBrains Mono', 'Spline Sans Mono', monospace;
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.15;
+}
+.proceeds-bar .pseg .pnm {
+  /* Smaller, lighter — labels feel like a caption under the number,
+     same hierarchy as the friend's HTML calculator. */
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.82;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 3px;
+  font-weight: 500;
+}
+/* Brackets — top spans Sale Price, bottom spans Original Purchase Price. */
+.bracket { position: relative; width: 100%; }
+.bracket.top { height: 38px; }
+.bracket.bottom { height: 38px; }
+.bracket .bk {
+  position: absolute;
+  box-sizing: border-box;
+}
+.bracket.top .bk {
+  top: 22px;
+  height: 14px;
+  border: 2px solid var(--ink);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+.bracket.bottom .bk {
+  bottom: 22px;
+  height: 14px;
+  border: 2px solid var(--ink);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  opacity: 0.55;
+}
+.bracket .bk-label {
+  position: absolute;
+  text-align: center;
+  font-family: 'JetBrains Mono', 'Spline Sans Mono', monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.bracket.top .bk-label { top: 0; color: var(--ink); }
+.bracket.bottom .bk-label { bottom: 0; color: var(--ink-soft); }
+.proceeds-key {
+  display: flex;
+  gap: 22px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.proceeds-key .pk { display: flex; align-items: center; gap: 8px; }
+.proceeds-key .sw {
+  width: 12px; height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.proceeds-key .pk-amt {
+  font-family: 'JetBrains Mono', 'Spline Sans Mono', monospace;
+  font-weight: 600;
+  color: var(--ink);
+}
+.proceeds-hint {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--rule-soft);
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.proceeds-hint b { color: var(--ink); font-weight: 600; }
+
+/* ============================================================
+   Tab 2 — Click-to-reveal tax breakdown
+   ------------------------------------------------------------
+   The proceeds bar owns the top of Tab 2. The 3-tile row stays
+   hidden behind a centered button until the user explicitly
+   asks to see the tax due. Click → button fades out, scroll
+   spacer expands, tiles slide in. Honors reduced-motion.
+   ============================================================ */
+.baseline-reveal-target {
+  display: none;
+}
+.baseline-reveal-target.baseline-reveal-shown {
+  display: grid;       /* matches baseline-pie-row's natural display */
+  animation: baselineRevealFadeIn 520ms ease both;
+}
+@keyframes baselineRevealFadeIn {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.baseline-reveal-btn-wrap {
+  max-width: 1280px;
+  margin: 8px auto 24px;
+  display: flex;
+  justify-content: center;
+}
+.baseline-reveal-btn {
+  padding: 14px 32px;
+  background: var(--paper);
+  border: 1.5px dashed var(--rett-blue);
+  border-radius: 4px;
+  color: var(--rett-blue);
+  font-family: 'JetBrains Mono', 'Spline Sans Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.baseline-reveal-btn:hover {
+  background: var(--rett-blue);
+  color: #fff;
+  border-style: solid;
+}
+.baseline-reveal-btn .chev {
+  display: inline-block;
+  transform: translateY(1px);
+  font-size: 14px;
+}
+.baseline-reveal-btn-wrap.is-revealed {
+  display: none;       /* once clicked, button drops out entirely */
+}
+/* A small spacer kicks in below the bar after reveal so the tiles
+   don't slam into the bar — the user can scroll a touch between
+   the two views. */
+.baseline-reveal-spacer {
+  height: 0;
+  transition: height 360ms ease;
+}
+.baseline-reveal-spacer.is-active {
+  height: 28px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .baseline-reveal-target.baseline-reveal-shown { animation: none; }
+  .baseline-reveal-spacer,
+  .baseline-reveal-spacer.is-active { transition: none; }
+}
+
+/* === Bubbly polish v1 — advisor 2026-05-29.
+   Visible-by-design pass: bumps main card containers from the existing
+   4–10px corners up to a soft 18px (12px for stat tiles), and adds a
+   gentle hover-lift on dashboard-style cards so they "bubble out" when
+   you point at them. Localized in one block to make rollback trivial:
+   if you don't like it, delete from here down. */
+:root {
+  --radius-card: 18px;     /* main cards / panels */
+  --radius-soft: 12px;     /* small stat tiles */
+  --radius-pill: 999px;    /* future chips / pills */
+}
+
+/* Round corners on real container classes used across tabs. */
+.strategy-pick-card,
+.supp-strategy-card,
+.supp-details-panel,
+.supp-value-panel,
+.rett-pie-card,
+.rett-table-wrap,
+.input-section,
+.pmq-client-section,
+.pmq-case-section,
+.rett-scenario-section,
+.rett-dashboard,
+.rett-card,
+.admin-math-section {
+  border-radius: var(--radius-card) !important;
+}
+
+/* Hover lift — dashboard-style cards bubble up on hover. */
+.strategy-pick-card,
+.supp-strategy-card,
+.rett-pie-card,
+.rett-scenario-section,
+.rett-dashboard,
+.rett-card,
+.admin-math-section {
+  transition: transform 220ms cubic-bezier(.2,.7,.3,1),
+              box-shadow 220ms ease;
+}
+.strategy-pick-card:hover,
+.supp-strategy-card:hover,
+.rett-pie-card:hover,
+.rett-scenario-section:hover,
+.rett-dashboard:hover,
+.rett-card:hover,
+.admin-math-section:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Stat tiles — slightly softer than full bubble (12px). No hover lift —
+   these aren't interactive, they're readouts. */
+.rett-kpi-tile,
+.ribbon-tile,
+.baseline-tile {
+  border-radius: var(--radius-soft) !important;
+}
+/* === end Bubbly polish v1 === */
