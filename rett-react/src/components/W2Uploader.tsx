@@ -75,7 +75,11 @@ export default function W2Uploader() {
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const resp = await fetch('/api/gemini/extract-w2', { method: 'POST', body: fd });
+      const resp = await fetch('/api/gemini/extract-w2', {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         throw new Error(

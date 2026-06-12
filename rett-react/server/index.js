@@ -23,6 +23,10 @@ import { dirname, resolve } from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
+import {
+  createAccessGateMiddleware,
+  registerAccessRoutes,
+} from './access-gate.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_CANDIDATES = [
@@ -61,6 +65,18 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+
+app.use(express.json({ limit: '1kb' }));
+app.use(createAccessGateMiddleware());
+
+const verifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many access attempts — try again later.' },
+});
+registerAccessRoutes(app, { verifyLimiter });
 
 // ---- Health check (used by EC2 load balancers / pm2 watchdog) ----------
 app.get('/api/health', (_req, res) => {

@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import AccessGate from './components/AccessGate';
 import App from './App';
 import './styles/app.css';
 // Brand theme + modern UX layer. Imported AFTER app.css so its token
@@ -10,6 +11,8 @@ import './styles/brand-theme.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <AccessGate>
+      <App />
+    </AccessGate>
   </React.StrictMode>,
 );
