@@ -82,11 +82,21 @@
   // that has no immediate tax benefit, and NOL carry-forward isn't
   // modeled in the supplemental engine. Returning 0 means "no cap" —
   // callers should fall back to the raw deduction in that case.
+  // Recapture still exposed to the supps after the chosen primary (Brooklyn)
+  // strategy absorbs its §1250 slice (advisor 2026-06-11). Lump recap defaults
+  // to §1250 (real-estate). Falls back to the full recap when the master-solver
+  // helper isn't loaded yet (boot race) so behavior degrades to pre-fix safely.
+  function _exposedRecap(cfg) {
+    var r1245 = _num(cfg.depreciationRecapture1245 || cfg.acceleratedDepreciation1245);
+    var r1250 = _num(cfg.depreciationRecapture1250 || cfg.acceleratedDepreciation1250);
+    if (r1245 + r1250 === 0) r1250 = _num(cfg.depreciationRecapture || cfg.acceleratedDepreciation || cfg.recap);
+    if (typeof root.__rettSuppExposedRecap === 'function') return root.__rettSuppExposedRecap(r1245, r1250);
+    return { recap1245: r1245, recap1250: r1250, total: r1245 + r1250 };
+  }
   function _ordIncomePoolY0(cfg) {
     if (!cfg) return 0;
     return Math.max(0,
-      _num(cfg.baseOrdinaryIncome) +
-      _num(cfg.acceleratedDepreciation)
+      _num(cfg.baseOrdinaryIncome) + _exposedRecap(cfg).total
     );
   }
   function _capDeductionAtOrdPool(cfg, deductionRaw) {
@@ -174,6 +184,14 @@
     if (rate <= 0 && cfg.state && PTET_RATES_2026[cfg.state] != null) {
       rate = PTET_RATES_2026[cfg.state] / 100;
     }
+    // No-income-tax states have no state income tax to route through the
+    // entity, so PTET's benefit must be $0. The stateRate input defaults to
+    // 5.49%, which keeps `rate > 0` and skips the PTET_RATES_2026 table guard
+    // above (that table correctly omits these states) — leaking a phantom
+    // benefit. Force rate to 0 so the `rate <= 0` exit below excludes PTET.
+    // (browser-test Test H: TX showed a phantom ~$24,375/yr; advisor 2026-06-09.)
+    var NO_PTET_STATES = { TX: 1, FL: 1, NV: 1, WA: 1, WY: 1, AK: 1, SD: 1, TN: 1, NH: 1 };
+    if (cfg.state && NO_PTET_STATES[cfg.state]) rate = 0;
     if (income <= 0 || rate <= 0) return _writeResult('ptet', null);
 
     var ptet = income * rate;
@@ -297,6 +315,186 @@
       return Math.min(yrs, 7);  // match YEAR_HARD_CAP in supplemental-render
     }
     return 1;
+  }
+
+  // ----------------------------------------------------------------
+  // Multi-year deployment for the CAPITAL ordinary-offset supps
+  // (Equipment Leasing §slot07, Farm/Business Equipment §slot12).
+  //
+  // These commit a FIXED total investment (the card knob, auto-sized
+  // by the optimizer up to 10% of the sale) and convert it to an
+  // ordinary deduction (deductionPerDollar: 0.90 for Equipment Leasing
+  // depreciable %, 1.0 for Farm §179+bonus). A single recognition year
+  // can only absorb a deduction up to that year's ordinary-income pool;
+  // anything beyond is wasted NOL. So for installment strategies (B/C)
+  // we WATERFALL the fixed total across the recognition years — fill
+  // Year 0 first (its pool includes the §1250 recapture, the highest
+  // marginal), then spill the remainder into Year 1, Year 2, … each up
+  // to that year's pool. This mirrors Oil & Gas's optimizeOilGasMultiYear
+  // intent and produces the SAME perYear[] shape the master solver's
+  // _ordInfoOf / _y1OrdInfo / _saturateOrdinary already consume, so
+  // these supps now ration against BOTH the Y0 and the recurring Y1+
+  // ordinary pools instead of being locked to a (possibly saturated)
+  // Year 0. (advisor 2026-06-10 — Farm + Equipment Leasing must be
+  // considered against out-year headroom, not dropped to $0 when the
+  // free supps + Oil & Gas claim Year 0. 10% cap stays a TOTAL.)
+  //
+  // Per-year pools use the same no-floor convention as the legacy
+  // single-year _ordIncomePoolY0 (baseOrdinaryIncome + Y0 recap); the
+  // master solver applies the standard-deduction/10%-bracket floor and
+  // the cross-supp competition on top during saturation.
+  // Per-year ordinary income ALREADY claimed by the supps that outrank the
+  // capital ordinary-offset extras (Equipment Leasing slot07 / Farm slot12)
+  // in the master solver's saturation order: the FREE supps (PTET, Augusta —
+  // they deploy no capital and always seat first) and the core capital supps
+  // (Oil & Gas, Delphi — computed before the extras each tick). Subtracting
+  // these from each year's pool BEFORE the extras waterfall makes Farm /
+  // Equipment Leasing flow into the out-years when Year 0 is already
+  // contested, instead of front-loading a saturated Year 0 and being crowded
+  // out to $0 (advisor 2026-06-10). Only funded (Interested + has-result)
+  // supps are counted. The master solver still does the FINAL rationing of
+  // realized benefit — this steers only WHERE the extras place their
+  // deduction, never the dollars saved, so the two can't double-count.
+  // Deduction-per-dollar of the capital ordinary-offset extras, used to rank
+  // them against each OTHER: Farm's §179+bonus expenses 100c/$, Equipment
+  // Leasing's K-1 loss ~90c/$. When out-year headroom is scarce the higher-
+  // yield supp must win it deterministically (advisor 2026-06-10), so the
+  // lower-yield supp treats every higher-yield capital extra as higher
+  // priority and defers to its claim — instead of the prior order-dependent
+  // greedy where whichever swept last happened to win.
+  var _CAPITAL_EXTRA_DPD = { slot12: 1.0, slot07: 0.9 };
+
+  function _higherPriorityOrdClaimForYear(yearIdx, selfId) {
+    var claim    = 0;
+    var coreInt  = root.__rettSupplementalInterest      || {};
+    var extraInt = root.__rettSupplementalExtraInterest || {};
+    var core     = root.__rettSupplemental              || {};
+    var extra    = root.__rettSupplementalExtra         || {};
+    var selfDpd  = (selfId && _CAPITAL_EXTRA_DPD[selfId] != null)
+                   ? _CAPITAL_EXTRA_DPD[selfId] : Infinity;
+    // Oil & Gas — perYear[yearIdx].deduction (multi-year IDC deployment).
+    if (coreInt.oilGas === true && core.oilGas && core.oilGas.lastResult) {
+      var ogpy = core.oilGas.lastResult.perYear;
+      if (Array.isArray(ogpy) && ogpy[yearIdx]) {
+        claim += Math.max(0, _num(ogpy[yearIdx].deduction) || _num(ogpy[yearIdx].absorbed));
+      }
+    }
+    // Delphi — perYear[yearIdx].ordExpense (multi-year) or Y0 allocation.
+    if (coreInt.delphi === true && core.delphi && core.delphi.lastResult) {
+      var dr  = core.delphi.lastResult;
+      var dpy = dr.perYear;
+      if (Array.isArray(dpy) && dpy[yearIdx]) {
+        claim += Math.max(0, _num(dpy[yearIdx].ordExpense));
+      } else if (yearIdx === 0 && dr.allocations) {
+        claim += Math.max(0, _num(dr.allocations.ordinaryExpense));
+      }
+    }
+    // Free extras — PTET, Augusta — detail.ordOffsetY0 / ordOffsetRestPerYear.
+    ['ptet', 'slot08'].forEach(function (id) {
+      if (extraInt[id] !== true) return;
+      var lr = extra[id] && extra[id].lastResult;
+      if (!lr || !lr.detail) return;
+      var yc = _num(lr.detail.yearCount) || 1;
+      if (yearIdx >= yc) return;
+      claim += Math.max(0, (yearIdx === 0)
+        ? _num(lr.detail.ordOffsetY0)
+        : _num(lr.detail.ordOffsetRestPerYear));
+    });
+    // Higher-YIELD capital extras outrank this one: Farm (1.0) before Equipment
+    // Leasing (0.9). Each computes after the higher-yield one (see _CALCS
+    // order) so its perYear[] is available here. This makes the better supp
+    // deterministically win scarce out-year headroom; the lower-yield supp
+    // takes only what's left.
+    Object.keys(_CAPITAL_EXTRA_DPD).forEach(function (id) {
+      if (id === selfId) return;
+      if (_CAPITAL_EXTRA_DPD[id] <= selfDpd) return;   // only strictly higher yield
+      if (extraInt[id] !== true) return;
+      var lr = extra[id] && extra[id].lastResult;
+      var py = lr && Array.isArray(lr.perYear) ? lr.perYear[yearIdx] : null;
+      if (py) claim += Math.max(0, _num(py.deduction) || _num(py.absorbed));
+    });
+    return claim;
+  }
+
+  function _deployCapitalOrdSupp(cfg, totalInvestment, deductionPerDollar, selfId) {
+    var inv = Math.max(0, _num(totalInvestment));
+    var dpd = Math.max(0, _num(deductionPerDollar));
+    var n   = Math.max(1, _strategyYearCount(cfg));
+    var baseOrd = Math.max(0, _num(cfg.baseOrdinaryIncome));
+    // §1245 (ordinary-rate) vs §1250 (unrecaptured, capped at 25% federal)
+    // recapture. The deduction waterfalls ordinary -> §1245 -> §1250 the SAME
+    // way Oil & Gas's _computeYearImpact does, so the temp-page Results column
+    // and the honest-benefit recompute reduce the right income buckets (the
+    // prior lumped `absorbed` left depreciation recapture showing full even
+    // when the supp had absorbed it — advisor 2026-06-10). Recapture is a
+    // Year-0-only event (§453(i)); out-years see ordinary income only.
+    // EXPOSED recapture only — the §1250 slice Brooklyn already absorbs is
+    // removed so the deduction doesn't waterfall into (and over-deploy capital
+    // to chase) recapture the primary strategy has wiped (advisor 2026-06-11).
+    var _er = _exposedRecap(cfg);
+    var recap1245 = _er.recap1245;
+    var recap1250 = _er.recap1250;
+    // Per-dollar tax saved by bucket: ordinary + §1245 at the ordinary
+    // marginal; §1250 federal is capped at 25% (plus state, which taxes it as
+    // ordinary). These feed the master-solver ESTIMATE; the honest recompute
+    // (authoritative for display + reconciliation) re-derives the exact tax.
+    var fedOrdM = _fedMarginalAt(cfg, baseOrd);
+    var stateM  = _stateMarginalAt(cfg, baseOrd);
+    var ordM    = fedOrdM + stateM;
+    var rate1250 = Math.min(fedOrdM, 0.25) + stateM;
+    var perYear = [];
+    var remainingInv = inv;
+    for (var y = 0; y < n; y++) {
+      var withRecap  = (y === 0);
+      var yRecap1245 = withRecap ? recap1245 : 0;
+      var yRecap1250 = withRecap ? recap1250 : 0;
+      // Residual pool = this year's full ordinary+recap pool LESS what the
+      // higher-priority funded supps already claim that year (they consume
+      // ordinary first, then §1245, then §1250), so the deduction lands where
+      // there's actually room. The master solver re-rations realized benefit.
+      var claim     = _higherPriorityOrdClaimForYear(y, selfId);
+      var residOrd  = Math.max(0, baseOrd - claim);
+      var claimRec  = Math.max(0, claim - baseOrd);
+      var resid1245 = Math.max(0, yRecap1245 - Math.min(claimRec, yRecap1245));
+      var resid1250 = Math.max(0, yRecap1250 - Math.max(0, claimRec - yRecap1245));
+      var pool      = residOrd + resid1245 + resid1250;
+      var maxInvThisYear = dpd > 0 ? (pool / dpd) : 0;
+      var invY      = Math.min(remainingInv, maxInvThisYear);
+      var dedY      = invY * dpd;
+      var absorbedY = Math.min(dedY, pool);
+      // Split absorbed deduction ordinary -> §1245 -> §1250.
+      var absOrd  = Math.min(absorbedY, residOrd);
+      var absRem  = absorbedY - absOrd;
+      var abs1245 = Math.min(absRem, resid1245);
+      var abs1250 = Math.min(absRem - abs1245, resid1250);
+      perYear.push({
+        investment:   invY,
+        deduction:    dedY,
+        absorbed:     absorbedY,
+        absorbedOrd:  absOrd,
+        absorbed1245: abs1245,
+        absorbed1250: abs1250,
+        nolGenerated: Math.max(0, dedY - absorbedY),  // ~0 by construction
+        totalSaved:   absOrd * ordM + abs1245 * ordM + abs1250 * rate1250,
+        marginal:     ordM,
+        includeRecap: withRecap,
+        pool:         pool
+      });
+      remainingInv -= invY;
+    }
+    var sum = function (k) { return perYear.reduce(function (s, p) { return s + (Number(p[k]) || 0); }, 0); };
+    return {
+      perYear:            perYear,
+      netBenefit:         sum('totalSaved'),
+      totalDeduction:     sum('deduction'),
+      totalAbsorbed:      sum('absorbed'),
+      deployedInvestment: inv - Math.max(0, remainingInv),
+      // Investment the deduction couldn't absorb across ANY year — the
+      // total deduction exceeds every year's pool combined. The optimizer
+      // should (and does) size the knob down to avoid this; surfaced so a
+      // drill-down can flag over-investment.
+      unusedInvestment:   Math.max(0, remainingInv)
+    };
   }
 
   function _calcCharitableGifts() {
@@ -535,31 +733,44 @@
     if (amount <= 0) return _writeResult('slot07', null);
     var deprPct = Math.min(1, Math.max(0, _num(st.depreciablePct) / 100));
     var yr1Loss = amount * deprPct;
-    // Active-investor gate: 100 hours/year is the §469-5T(a)(3) test
-    // ("the individual's participation constitutes substantially all
-    // of the participation by all individuals"). The yes/no toggle
-    // captures whether the client is willing to commit those hours;
-    // without it the K-1 loss is passive and suspended (no net benefit).
-    // (Field renamed from materialPart → commitHours per advisor
-    // 2026-05-06; old saved cases with materialPart=true still pass
-    // through via the back-compat read below.)
-    var active = !!(st.commitHours || st.materialPart);
-    var nonPassiveRaw = active ? yr1Loss : 0;
-    // Cap at the Y0 ordinary-income pool — see _capDeductionAtOrdPool
-    // for full rationale. K-1 losses beyond this become unused NOL.
-    var nonPassive = _capDeductionAtOrdPool(cfg, nonPassiveRaw);
-    var marginal = _fedMarginal(cfg) + _stateMarginal(cfg);
+    // Material participation (§469-5T(a)(3), the 100-hours test) is now
+    // ASSUMED whenever the client marks this supplemental Interested
+    // (advisor 2026-06-10): expressing interest means they commit to the
+    // participation, so the K-1 loss is non-passive and offsets ordinary
+    // income. Previously this was gated on a separate "willing to commit
+    // 100 hours?" toggle (commitHours), which defaulted off and left the
+    // loss suspended — the strategy showed $0 even when funded. The toggle
+    // is retired; interest is the commitment.
+    //
+    // Multi-year (advisor 2026-06-10): the K-1 loss = investment ×
+    // depreciable %. Rather than cap it at a single (possibly saturated)
+    // Year-0 ordinary pool, waterfall the deduction across the strategy's
+    // recognition years so out-year headroom is used when Year 0 is full.
+    // The master solver rations the resulting perYear[] against the Y0 and
+    // Y1+ pools, the same as Oil & Gas.
+    var dep = _deployCapitalOrdSupp(cfg, amount, deprPct, 'slot07');
+    var y0 = dep.perYear[0] || { deduction: 0, absorbed: 0, marginal: 0 };
     _writeResult('slot07', {
-      netBenefit: Math.max(0, Math.round(nonPassive * marginal)),
+      netBenefit: Math.max(0, Math.round(dep.netBenefit)),
       investment: Math.round(amount),
-      marginalRate: marginal,
+      marginalRate: y0.marginal,
+      perYear: dep.perYear,
       detail: {
         yr1Loss: Math.round(yr1Loss),
-        nonPassive: Math.round(nonPassive),
-        nonPassiveUncapped: Math.round(nonPassiveRaw),
-        deductionCappedByOrdPool: nonPassiveRaw > nonPassive,
+        // Y0 slice — the master solver's _ordInfoOf reads these as the
+        // Year-0 demand (uncapped deduction) + basis (absorbed).
+        nonPassive: Math.round(y0.absorbed),
+        nonPassiveUncapped: Math.round(y0.deduction),
+        deductionCappedByOrdPool: dep.totalDeduction > dep.totalAbsorbed + 1,
         ordIncomePool: Math.round(_ordIncomePoolY0(cfg)),
-        suspended: active ? 0 : Math.round(yr1Loss)
+        suspended: 0,
+        // Multi-year deployment summary (display + reconciliation).
+        yearCount:         dep.perYear.length,
+        totalAbsorbed:     Math.round(dep.totalAbsorbed),
+        totalDeduction:    Math.round(dep.totalDeduction),
+        unusedInvestment:  Math.round(dep.unusedInvestment),
+        perYearAbsorbed:   dep.perYear.map(function (p) { return Math.round(p.absorbed); }),
+        perYearInvestment: dep.perYear.map(function (p) { return Math.round(p.investment); })
       }
     });
   }
@@ -736,10 +947,16 @@
     var st = _state('slot11');
     var cost = Math.max(0, _num(st.propertyCost));
     if (cost <= 0) return _writeResult('slot11', null);
-    var qualifies = (_num(st.avgUseDays) <= 7) && !!st.materialPart;
+    // Material participation is ASSUMED when Interested (advisor
+    // 2026-06-10) — same principle as Equipment Leasing. The remaining
+    // gate is the factual STR test: average guest stay ≤ 7 days (the
+    // §1.469-1T(e)(3)(ii)(A) short-term-rental exception that makes the
+    // loss non-passive). That's a property characteristic, not a
+    // willingness question, so it stays.
+    var qualifies = (_num(st.avgUseDays) <= 7);
     if (!qualifies) {
       return _writeResult('slot11', { netBenefit: 0, investment: Math.round(cost),
-        detail: { reason: 'Requires avg stay ≤7 days AND material participation' } });
+        detail: { reason: 'Requires average guest stay ≤ 7 days (short-term-rental test)' } });
     }
     var landPct = Math.min(0.5, Math.max(0, _num(st.landPct) / 100));
     var depreciable = cost * (1 - landPct);
@@ -795,9 +1012,16 @@
     var sec179 = Math.min(cost, sec179Cap, bizIncome);
     var residual = cost - sec179;
     var bonus = residual;
-    var totalRaw = sec179 + bonus;
-    var total = _capDeductionAtOrdPool(cfg, totalRaw);
-    var marginal = _fedMarginal(cfg) + _stateMarginal(cfg);
+    // §179 + 100% bonus together expense the FULL equipment cost: §179 is
+    // limited by business taxable income, but 100% bonus has no such limit
+    // and picks up whatever §179 can't — so total deduction = cost, i.e.
+    // deduction-per-invested-dollar = 1.0. Multi-year (advisor 2026-06-10):
+    // waterfall the cost across the strategy's recognition years (annual
+    // equipment purchases each generate fresh §179/bonus) so out-year
+    // ordinary headroom absorbs the deduction when Year 0 is saturated,
+    // instead of stranding the supp at $0 — see _deployCapitalOrdSupp.
+    var dep = _deployCapitalOrdSupp(cfg, cost, 1.0, 'slot12');
+    var y0 = dep.perYear[0] || { deduction: 0, absorbed: 0, marginal: 0 };
     // investment = the equipment purchase price. Farm DOES draw from the
     // sale-proceeds capital pool: a dollar spent on farm equipment can't
     // also fund Brooklyn (same rivalry as Oil & Gas / Delphi). Reporting
@@ -809,20 +1033,30 @@
     // detail.assetCost so a drill-down on the tax benefit can show the
     // cash-vs-equipment split for the client.
     _writeResult('slot12', {
-      netBenefit: Math.max(0, Math.round(total * marginal)),
+      netBenefit: Math.max(0, Math.round(dep.netBenefit)),
       investment: Math.round(cost),
       assetCost: Math.round(cost),
-      marginalRate: marginal,
+      marginalRate: y0.marginal,
+      perYear: dep.perYear,
       detail: {
         sec179:    Math.round(sec179),
         bonus:     Math.round(bonus),
-        total:     Math.round(total),
-        totalUncapped: Math.round(totalRaw),
-        deductionCappedByOrdPool: totalRaw > total,
+        // Y0 slice — _ordInfoOf reads total (Y0 absorbed) + totalUncapped
+        // (Y0 deduction) as the Year-0 basis + demand.
+        total:     Math.round(y0.absorbed),
+        totalUncapped: Math.round(y0.deduction),
+        deductionCappedByOrdPool: dep.totalDeduction > dep.totalAbsorbed + 1,
         ordIncomePool: Math.round(_ordIncomePoolY0(cfg)),
         bizIncome: Math.round(bizIncome),
         bizSource: stBiz > 0 ? 'card override' : 'Page-1 business revenue',
-        assetCost: Math.round(cost)
+        assetCost: Math.round(cost),
+        // Multi-year deployment summary (display + reconciliation).
+        yearCount:         dep.perYear.length,
+        totalAbsorbed:     Math.round(dep.totalAbsorbed),
+        totalDeduction:    Math.round(dep.totalDeduction),
+        unusedInvestment:  Math.round(dep.unusedInvestment),
+        perYearAbsorbed:   dep.perYear.map(function (p) { return Math.round(p.absorbed); }),
+        perYearInvestment: dep.perYear.map(function (p) { return Math.round(p.investment); })
       }
     });
   }
@@ -834,11 +1068,18 @@
   // registered) so reviving one is a single line back into this map +
   // the matching SPECS entry. (Charitable is parked for a future
   // redesign per advisor.)
+  // Order matters: the FREE supps (PTET, Augusta) compute BEFORE the capital
+  // ordinary-offset extras so the latter's _higherPriorityOrdClaimForYear sees
+  // their per-year claims and waterfalls into the uncontested out-years. Among
+  // the capital extras, the HIGHER-yield one (Farm slot12, 100c/$) computes
+  // before the lower-yield one (Equipment Leasing slot07, 90c/$) so Farm's
+  // claim is available for Equipment Leasing to defer to — making the better
+  // supp deterministically win scarce out-year headroom.
   var _CALCS = {
     ptet:            _calcPtet,
-    slot07:          _calcEquipmentLeasing,
     slot08:          _calcAugusta,
-    slot12:          _calcFarmEquipment
+    slot12:          _calcFarmEquipment,
+    slot07:          _calcEquipmentLeasing
   };
 
   // Public registration API for late-arriving calc modules. Pattern:

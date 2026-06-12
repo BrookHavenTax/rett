@@ -296,7 +296,16 @@ function _baseScenarioForYear(cfg, yr, gainTakenThisYear, recaptureThisYear) {
             // Falls back to ordOverride for backward-compat with cfg
             // objects that predate the wages split.
             wages: (cfg.wages != null ? _scaledBaseWages : ordOverride),
-            itemized: cfg.itemized || 0
+            itemized: cfg.itemized || 0,
+            // Pre-existing capital-loss carryforward (Sch D) the client
+            // is bringing INTO the projection from a prior year. Surfaces
+            // as opts.carriedLossPriorYear in tax-calc-federal, which
+            // applies the §1211(b) $3K ordinary offset (or $1.5K MFS).
+            // Currently only Y0 receives it; Y2+ baseline threading
+            // (capture each year's lossCarryforward → feed to next) is
+            // a follow-up that requires changes at the baseline loop
+            // call sites, not here. Audit R2 #7.
+            carriedLossPriorYear: (idx === 0) ? Math.max(0, Number(cfg.priorCapitalLossCF) || 0) : 0
       };
 }
 
@@ -769,13 +778,22 @@ function _estimateGainTaxRate(cfg) {
       const totalLT = Math.max(0,
             (cfg.salePrice || 0) - (cfg.costBasis || 0)
             - (cfg.acceleratedDepreciation || 0));
-      if (totalLT <= 0) return 0;
+      const recap   = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
+      // Probe BOTH gain and recapture together: a fully-depreciated
+      // building sold for less than basis+ad has totalLT=0 but the §1245
+      // recapture still produces a real Y0 ordinary tax bill that the
+      // cover-taxes carve must reserve cash for. Previously this function
+      // divided by totalLT only and returned 0 when totalLT<=0, silently
+      // disabling the entire cover-taxes carve in the recap-heavy regime.
+      // Audit R2 finding #3.
+      const totalBuckets = totalLT + recap;
+      if (totalBuckets <= 0) return 0;
       const yr = (cfg.year1 != null) ? Number(cfg.year1) : (new Date()).getFullYear();
-      const sWith    = _baseScenarioForYear(cfg, yr, totalLT);
-      const sWithout = _baseScenarioForYear(cfg, yr, 0);
+      const sWith    = _baseScenarioForYear(cfg, yr, totalLT, recap);
+      const sWithout = _baseScenarioForYear(cfg, yr, 0, 0);
       const taxWith    = _yearTaxes(sWith).total;
       const taxWithout = _yearTaxes(sWithout).total;
-      const rate = (taxWith - taxWithout) / totalLT;
+      const rate = (taxWith - taxWithout) / totalBuckets;
       return Math.max(0, Math.min(0.5, rate));
 }
 
@@ -1014,11 +1032,22 @@ function unifiedTaxComparison(cfg, opts) {
       var _y0RollToFirstInstallment = 0;
       if (_isInstallment) {
             var _y0Pool = _y0DownPayment + Math.max(0, recapture);
-            if (_y0Pool >= _smallestComboMin && _y0Pool > 0) {
-                  basisCash = _y0Pool;
+            // Supplementals (Oil & Gas, etc.) deploy their Year-0 investment
+            // out of the SAME Year-0 cash pool (down payment + recapture).
+            // Reserve their share BEFORE sizing Brooklyn's Y0 tranche, so the
+            // two together never exceed the cash actually paid that year.
+            // Without this, Brooklyn claims the whole pool and the supps are
+            // funded on top of it — deploying more in Y0 than the client
+            // received. cfg.suppY0Deployment is 0 for the rivalry's
+            // Brooklyn-yield probe (full-pool) and immediate sales, so this
+            // only reduces the displayed/optimized installment tranches.
+            var _suppY0Reserve = Math.max(0, Number(cfg.suppY0Deployment) || 0);
+            var _y0PoolForBrooklyn = Math.max(0, _y0Pool - _suppY0Reserve);
+            if (_y0PoolForBrooklyn >= _smallestComboMin && _y0PoolForBrooklyn > 0) {
+                  basisCash = _y0PoolForBrooklyn;
             } else {
                   basisCash = 0;
-                  _y0RollToFirstInstallment = _y0Pool;
+                  _y0RollToFirstInstallment = _y0PoolForBrooklyn;
             }
             _unparkedY1Gain = 0;
             _parkedGain = 0;
@@ -1052,8 +1081,31 @@ function unifiedTaxComparison(cfg, opts) {
             }
             _parkedGain = Math.max(0, totalLT - _unparkedY1Gain);
             basisCash = Math.min(_availTotal, _basisAndRecap + _unparkedY1Gain);
+            // Reserve supps' Y0 cash from Brooklyn's tranche (parallel to
+            // the installment branch above). Without this, the C-deferred
+            // structured-sale path over-deploys Year-0: Brooklyn claims
+            // the whole pool and the supps invest on top of it. Auto-
+            // downgrade Brooklyn to closed if the remainder falls below
+            // the smallest tiering combo's minimum.
+            {
+                  var _suppY0ReserveC = Math.max(0, Number(cfg.suppY0Deployment) || 0);
+                  var _basisCashAfterSuppC = Math.max(0, basisCash - _suppY0ReserveC);
+                  basisCash = (_basisCashAfterSuppC >= _smallestComboMin)
+                        ? _basisCashAfterSuppC : 0;
+            }
       } else {
-            basisCash = _availTotal;
+            // Strategy A immediate sale: full proceeds are available Y0.
+            // Reserve supps' Y0 deployment from Brooklyn's tranche so the
+            // two combined never exceed the Y0 cash actually received.
+            // Without this, a $2.5M sale with $1.2M of supp investment
+            // (e.g. Oil & Gas $500K + Farm $700K) showed Brooklyn at the
+            // full $2.5M and the supps on top of it. Brooklyn auto-
+            // downgrades to closed if the remainder falls below the
+            // smallest tiering combo's minimum (parallel to installment).
+            var _suppY0ReserveA = Math.max(0, Number(cfg.suppY0Deployment) || 0);
+            var _basisCashAfterSuppA = Math.max(0, _availTotal - _suppY0ReserveA);
+            basisCash = (_basisCashAfterSuppA >= _smallestComboMin)
+                  ? _basisCashAfterSuppA : 0;
             _unparkedY1Gain = 0;
             _parkedGain = 0;
       }
@@ -2076,6 +2128,77 @@ function unifiedTaxComparison(cfg, opts) {
 // Expose to global scope for parallel-run validation harness.
 if (typeof window !== 'undefined') {
       window.unifiedTaxComparison = unifiedTaxComparison;
+}
+
+// ── Per-render memoization (perf, 2026-06-10) ──────────────────────────
+// The supplemental auto-sizer / drop-one optimizer calls this engine tens of
+// THOUSANDS of times per render, measured ~96% with IDENTICAL (cfg, opts).
+// The engine is a pure function of (cfg, opts) + the constant TAX_DATA within
+// a render, so caching by a FULL serialization of (cfg, opts) returns exactly
+// the object the engine would have produced — zero output change. A full JSON
+// key can never COLLIDE (different inputs -> different string), so it can only
+// miss a cache opportunity, never serve a wrong result. Non-serializable cfg
+// bypasses the cache entirely. __rettClearTaxCache() is called once at the top
+// of each top-level render (buildInterestedSummary) so a cached result can't
+// outlive an input change, and so the lone idempotent consumer mutation
+// (row.baseline._incomes, guarded by `!_incomes`) starts each render fresh.
+if (typeof window !== 'undefined') {
+      var _utcRaw   = window.unifiedTaxComparison;
+      var _utcCache = new Map();
+      // Per-render memo for the low-level federal breakdown. Profiling
+      // (2026-06-12 audit) found computeFederalTaxBreakdown invoked ~107,000
+      // times in a single full render with only ~1,366 DISTINCT
+      // (ordinaryIncome, year, status, opts) tuples — a ~78x redundancy from
+      // the optimizer's nested rivalry / auto-size / drop-one passes all
+      // re-pricing the same scenarios. The function is a PURE function of its
+      // four arguments + the session-constant TAX_DATA, and EVERY field it
+      // returns is a primitive number/boolean (verified — no nested
+      // array/object), so a memo keyed on the fully-serialized args is
+      // bit-identical to recomputation. Safety: (1) never cache before
+      // TAX_DATA loads (a pre-load degenerate $0 result must not be served
+      // after the async fetch lands); (2) every consumer — hit OR miss —
+      // receives a SHALLOW CLONE, so a caller that mutates the result cannot
+      // poison the cached pristine copy; (3) cleared with _utcCache once per
+      // top-level render. Wrapping window.* intercepts bare-name callers
+      // exactly as the unifiedTaxComparison wrapper does (load order:
+      // tax-calc-federal.js -> this file).
+      var _cftbRaw   = window.computeFederalTaxBreakdown;
+      var _cftbCache = new Map();
+      window.__rettClearTaxCache = function () { _utcCache.clear(); _cftbCache.clear(); };
+      window.unifiedTaxComparison = function (cfg, opts) {
+            var key;
+            try {
+                  key = JSON.stringify(cfg) + '' + (opts != null ? JSON.stringify(opts) : '');
+            } catch (e) {
+                  return _utcRaw(cfg, opts);   // non-serializable -> bypass cache
+            }
+            var hit = _utcCache.get(key);
+            if (hit !== undefined) return hit;
+            var r = _utcRaw(cfg, opts);
+            _utcCache.set(key, r);
+            return r;
+      };
+
+      if (typeof _cftbRaw === 'function') {
+            window.computeFederalTaxBreakdown = function (ordinaryIncome, year, status, opts) {
+                  // Bypass the memo until tax data is loaded (pre-load returns
+                  // a degenerate $0 result that must not be cached).
+                  var _ready = (typeof TAX_DATA !== 'undefined') && TAX_DATA && TAX_DATA.federal;
+                  if (!_ready) return _cftbRaw(ordinaryIncome, year, status, opts);
+                  var key;
+                  try {
+                        key = ordinaryIncome + '|' + year + '|' + status + '|' +
+                              (opts != null ? JSON.stringify(opts) : '');
+                  } catch (e) {
+                        return _cftbRaw(ordinaryIncome, year, status, opts);  // non-serializable -> bypass
+                  }
+                  var hit = _cftbCache.get(key);
+                  if (hit !== undefined) return Object.assign({}, hit);   // clone: caller can't poison cache
+                  var r = _cftbRaw(ordinaryIncome, year, status, opts);
+                  _cftbCache.set(key, r);                                  // store pristine
+                  return Object.assign({}, r);                            // return a clone
+            };
+      }
 }
 
 

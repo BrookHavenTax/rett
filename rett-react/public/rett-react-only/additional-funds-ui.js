@@ -1,5 +1,5 @@
 // React-only mirror of the inline <script> block at the bottom of upstream
-// index.html (synced cd22150f). See useLegacyEngine.ts REACT_ONLY_SCRIPTS.
+// index.html (synced bad4726). See useLegacyEngine.ts REACT_ONLY_SCRIPTS.
 (function () {
   function _el(id) { return document.getElementById(id); }
   function _num(v) {

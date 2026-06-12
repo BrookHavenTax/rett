@@ -392,10 +392,10 @@
     if (!comp || !Array.isArray(comp.rows) || !comp.rows.length) return '';
 
     // Total cash inflow over the horizon: sale price (one-time, hits Y1)
-    // plus ordinary income for each year, inflated 2%/yr to mirror the
-    // tax engine's bracket projection. Same denominator drives both
-    // pies, so the green "Kept" slice difference reads as pure planning
-    // value.
+    // plus ordinary income for each year. Income is held FLAT — we do NOT
+    // project it upward (only the tax brackets inflate); the same denominator
+    // drives both pies, so the green "Kept" slice difference reads as pure
+    // planning value (advisor 2026-06-10: income is frozen across the horizon).
     var cfg = (result && result.config) || {};
     var salePrice = cfg.salePrice || (
       (typeof window.__rettSumPropertyField === 'function')
@@ -403,12 +403,7 @@
         : (parseUSD((document.getElementById('sale-price') || {}).value) || 0)
     );
     var baseOrd = cfg.baseOrdinaryIncome || 0;
-    var inflRate = (window.TAX_DATA && typeof window.TAX_DATA.inflationRate === 'number')
-      ? window.TAX_DATA.inflationRate : 0.02;
-    var totalOrd = 0;
-    for (var i = 0; i < years.length; i++) {
-      totalOrd += baseOrd * Math.pow(1 + inflRate, i);
-    }
+    var totalOrd = baseOrd * years.length;
     var totalInflow = salePrice + totalOrd;
     if (totalInflow <= 0) return '';
 
@@ -675,26 +670,39 @@
       var r = run(pm);
       if (r) { _seen[pm] = 1; scored.push(r); }
     }
-    function bestPm() { return Math.round(scored.reduce(function (a, b) { return b.net > a.net ? b : a; }).frac * 1000); }
-    // Coarse pass: 5% steps (50 permille), 100% → 30%.
+    // Excess-carryover penalty (advisor 2026-06-11). The raw-net measure
+    // (savings − fees) already charges the fee on Brooklyn loss that only
+    // STRANDS as carryforward (no gain left to absorb it), but the excess-loss
+    // fee CREDIT refunds that fee downstream — so without an explicit penalty
+    // the optimizer rides the credit-flat tail and over-deploys into a large
+    // unused carryover (e.g. Strategy C stranding $2M+). Penalize each scored
+    // deployment by WASTE_PENALTY × (lossGenerated − lossApplied) so the pick
+    // lands where the loss is actually usable. Tune WASTE_PENALTY up to fight
+    // carryover harder, down to favor net.
+    var WASTE_PENALTY = 0.5;
+    function score(s) { return s.net - WASTE_PENALTY * Math.max(0, Number(s.waste) || 0); }
+    function bestPm() { return Math.round(scored.reduce(function (a, b) { return score(b) > score(a) ? b : a; }).frac * 1000); }
+    // Coarse → mid → fine, each pass narrowing around the prior winner. A
+    // coarse 10% grid then 5% then 1% evaluates far fewer points than a flat
+    // 5% sweep + 1% + 0.1% refinements (advisor 2026-06-11 — the sweep was
+    // getting clunky), and 1% resolution is plenty for the dollar size here.
+    // Coarse pass: 10% steps, 100% → 30%.
     consider(1000);
-    for (var p = 950; p >= 300; p -= 50) consider(p);
-    // Fine pass: 1% steps (10 permille) within ±5% of the coarse winner.
+    for (var p = 900; p >= 300; p -= 100) consider(p);
+    // Mid pass: 5% steps within ±10% of the coarse winner.
     var bc = bestPm();
-    for (var q = bc - 50; q <= bc + 50; q += 10) consider(q);
-    // Ultra-fine pass: 0.1% steps (1 permille) within ±1% of the fine
-    // winner — lands the net peak on its clean tranche boundary instead of
-    // overshooting into a tiny wasteful final tranche.
+    for (var q = bc - 100; q <= bc + 100; q += 50) consider(q);
+    // Fine pass: 1% steps within ±5% of the mid winner.
     var bf = bestPm();
-    for (var u = bf - 10; u <= bf + 10; u++) consider(u);
+    for (var u = bf - 50; u <= bf + 50; u += 10) consider(u);
     var maxNet = scored.reduce(function (m, s) { return Math.max(m, s.net); }, -Infinity);
     if (maxNet <= 0) return 0;                 // even the best deployment loses money → don't deploy
-    // Pick the net-MAX deployment; among near-exact ties (within $250 — e.g.
-    // a strategy whose excess capital is inert, so several deployments net
-    // identically) prefer the SMALLEST so we don't park idle capital. The
-    // tight tolerance prevents drifting BELOW the peak and giving up real net.
+    // Pick the SCORE-max deployment (net penalized for stranded carryover);
+    // among near-ties (within $250) prefer the SMALLEST so we don't park idle
+    // capital or generate carryover we don't need.
+    var maxScore = scored.reduce(function (m, s) { return Math.max(m, score(s)); }, -Infinity);
     var tol = 250;
-    var winners = scored.filter(function (s) { return s.net >= maxNet - tol; })
+    var winners = scored.filter(function (s) { return score(s) >= maxScore - tol; })
                         .sort(function (a, b) { return a.frac - b.frac; });
     return winners.length ? Math.min(1, Math.max(0, winners[0].frac)) : 1;
   }
@@ -1283,6 +1291,35 @@
     }
     var userDurationFallback = baseCfg.structuredSaleDurationMonths || 36;
     var best = null;
+
+    // Supplemental Year-0 cash floor (cash-flow timing). Supplementals
+    // deploy their investment in Year 0, so on installment / structured
+    // sales the Y0 cash (down payment) must be at least the supplemental
+    // capital — otherwise the model "invests" more in Y0 than the client
+    // received. Rather than capping the supps, we RAISE the down payment
+    // to cover them: the down-payment optimizers below only consider D >=
+    // this floor, so they still pick the highest-net payment that funds the
+    // supplementals (the user's "adjust the payment, solve for best net").
+    // Computed once — the supplemental deployment is independent of the
+    // strategy / horizon / combo / down-payment being swept. Zero when no
+    // capital-consuming supp is funded (then there's no floor, no change).
+    // Supp-blind gate (advisor 2026-06-08): the standalone Projection-tab
+    // path (runFullPipeline) passes _suppBlind so the auto-pick ignores the
+    // supplemental draw entirely — Brooklyn is sized as if no supp exists,
+    // so the headline net HOLDS when supps are toggled on Page-5. The
+    // combined Summary/Temp path (buildInterestedSummary) leaves _suppBlind
+    // unset, keeping the down-payment floor that funds the supps.
+    var _suppY0Floor = 0;
+    if (!(baseCfg && baseCfg._suppBlind)) {
+      try {
+        if (typeof root.runAllocator === 'function') {
+          var _aFloor = root.runAllocator(Math.max(0, Number(baseCfg.availableCapital) || 0));
+          if (_aFloor && Number.isFinite(_aFloor.allocatedToSupplementals)) {
+            _suppY0Floor = Math.max(0, Math.round(_aFloor.allocatedToSupplementals));
+          }
+        }
+      } catch (e) { _suppY0Floor = 0; }
+    }
     // Dial-back-aware combo selection (2026-05-29): the sweep scores every
     // candidate at FULL deployment, but a combo can over-deploy at full
     // (lower full net) yet dial back to a HIGHER net than the full-winner —
@@ -1343,6 +1380,9 @@
           // a down beyond what cash the buyer brings, and can't fund
           // Brooklyn beyond availableCapital.
           var _dMax = Math.min(_contractPrice, _availTotal);
+          // Down payment must cover the supplemental Y0 deployment (clamped
+          // to what the proceeds can pay). 0 when no supp is funded.
+          var _floorC = Math.min(Math.max(0, _suppY0Floor), _dMax);
           var _smallestMin = 1000000;
           var _recapC = Math.max(0, Number(cfgSection.acceleratedDepreciation) || 0);
           // First-deposit account-opening gate (advisor 2026-05-27):
@@ -1359,6 +1399,7 @@
           }
 
           var _evalD = function (D) {
+            if (D < _floorC - 0.5) return null;   // must fund the supps' Y0 deployment
             if (!_firstDepositLegalC(D)) return null;
             var typedCfg = _scenarioCfgFor(type, cfgSection, 3, 36, null, null, D);
             var m = _scenarioMetrics(typedCfg);
@@ -1370,10 +1411,15 @@
             return m;
           };
 
+          // Always evaluate the supp floor itself so a feasible D that
+          // funds the supplementals stays in the running even if the
+          // coarse grid steps over it.
+          if (_floorC > 0) _evalD(_floorC);
           // Coarse pass at 0%, 10%, 20%, ..., 100% of D_max.
           var coarseBest = null;
           for (var ci = 0; ci <= 10; ci++) {
             var D = Math.round(_dMax * (ci / 10));
+            if (D < _floorC - 0.5) continue;
             if (!_firstDepositLegalC(D)) continue;
             var mc = _evalD(D);
             if (mc && (!coarseBest || mc.net > coarseBest.net)) {
@@ -1384,14 +1430,13 @@
           // SPIKES at the Schwab combo minimums ($1M for 145/45, $3M for
           // 200/100). At D = combo_min, the Y0 deposit opens that combo
           // exactly at the floor, generating the maximum age-0 loss
-          // density. Between spikes net drops by ~$15K because the Y0
-          // tranche either over-shoots the floor (wasted capacity vs
-          // restarting fresh at the next tier) or under-shoots (cash
-          // rolls into Y1 with no Y0 absorption). The 10% coarse grid
-          // can step OVER these spikes (e.g. with $4.9M D_max it samples
-          // $0, $490K, $980K, $1.47M — missing $1M and $3M). Explicitly
-          // probe the combo-min boundaries so the optimum lands on the
-          // spike when it dominates.
+          // density. Collect ALL near-winning candidates (within 5% of
+          // the coarse leader) so the fine refinement runs around each —
+          // not just the single coarse leader. Audit R2 #6 caught the
+          // pre-fix gap: a combo-min D that was the SECOND-best coarse
+          // candidate never got refined, missing peaks just above the
+          // tranche floor.
+          var refineSeeds = coarseBest ? [coarseBest] : [];
           if (typeof root.listSchwabCombosForStrategy === 'function') {
             try {
               var _stratKeyC = (cfgSection.tierKey || cfgSection.strategyKey || 'beta1');
@@ -1405,18 +1450,28 @@
                 if (Dbound > _dMax) return;
                 if (!_firstDepositLegalC(Dbound)) return;
                 var mb = _evalD(Dbound);
-                if (mb && (!coarseBest || mb.net > coarseBest.net)) {
+                if (!mb) return;
+                if (!coarseBest || mb.net > coarseBest.net) {
                   coarseBest = { D: Dbound, net: mb.net };
                 }
+                // Collect this boundary as a refine seed if it's within
+                // 5% of the (running) best net — protects against the
+                // case where the optimum sits just above a tranche floor
+                // that wasn't itself the absolute coarse winner.
+                refineSeeds.push({ D: Dbound, net: mb.net });
               });
             } catch (e) { /* keep coarse winner */ }
           }
-          // Fine pass ±10% of D_max in 2% steps around coarse peak.
+          // Refine around each seed within 5% of the current best net.
+          // Fine pass ±10% of D_max in 2% steps; ultra ±2% in 0.5% steps.
           var fineBest = coarseBest;
-          if (coarseBest) {
+          var bestNetSoFar = coarseBest ? coarseBest.net : -Infinity;
+          var threshold = bestNetSoFar * 0.95;
+          refineSeeds.forEach(function (seed) {
+            if (!seed || seed.net < threshold) return;
             for (var fstep = 1; fstep <= 5; fstep++) {
               [-1, 1].forEach(function (sign) {
-                var D = Math.round(coarseBest.D + sign * fstep * 0.02 * _dMax);
+                var D = Math.round(seed.D + sign * fstep * 0.02 * _dMax);
                 if (D < 0 || D > _dMax) return;
                 if (!_firstDepositLegalC(D)) return;
                 var mf = _evalD(D);
@@ -1425,8 +1480,8 @@
                 }
               });
             }
-          }
-          // Ultra-fine ±2% in 0.5% steps.
+          });
+          // Ultra-fine ±2% in 0.5% steps around the fine leader.
           if (fineBest) {
             for (var ustep = 1; ustep <= 4; ustep++) {
               [-1, 1].forEach(function (sign) {
@@ -1461,23 +1516,70 @@
           var _bContractPrice = Math.max(0, Number(cfgSection.salePrice || 0)
                 - Number(cfgSection.acceleratedDepreciation || 0));
           var _bAvail = Math.max(0, Number(cfgSection.availableCapital || 0));
-          var _bDMax = Math.min(_bContractPrice, _bAvail);
-          var _bSmallestMin = 1000000;
+          // D ceiling is the contract price (sale − recap), not the
+          // supp-reduced availableCapital. The down payment is buyer cash
+          // — it has nothing to do with how much capital Brooklyn has to
+          // deploy. Bug B (audit handoff 2026-06-08): pre-fix, when supps
+          // drained the reduced cap below Brooklyn's $1M min, _bDMax also
+          // capped at that small remainder, preventing D from rising to
+          // fund the supps. Result: D=$0 picked, supps "deployed" with
+          // phantom $1.4M that the Y0 cash pool can't actually cover.
+          var _bDMax = _bContractPrice;
           var _bRecap = Math.max(0, Number(cfgSection.acceleratedDepreciation) || 0);
+          // Supp-funding down-payment floor (advisor 2026-06-08, model:
+          // "recognize gain to fund"). When the master solver has funded a
+          // capital-drawing supplemental, the seller needs Year-0 cash to
+          // pay for it — and that cash comes from the sale proceeds, i.e.
+          // by recognizing some gain up front (raising the down payment).
+          // The Year-0 cash pool is D + recap, so D only needs to cover
+          // the supp deployment beyond what recapture cash already
+          // provides: D >= suppY0Floor - recap.
+          //
+          // This was briefly zeroed (the "supps draw from side capital"
+          // experiment) on a BROOKLYN-ONLY read: at $7M/$200K-recap/$500K
+          // O&G, raising D to $300K cost ~$24K of Brooklyn net, so D=$0
+          // looked better. But that ignored the supplemental: at D=$0 the
+          // $200K recap cash funds only ~$200K of O&G (~$76K benefit); at
+          // D=$300K the full $500K funds (~$190K benefit). JOINT net is
+          // ~$90K HIGHER with the floor. The master solver only funds a
+          // supp when it beats Brooklyn per dollar, and the deferral cost
+          // of recognizing D*GP gain a year early is small relative to a
+          // funded supp's ordinary-offset benefit — so when a supp is
+          // funded, raising D to cash it is virtually always net-positive.
+          // The floor is gated by _suppBlind above (standalone projection
+          // keeps _suppY0Floor = 0, so this is 0 there and the headline
+          // net still holds).
+          var _floorB = Math.min(Math.max(0, _suppY0Floor - _bRecap), _bDMax);
+          var _bSmallestMin = 1000000;
           // Account opens with the first deposit. Y0 deposit pool =
           // down-payment + recapture cash. If the pool clears $1M the
           // account opens at Y0; otherwise the pool rolls into the Y1
           // installment and that combined deposit must clear $1M.
           function _firstDepositLegalB(weights, D) {
+            // Pool = D + recap, less supps' Y0 deployment (which the engine
+            // reserves from the pool before sizing Brooklyn's tranche).
+            // Previously this check used the raw pool, so the optimizer
+            // believed Brooklyn opened at pool >= $1M even when supps ate
+            // it down below the min — pushing D upward chasing a phantom
+            // Brooklyn benefit.
             var pool = D + _bRecap;
-            if (pool >= _bSmallestMin - 0.5) return true;   // Y0 opens
+            var poolAfterSupp = Math.max(0, pool - _suppY0Floor);
+            if (poolAfterSupp >= _bSmallestMin - 0.5) return true;   // Y0 opens
             var w0 = (weights && Number.isFinite(weights[0])) ? weights[0] : 0;
             var firstInstall = (_bContractPrice - D) * w0;
-            return (firstInstall + pool) >= _bSmallestMin - 0.5;
+            return (firstInstall + poolAfterSupp) >= _bSmallestMin - 0.5;
           }
 
           function _evalB(weights, D) {
-            D = D || 0;
+            // Default to the supp FLOOR (not 0). The weight-selection passes
+            // call _evalB(weights) with no D to compare installment splits;
+            // at D=0 the floor would reject them all and collapse weight
+            // selection. Comparing schedules at the floored down payment is
+            // both feasible and correct (we want the best split at a payment
+            // that funds the supps). Explicit D values from the down-payment
+            // sweeps are honored as-is (and still floor-checked below).
+            D = (D == null) ? _floorB : D;
+            if (D < _floorB - 0.5) return null;   // must fund the supps' Y0 deployment
             if (!_firstDepositLegalB(weights, D)) return null;
             var typedCfgB = _scenarioCfgFor('B', cfgSection, nForHor, userDurationFallback, null, weights, D);
             var mB = _scenarioMetrics(typedCfgB);
@@ -1502,8 +1604,15 @@
           function _sweepBDCoarse(lockedWeights) {
             if (_bDMax <= 0) return null;
             var coarseBest = null;
+            // Evaluate the supp floor itself so a feasible D that funds the
+            // supplementals stays in the running even if the grid skips it.
+            if (_floorB > 0) {
+              var mFloor = _evalB(lockedWeights, _floorB);
+              if (mFloor) { coarseBest = mFloor; _maybeUpdateBest(mFloor); }
+            }
             for (var ci = 0; ci <= 10; ci++) {
               var D = Math.round(_bDMax * (ci / 10));
+              if (D < _floorB - 0.5) continue;
               if (!_firstDepositLegalB(lockedWeights, D)) continue;
               var m = _evalB(lockedWeights, D);
               if (m && (!coarseBest || m.metrics.net > coarseBest.metrics.net)) coarseBest = m;
@@ -3103,6 +3212,43 @@
     return Math.round(bf * (excess / totalLossGen));
   }
 
+  // Honest (recompute-based) supplemental benefit for an entry. Derives the
+  // SAME comp the Temp page uses (partial-deploy dial-back + engine flavor)
+  // and hands it to the temp-page helper, which recomputes the actual stacked
+  // tax saved by the funded supps. Replaces the master solver's standalone-
+  // marginal-rate estimate, which overstates when supps stack (advisor
+  // 2026-06-10). Returns 0 if anything's unavailable so callers fall back.
+  function _honestSuppBenefitForEntry(e, solverOut) {
+    // Returns null when it CANNOT compute (so callers keep the solver value
+    // rather than zeroing a real benefit); 0 only when there genuinely are no
+    // funded supps; otherwise the recomputed honest benefit.
+    if (!e || !e.cfg) return null;
+    if (typeof root.__rettHonestSuppBenefit !== 'function') return null;
+    if (typeof root.unifiedTaxComparison !== 'function') return null;
+    var funded = (solverOut && Array.isArray(solverOut.supplementals))
+      ? solverOut.supplementals.filter(function (s) {
+          return s && s.enabled && s.available && s.rivalry && s.rivalry.funded;
+        })
+      : [];
+    if (!funded.length) return 0;
+    var ecfg = e.cfg;
+    var _pd = e._partialDeploy;
+    if (_pd && Number.isFinite(Number(_pd.deployed)) &&
+        Math.round(Number(_pd.deployed)) !== Math.round(Number(ecfg.availableCapital) || 0)) {
+      var _dep = Math.max(0, Math.round(Number(_pd.deployed)));
+      ecfg = Object.assign({}, ecfg, { availableCapital: _dep, investment: _dep, investedCapital: _dep });
+    }
+    if (typeof root.rettFlavorEngineCfg === 'function') {
+      try { ecfg = root.rettFlavorEngineCfg(ecfg); } catch (err) { /* */ }
+    }
+    var comp;
+    try { comp = root.unifiedTaxComparison(ecfg); } catch (err) { return null; }
+    if (!comp || !Array.isArray(comp.rows)) return null;
+    var v = Number(root.__rettHonestSuppBenefit(comp, funded, { chosen: e.type, cfg: e.cfg }));
+    return Number.isFinite(v) ? Math.max(0, v) : null;
+  }
+  root.__rettHonestSuppBenefitForEntry = _honestSuppBenefitForEntry;
+
   // Carryover-loss net-benefit credit (A/B/C). When the projection ends
   // with a residual short-term loss carryforward, the FIRST idle year
   // after deployment (when we'd otherwise show a blank temporary page)
@@ -3143,31 +3289,247 @@
     return Math.max(0, Math.round(t0 - t1));
   }
 
-  function buildInterestedSummary() {
+  function buildInterestedSummary(opts) {
     if (typeof collectInputs !== 'function') return null;
+    // Per-render tax-engine cache: clear it once at the TOP level only — NOT
+    // during the auto-sizer's recursive measurement passes (which set
+    // __rettSkipSuppAutoSize and rely on the warm cache for the 96%-duplicate
+    // engine calls). Clearing here bounds the cache to a single render so a
+    // memoized result can never outlive an input change (perf, 2026-06-10).
+    if (!root.__rettSkipSuppAutoSize && typeof root.__rettClearTaxCache === 'function') {
+      try { root.__rettClearTaxCache(); } catch (e) { /* */ }
+    }
+    // Supp-blind mode (Tab 4 Projection cards): compute each strategy's
+    // STANDALONE net as if no supplemental draws capital, so the headline
+    // net HOLDS when supps are toggled on Page 5. Strategy Summary / Temp /
+    // Admin call this with no opts → combined (supp-competed) view. See the
+    // guarded blocks below (advisor 2026-06-09, browser-test Test 3).
+    var _suppBlind = !!(opts && opts.suppBlind);
     var currentCfg;
     try { currentCfg = collectInputs(); } catch (e) { currentCfg = null; }
     if (!currentCfg) return null;
     // Dollar rivalry: every dollar committed to an Interested supplemental
-    // (Oil & Gas, Delphi, ...) is unavailable to Brooklyn. Subtract the
-    // allocator's supplemental total from availableCapital so the engine
-    // computes A/B/C with the correct Brooklyn deployment, and the
-    // optimizer's cap math (recommendedInvestment, slider scale) is keyed
-    // off the same reduced base. The implementation panel still shows the
-    // breakdown for advisor audit.
-    if (typeof root.runAllocator === 'function') {
-      var rawCap = Math.max(0, Number(currentCfg.availableCapital) || 0);
+    // is unavailable to Brooklyn. Single source of truth is now
+    // cfg.suppY0Deployment — the engine (tax-comparison.js) subtracts it
+    // from basisCash in ALL three strategy branches (A immediate at
+    // line 1087, B installment at line 1028, C-deferred at line 1075).
+    //
+    // Earlier this block ALSO reduced availableCapital/investedCapital/
+    // investment by the same amount, which caused a silent double-
+    // subtraction in A and C-deferred (_availTotal was already net of
+    // supps, then the engine subtracted suppY0Deployment again — Brooklyn
+    // under-deployed by exactly the supp amount on every UI-driven run
+    // with a funded supp). B was unaffected because its pool is
+    // D + recap, not _availTotal-derived. Audit 2026-06-08 caught this.
+    //
+    // Fix: thread cfg.suppY0Deployment only; leave availableCapital at
+    // the raw value. The engine performs the single, authoritative
+    // subtraction inside each strategy's basisCash calc, matching the
+    // behavior direct engine callers already see.
+    var rawCap = Math.max(0, Number(currentCfg.availableCapital) || 0);
+    if (!_suppBlind && typeof root.runAllocator === 'function') {
       var alloc = root.runAllocator(rawCap);
-      var brooklynCap = Math.max(0, alloc.brooklynRemaining || 0);
-      if (brooklynCap !== rawCap) {
+      var _suppY0Deploy = Math.max(0, Math.round(alloc.allocatedToSupplementals || 0));
+      currentCfg = Object.assign({}, currentCfg, { suppY0Deployment: _suppY0Deploy });
+    }
+    // Supp-blind: thread the flag so _autoPickSection zeroes the supp Y0
+    // down-payment floor (B/C) and the engine sees no suppY0Deployment (A) —
+    // together these make the standalone per-strategy net hold regardless of
+    // supp toggling.
+    if (_suppBlind) currentCfg = Object.assign({}, currentCfg, { _suppBlind: true });
+    var userDuration = currentCfg.structuredSaleDurationMonths || 36;
+
+    // Brooklyn-first recapture (advisor 2026-06-11). Compute how much §1250
+    // unrecaptured-depreciation recapture the chosen primary (Brooklyn)
+    // strategy absorbs with its short-term losses, AT FULL STRENGTH (supp-blind
+    // capital, the strategy's auto-picked combo) — full strength because we run
+    // Brooklyn first and never dial it back to free recapture for the
+    // ordinary-offset supps. The loss waterfall is ST -> LT -> §1250, so this
+    // is >0 only when Brooklyn's loss exceeds the regular LT gain. The supp
+    // pool / calc modules subtract it (master-solver __rettSuppExposedRecap) so
+    // a supp never sizes up to shelter recapture Brooklyn has already wiped.
+    // Computed once at the TOP level (not inside the auto-sizer's recursive
+    // skip passes) and BEFORE the auto-sizer so the sweep sees the right pool.
+    if (!_suppBlind && !root.__rettSkipSuppAutoSize) {
+      root.__rettPrimaryRecap1250Absorbed = 0;
+      var _prevSkipRc = root.__rettSkipSuppAutoSize;
+      try {
+        // "Brooklyn run first, alone, at its own optimum" = the supp-blind
+        // summary's chosen entry. Skip-flag guards the inner build from
+        // re-clearing the tax cache, re-auto-sizing, or re-entering this block.
+        root.__rettSkipSuppAutoSize = true;
+        var _blindSum = buildInterestedSummary({ suppBlind: true });
+        root.__rettSkipSuppAutoSize = _prevSkipRc;
+        var _rcChosen = root.__rettChosenStrategy || 'A';
+        var _be = (_blindSum && _blindSum.entries)
+          ? _blindSum.entries.find(function (x) { return x.type === _rcChosen; }) : null;
+        if (_be && _be.cfg && typeof root.unifiedTaxComparison === 'function') {
+          // recap1250 absorption is invariant to the gain-absorbing dial-back
+          // (loss reaches §1250 only after wiping all regular LT either way),
+          // so the entry's supp-blind cfg is sufficient — no _partialDeploy
+          // adjustment needed.
+          var _rcCfg = Object.assign({}, _be.cfg, { suppY0Deployment: 0 });
+          if (typeof root.rettFlavorEngineCfg === 'function') _rcCfg = root.rettFlavorEngineCfg(_rcCfg);
+          var _rcCmp = root.unifiedTaxComparison(_rcCfg);
+          if (_rcCmp && Array.isArray(_rcCmp.rows)) {
+            root.__rettPrimaryRecap1250Absorbed = Math.max(0, Math.round(
+              _rcCmp.rows.reduce(function (a, r) {
+                return a + (Number(r.recap1250OffsetApplied) || 0);
+              }, 0)));
+          }
+        }
+      } catch (e) { root.__rettSkipSuppAutoSize = _prevSkipRc; root.__rettPrimaryRecap1250Absorbed = 0; }
+    }
+
+    // Auto-size every Interested supplemental within its user-typed ceiling
+    // (advisor 2026-06-08). User's typed value becomes a MAX cap; engine
+    // sweeps [0..ceiling] and picks the size that maximizes combined net
+    // (primary + supps) for the chosen strategy. Catches the case where a
+    // user marks OG Interested + maxInvestment=$500K but $250K is the
+    // combined-net peak ($132K left on the table at $500K). When the
+    // optimal size is $0, the supp is sized to $0 here and naturally
+    // drops off the funded list — Tab 6 just won't show it, no warning.
+    //
+    // Greedy independent sweep (one supp at a time, others held fixed):
+    // O(supps × candidates) instead of O(candidates^supps). Re-runs supp
+    // math + scenario metrics per candidate; ~50-100ms each. Total added
+    // latency: ~500ms-1s for two supps × five candidates.
+    (function _autoSizeInterestedSupps() {
+      // Supp-blind mode (Tab 4 cards): never size or mutate supp specs — the
+      // standalone net ignores supps entirely, and running this sweep would
+      // mutate global supp state (s.spec[knob]) and leak into Summary/Temp.
+      if (_suppBlind) return;
+      // Test/verification escape hatch: when __rettSkipSuppAutoSize is true,
+      // skip the auto-sizing pass so callers can pin supp sizes to specific
+      // values for perturbation testing without the engine re-optimizing.
+      if (root.__rettSkipSuppAutoSize) return;
+      if (typeof root.__rettRunAllSuppMath !== 'function') return;
+      var interestMap = Object.assign({},
+        root.__rettSupplementalInterest      || {},
+        root.__rettSupplementalExtraInterest || {});
+      var chosen = root.__rettChosenStrategy || 'A';
+      // Supps with a clear scalar sizing knob we can sweep without
+      // affecting other internal state. Each entry:
+      //   id     — supp identifier
+      //   store  — global store object name
+      //   knob   — field on spec that controls the dollar size
+      //   minInc — minimum increment (skip sweeps below this)
+      // Per-supp auto-sizing with a hard cap (advisor 2026-06-10): marking
+      // a capital-deploying supplemental Interested lets the engine pick the
+      // optimal deployment up to a ceiling expressed as a % of the SALE
+      // price — Delphi up to 50%, every other capital supp up to 5%. The
+      // ceiling below IS that cap, so no single supplemental can ever draw
+      // more than its share of the sale. Free-benefit supps (PTET, Augusta)
+      // have no investment knob and aren't swept/capped here.
+      var _saleForCap = Math.max(0, Number(currentCfg.salePrice) || 0);
+      // Per-supp auto-size ceiling as a fraction of the sale price. Oil & Gas
+      // and the equipment-type direct-investment supps cap at 5% of the sale
+      // (advisor 2026-06-11 — tightened from 10%; no single supp should soak up
+      // more than a twentieth of the proceeds); Delphi, a fund-style placement,
+      // stays at 50%. The advisor can still override any amount up to this
+      // ceiling.
+      // Farm (slot12, deducts 100c/$) is sized BEFORE Equipment Leasing
+      // (slot07, ~90c/$) so the higher-yield supp claims scarce out-year
+      // headroom first and Equipment Leasing defers to it — deterministic,
+      // not order-of-history dependent (advisor 2026-06-10).
+      var SIZABLE = [
+        { id: 'oilGas', spec: (root.__rettSupplemental      || {}).oilGas, knob: 'maxInvestment',    minInc: 50000,  capPct: 0.05 },
+        { id: 'delphi', spec: (root.__rettSupplemental      || {}).delphi, knob: 'investment',       minInc: 100000, capPct: 0.50 },
+        { id: 'slot12', spec: (root.__rettSupplementalExtra || {}).slot12, knob: 'equipmentCost',    minInc: 50000,  capPct: 0.05 },
+        { id: 'slot07', spec: (root.__rettSupplementalExtra || {}).slot07, knob: 'investmentAmount', minInc: 50000,  capPct: 0.05 }
+      ];
+      function _measureCombinedAt() {
+        // Measure the FULL post-pipeline combined net (after Brooklyn
+        // optimizer dial-back and drop-one verification) at the current
+        // supp sizes. Calls buildInterestedSummary recursively with the
+        // skip-auto-size escape hatch so the recursion terminates after
+        // one level. This matches what the user actually sees in the UI
+        // for any given (interest, sizing) state — earlier version used a
+        // hand-rolled _scenarioMetrics + runMasterSolver path that skipped
+        // runBrooklynOptimizer's dial-back, causing high-OG candidates to
+        // measure artificially low (their fees were at "full deployment"
+        // even when dial-back would have reduced them). Monte-Carlo M11
+        // caught this: engine picked OG=25% of ceiling, but $100% ceiling
+        // was $48K better in the actual rendered hero.
+        try {
+          var prevSkip = root.__rettSkipSuppAutoSize;
+          root.__rettSkipSuppAutoSize = true;
+          var sum = buildInterestedSummary();
+          root.__rettSkipSuppAutoSize = prevSkip;
+          if (!sum || !sum.entries) return -Infinity;
+          var e = sum.entries.find(function (x) { return x.type === chosen; });
+          if (!e) return -Infinity;
+          var net = (e.metrics && Number.isFinite(e.metrics.net)) ? e.metrics.net : 0;
+          var ms = (typeof root.runMasterSolver === 'function')
+            ? root.runMasterSolver(net, { forceDisabledSupps: e.cfg && e.cfg._forceDisabledSupps })
+            : { totalSupplementalBenefit: 0 };
+          // Size on the FAST solver estimate — running the honest recompute
+          // (a full unifiedTaxComparison per size candidate) here cost ~1s/
+          // render. The estimate overstates each supp ~proportionally, so the
+          // size that maximizes the estimate is effectively the same as the
+          // one that maximizes the honest net; the honest value still governs
+          // the DISPLAY and the top-level funding / B≥C decision below.
+          return net + (Number(ms.totalSupplementalBenefit) || 0);
+        } catch (e) { root.__rettSkipSuppAutoSize = false; return -Infinity; }
+      }
+      SIZABLE.forEach(function (s) {
+        if (interestMap[s.id] !== true) return;
+        if (!s.spec) return;
+        // Ceiling = the per-supp cap (% of sale price). The engine
+        // auto-sizes within [0, ceiling]; the client's typed amount is no
+        // longer the ceiling — marking Interested lets the optimizer pick
+        // the best size up to the cap. If the cap is below the supp's
+        // minimum increment (tiny sale), drop it to $0.
+        var ceiling = Math.round(_saleForCap * s.capPct);
+        if (ceiling < s.minInc) { s.spec[s.knob] = 0; return; }
+        // Manual override (advisor 2026-06-10): if the advisor explicitly
+        // typed an amount in the supp's Details panel (_userOverride — set
+        // only by the render input handler, NOT by this sweep), respect it
+        // — clamp it at the per-supp cap and skip auto-sizing. A 0/blank
+        // override falls through to auto-size so clearing the box returns
+        // the supp to engine sizing.
+        if (s.spec._userOverride && s.spec._userOverride[s.knob]
+            && (Number(s.spec[s.knob]) || 0) > 0) {
+          s.spec[s.knob] = Math.min(Math.max(0, Number(s.spec[s.knob]) || 0), ceiling);
+          return;
+        }
+        // Candidate sizes: 0, 25%, 50%, 75%, 100% of the cap. Always
+        // include both endpoints so the optimizer can drop to zero or
+        // deploy the full cap.
+        var candidates = [0, ceiling * 0.25, ceiling * 0.5, ceiling * 0.75, ceiling];
+        var bestSize = ceiling;
+        var bestNet  = -Infinity;
+        for (var i = 0; i < candidates.length; i++) {
+          s.spec[s.knob] = candidates[i];
+          // Mark _userTouched so downstream defaults don't override.
+          s.spec._userTouched = s.spec._userTouched || {};
+          s.spec._userTouched[s.knob] = true;
+          try { root.__rettRunAllSuppMath(); } catch (e) { /* swallow */ }
+          // _measureCombinedAt re-runs the FULL pipeline (its own
+          // collectInputs + allocation), so it reads the freshly-set supp
+          // sizing directly — no need to pre-compute a cfg here. (The earlier
+          // refreshedCfg/runAllocator pre-pass was discarded by the callee and
+          // only added redundant allocator work per candidate.)
+          var combined = _measureCombinedAt();
+          if (combined > bestNet) {
+            bestNet  = combined;
+            bestSize = candidates[i];
+          }
+        }
+        // Apply the engine's pick.
+        s.spec[s.knob] = bestSize;
+      });
+      // Single final supp-math pass to settle all engine picks together.
+      try { root.__rettRunAllSuppMath(); } catch (e) { /* */ }
+      // Re-collect suppY0Deployment under the engine-optimized supp sizes
+      // so the entries built below see the right Brooklyn capacity.
+      if (typeof root.runAllocator === 'function') {
+        var _ra2 = root.runAllocator(rawCap);
         currentCfg = Object.assign({}, currentCfg, {
-          availableCapital: brooklynCap,
-          investedCapital:  brooklynCap,
-          investment:       brooklynCap
+          suppY0Deployment: Math.max(0, Math.round(_ra2.allocatedToSupplementals || 0))
         });
       }
-    }
-    var userDuration = currentCfg.structuredSaleDurationMonths || 36;
+    })();
 
     function _bestPickedCfgLocal(type) {
       var picked = _autoPickSection(type, currentCfg);
@@ -3337,11 +3699,16 @@
           var _redCfg   = Object.assign({}, e.cfg, { availableCapital: _redCap, investment: _redCap, investedCapital: _redCap });
           var _fullNet  = e.metrics.net;   // full-deployment net (from the auto-pick)
           var m2 = _scenarioMetrics(_redCfg);
-          // Apply the dial-back when it's an explicit user slider override,
-          // OR when it genuinely improves the displayed net — a safety guard
-          // so the optimizer's dial-back can never make net WORSE than full
-          // (e.g. if a fee-model edge case ever disagreed with the sweep).
-          if (m2 && (hasOverride || m2.net > _fullNet)) {
+          // Apply the optimizer's dial-back. It was previously gated on
+          // `m2.net > _fullNet` (only dial back if it RAISED displayed net),
+          // but the excess-loss fee CREDIT inflates the full-deployment net by
+          // refunding the fee on stranded loss — so that gate vetoed every
+          // dial-back that traded a little net for much less stranded carryover
+          // and snapped Strategy C back to full deployment (advisor 2026-06-11).
+          // _netMaxDeployFraction already balances net against stranding via the
+          // waste penalty, so trust its scale<1 pick here (slider override still
+          // forces its own amount).
+          if (m2 && (hasOverride || scale < 1)) {
             e.metrics.tax            = m2.tax;
             e.metrics.brooklynFees   = m2.brooklynFees;
             e.metrics.brookhavenFees = m2.brookhavenFees;
@@ -3606,6 +3973,177 @@
     entries.forEach(function (e, i) {
       if (e.metrics.net > maxNet) { maxNet = e.metrics.net; recIdx = i; }
     });
+
+    // -----------------------------------------------------------------
+    // COMBINED-NET DROP-ONE VERIFICATION (audit handoff 2026-06-08, Bug A)
+    // -----------------------------------------------------------------
+    // The master-solver's rivalry selector under-charges capital because
+    // brooklynYieldRate is computed at FULL availableCapital (where
+    // Brooklyn is over-deployed past absorbable gain, diluting the rate).
+    // That makes every supp's marginal contribution look positive at
+    // ~6.25% when the real marginal at Brooklyn's dialled-back optimum
+    // is ~22% — biasing toward over-diversification.
+    //
+    // Critically, the master-solver also CAN'T see the Strategy-B/C
+    // down-payment recognition cost: funding a supp forces D up (per
+    // the "recognize gain to fund" model), which costs Y0 LT recognition
+    // — invisible to runMasterSolver because that lives in the auto-
+    // picker. The right verification level is HERE, at combined-net,
+    // where the entry.metrics.net + supp benefit captures everything.
+    //
+    // Algorithm: for each entry, try disabling each funded rival one at
+    // a time. Recompute the full entry (auto-picker + master solver)
+    // with that supp forced off via cfg._forceDisabledSupps. If combined
+    // net strictly improves, adopt; iterate. ≤k passes per entry for
+    // k rivals. Updates entries[i] in place + recomputes recIdx.
+    // Supp-blind mode (Tab 4 cards): skip — this is combined-rivalry logic;
+    // recIdx was already set above, so the standalone view is unaffected.
+    if (!_suppBlind && typeof root.runMasterSolver === 'function') {
+      function _combinedNetForEntry(entry) {
+        // Use the SAME post-primary residual cap the hero/Temp/admin apply,
+        // so the drop-one optimizes the achievable (capped) combined net —
+        // not the uncapped figure that would over-value a supp overlapping
+        // Brooklyn's absorbed tax (advisor 2026-06-09).
+        var _c = (typeof root.__rettResidualCapForEntry === 'function')
+          ? root.__rettResidualCapForEntry(entry) : null;
+        var s = root.runMasterSolver(entry.metrics.net || 0,
+          (_c != null ? { postPrimaryTaxRemaining: _c } : undefined));
+        // Honest combined net for the top-level drop-one decision. Skip the
+        // (expensive) recompute when we're inside the auto-sizer's recursive
+        // pass (__rettSkipSuppAutoSize) — there the solver estimate is fine
+        // for ranking and the final top-level pass re-decides on honest.
+        var _sbC = Number(s.totalSupplementalBenefit) || 0;
+        if (!root.__rettSkipSuppAutoSize) {
+          var _hsbC = _honestSuppBenefitForEntry(entry, s);
+          if (_hsbC != null && Number.isFinite(_hsbC)) _sbC = _hsbC;
+        }
+        return {
+          combined: (entry.metrics.net || 0) + _sbC,
+          fundedRivals: (s.supplementals || []).filter(function (x) {
+            return x.rivalry && x.rivalry.funded && x.investment > 0
+              && x.rivalry.reason !== 'free-benefit';
+          })
+        };
+      }
+      // Helper: recompute one entry with a force-disabled set.
+      function _rebuildEntry(type, forceDisabled) {
+        var sFloor = root.runAllocator
+          ? root.runAllocator(Math.max(0, Number(currentCfg.availableCapital) || 0),
+                              { forceDisabledSupps: forceDisabled })
+          : null;
+        var altCfg = Object.assign({}, currentCfg, {
+          suppY0Deployment: sFloor ? Math.max(0, Math.round(sFloor.allocatedToSupplementals || 0)) : 0,
+          _forceDisabledSupps: forceDisabled
+        });
+        try {
+          var picked = _autoPickSection(type, altCfg);
+          var sectionCfg = Object.assign({}, altCfg, {
+            horizonYears: picked.horizon,
+            leverage:     picked.shortPct / 100,
+            leverageCap:  picked.shortPct / 100,
+            comboId:      picked.comboId
+          });
+          var dur = (type === 'C' && picked.durationMonths) ? picked.durationMonths : userDuration;
+          var pr  = (type === 'C' && Number.isFinite(picked.parkRatio)) ? picked.parkRatio : null;
+          var iw  = (type === 'B' && Array.isArray(picked.installmentWeights)) ? picked.installmentWeights : null;
+          var y0d = ((type === 'B' || type === 'C') && Number.isFinite(picked.y0DownPayment)) ? picked.y0DownPayment : null;
+          var cfg2 = _scenarioCfgFor(type, sectionCfg, picked.bestRecC, dur, pr, iw, y0d);
+          var m = _scenarioMetrics(cfg2);
+          if (!m) return null;
+          return { cfg: cfg2, metrics: m, picked: picked };
+        } catch (e) { return null; }
+      }
+
+      entries.forEach(function (entry, idx) {
+        // Only verify entries that have at least 2 funded rivals — single-
+        // rival cases can't over-fund.
+        var snap = _combinedNetForEntry(entry);
+        if (snap.fundedRivals.length < 2) return;
+        var disabled = {};
+        var bestNet = snap.combined;
+        var passGuard = 0;
+        var maxPasses = snap.fundedRivals.length;
+        while (passGuard < maxPasses) {
+          passGuard++;
+          var winner = null;
+          for (var ri = 0; ri < snap.fundedRivals.length; ri++) {
+            var dropId = snap.fundedRivals[ri].id;
+            if (disabled[dropId]) continue;
+            var candDisabled = Object.assign({}, disabled);
+            candDisabled[dropId] = true;
+            var rebuilt = _rebuildEntry(entry.type, candDisabled);
+            if (!rebuilt) continue;
+            // Compute combined net for the rebuilt entry (rivalry now
+            // honors candDisabled via runMasterSolver's threading). Apply the
+            // rebuilt entry's own post-primary residual cap so this candidate
+            // is scored on the same achievable (capped) net as the incumbent.
+            var _cAlt = (typeof root.__rettResidualCapForEntry === 'function')
+              ? root.__rettResidualCapForEntry(rebuilt) : null;
+            var ms = root.runMasterSolver(rebuilt.metrics.net || 0,
+              { forceDisabledSupps: candDisabled, postPrimaryTaxRemaining: (_cAlt != null ? _cAlt : undefined) });
+            var _sbA = Number(ms.totalSupplementalBenefit) || 0;
+            if (!root.__rettSkipSuppAutoSize) {
+              var _hsbA = _honestSuppBenefitForEntry(rebuilt, ms);
+              if (_hsbA != null && Number.isFinite(_hsbA)) _sbA = _hsbA;
+            }
+            var combinedAlt = (rebuilt.metrics.net || 0) + _sbA;
+            if (combinedAlt > bestNet + 1 && (!winner || combinedAlt > winner.combined)) {
+              winner = { dropId: dropId, combined: combinedAlt, rebuilt: rebuilt };
+            }
+          }
+          if (!winner) break;
+          disabled[winner.dropId] = true;
+          entry.cfg = winner.rebuilt.cfg;
+          entry.metrics = winner.rebuilt.metrics;
+          bestNet = winner.combined;
+          // Refresh funded-rival list for the next pass.
+          snap = _combinedNetForEntry(entry);
+        }
+        // Persist the force-disabled set on the entry cfg so downstream
+        // master-solver calls (Tab 6 hero / Tab 7 / admin) see the same
+        // verified funded set.
+        if (Object.keys(disabled).length > 0) {
+          entry.cfg = Object.assign({}, entry.cfg, { _forceDisabledSupps: disabled });
+        }
+      });
+
+      // ENFORCE B >= C (advisor 2026-06-10): Strategy B (§453 installment)
+      // can execute Strategy C's locked 40/40/20 schedule exactly — proven
+      // that B with weights [0.40,0.40,0.20] at C's down payment nets the
+      // identical figure as C (same Brooklyn position, same residual cap, so
+      // identical supp benefit too). B's feasible set therefore contains C's,
+      // and B must never report a lower net than C. When B's joint
+      // (down-payment x weights x horizon) sweep lands on a config that nets
+      // below C, rebuild B on C's schedule so B ties C. C remains a distinct
+      // option for its default-risk (insurer) protection — never a higher net.
+      (function _enforceBdominatesC() {
+        var eB = null, eC = null;
+        entries.forEach(function (e) { if (e.type === 'B') eB = e; else if (e.type === 'C') eC = e; });
+        if (!eB || !eC || !eB.metrics || !eC.metrics) return;
+        var combB = _combinedNetForEntry(eB).combined;
+        var combC = _combinedNetForEntry(eC).combined;
+        if (!(combC > combB + 1)) return;   // B already dominates — nothing to do
+        // B (§453) can execute C's exact plan — C's chosen config is itself a
+        // schedule B is free to adopt (B running C's 40/40/20 at C's down
+        // payment nets identically). C parameterizes horizon/recognition
+        // differently, so reconstructing it via B's builder is unreliable;
+        // instead adopt C's validated config + metrics directly for B. This
+        // guarantees B's reported net never falls below C's. The entry stays
+        // type 'B' (label/flow unchanged); only its plan + numbers come from C.
+        try {
+          eB.cfg = Object.assign({}, eC.cfg);
+          eB.metrics = Object.assign({}, eC.metrics);
+          if (eC.picked) eB.picked = Object.assign({}, eC.picked);
+        } catch (e) { /* leave B as-is on any failure */ }
+      })();
+
+      // Recompute recIdx in case drop-one shuffled the leader.
+      maxNet = -Infinity; recIdx = -1;
+      entries.forEach(function (e, i) {
+        if (e.metrics.net > maxNet) { maxNet = e.metrics.net; recIdx = i; }
+      });
+    }
+
     return {
       currentCfg: currentCfg,
       userDuration: userDuration,
@@ -3675,7 +4213,10 @@
   function renderInterestedSnapshot() {
     var host = document.getElementById('interested-cards-host');
     if (!host) return;
-    var summary = buildInterestedSummary();
+    // Supp-blind: Tab 4 shows each strategy's STANDALONE net so the headline
+    // holds when supps toggle. The combined (supp-competed) view lives on
+    // Strategy Summary / Temp, which call buildInterestedSummary() with no opts.
+    var summary = buildInterestedSummary({ suppBlind: true });
     if (!summary) {
       host.innerHTML = '<div class="muted" style="padding:18px 0;">Fill in the client inputs on Page 1 to see projections.</div>';
       return;

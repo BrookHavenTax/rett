@@ -542,6 +542,11 @@
       s.oilGas.maxInvestment = Math.max(0, Number.isFinite(v) ? v : 0);
       if (!s.oilGas._userTouched) s.oilGas._userTouched = {};
       s.oilGas._userTouched.maxInvestment = true;
+      // User-OVERRIDE: an explicitly typed amount is respected by the
+      // auto-sizer (clamped at the per-supp cap) instead of being
+      // overwritten. Distinct from _userTouched, which the sweep also sets.
+      if (!s.oilGas._userOverride) s.oilGas._userOverride = {};
+      s.oilGas._userOverride.maxInvestment = true;
       _runOilGasMath();
       _persist();
       // Page-5 Strategy Summary depends on the supplemental allocator
@@ -564,6 +569,9 @@
       s.delphi.investment = Math.max(0, Number.isFinite(dv) ? dv : 0);
       if (!s.delphi._userTouched) s.delphi._userTouched = {};
       s.delphi._userTouched.investment = true;
+      // User-OVERRIDE: respected by the auto-sizer (clamped at cap).
+      if (!s.delphi._userOverride) s.delphi._userOverride = {};
+      s.delphi._userOverride.investment = true;
       // Auto-pick class from amount (advisor 2026-05-06): Class A at the
       // $5M minimum and above (1.75% fee), Class B otherwise (2% fee).
       // The picker UI is hidden — investment is the only knob the
@@ -623,6 +631,15 @@
   function _runAllMath() {
     _runOilGasMath();
     _runDelphiMath();
+    // Also recompute the EXTRA supplementals (Equipment Leasing, Augusta,
+    // Farm, PTET, …). Without this, the auto-sizer — which calls this after
+    // setting each candidate investment size — would size the extra supps
+    // against a STALE result, leaving Equipment Leasing / Farm unavailable
+    // and always sized to $0 (advisor 2026-06-10). The core O&G/Delphi math
+    // ran here already; the extra-supp calc lives in calc-supplemental-extra.
+    if (typeof root.recomputeSupplementalExtra === 'function') {
+      try { root.recomputeSupplementalExtra(); } catch (e) { /* */ }
+    }
     _scheduleP5Refresh();
   }
 
@@ -644,8 +661,9 @@
     }
     if (salePrice <= 0) return;
     if (!(s.oilGas._userTouched && s.oilGas._userTouched.maxInvestment)) {
-      // 10% of sale price — typical sizing per advisor (was 5%).
-      s.oilGas.maxInvestment = Math.round(salePrice * 0.10);
+      // 5% of sale price — matches the per-supp auto-size cap (advisor
+      // 2026-06-11, tightened from 10%; the engine sweeps [0..5% of sale]).
+      s.oilGas.maxInvestment = Math.round(salePrice * 0.05);
     }
     if (!(s.delphi._userTouched && s.delphi._userTouched.investment)) {
       var pct25 = salePrice * 0.25;
@@ -747,4 +765,13 @@
   root.getOilGasConfiguredYears = getOilGasConfiguredYears;
   root.getDelphiConfiguration   = getDelphiConfiguration;
   root.resetSupplementalCore    = _resetState;
+  // Exposed so other surfaces (strategy-summary-render, admin panel) can
+  // force-recompute the supp math when the chosen strategy changes.
+  // _runAllMath internally re-derives oilGas + delphi lastResult using
+  // _resolvedSaleStrategyKey(), so calling it here picks up the new
+  // year-count and per-year split. Without this, supp values stay frozen
+  // at whatever strategy was active when the user last touched a supp
+  // input field — the issue surfaced when Strategy A/B/C switches left
+  // OG's perYearCount stuck at 1.
+  root.__rettRunAllSuppMath     = _runAllMath;
 })(window);

@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `cd22150f1722bb220b2c8cacad0de52f12ff096d` |
-| Upstream short SHA | `cd22150f` |
-| Upstream message | Saturation-aware supplemental selection: don't waste capital on crowded-out supps |
-| Upstream committed | 2026-06-05 |
-| Synced to React on | 2026-06-05 |
+| Upstream SHA | `bad47264cf5a31618a7fa476eae68733679efc5f` |
+| Upstream short SHA | `bad4726` |
+| Upstream message | fix(temp-page): Add'l Medicare label reflects actual filing-status threshold |
+| Upstream committed | 2026-06-12 |
+| Synced to React on | 2026-06-12 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  cd22150f1722bb220b2c8cacad0de52f12ff096d..origin/main
+  bad47264cf5a31618a7fa476eae68733679efc5f..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -153,7 +153,31 @@ that one element until you re-point the override.
 
 ## Sync history
 
-### 2026-06-05 — `cd22150f` (current)
+### 2026-06-12 — `bad4726` (current)
+
+**83 upstream commits** absorbed (`cd22150f..bad4726`): 17 legacy JS files
+changed, ~3,500 insertions. Pure engine/UI-renderer sync — upstream
+`index.html` gained **no new element IDs** in this range (only cache-buster
+updates to script tags). React page components unchanged; loader unchanged.
+
+**Engine highlights (rsync only):**
+
+| Area | What changed |
+| --- | --- |
+| AMT / O&G | IDC AMT preference at 90% excess-IDC; O&G IDC added back to with-strategy AMTI; funding layer ranks by after-AMT benefit |
+| Supplementals | Honest supplemental-benefit helper (recompute-based); hide amount inputs (auto-size in background); toggled-off supps stay as muted re-enable row; PTET/Augusta seated ahead of capital strategies; 5% auto-size cap (Delphi 50%) |
+| Tax engine | MFS uses explicit married_separate brackets; §1250 in NIIT base; supps reduce SE earnings; no income projection in synthetic years |
+| Optimizer | Stranded carryover penalty; trim deployment search; supps don't double-offset §1250 Brooklyn already absorbs |
+| Temp page | Per-year gross/fee/net dropped; reconcile via Σ yearly tax saved − fees; Add'l Medicare label uses filing-status threshold |
+| Projection admin | Per-year capital-deployed-by-strategy table on admin math page |
+| Perf | Memoized `unifiedTaxComparison` and `computeFederalTaxBreakdown` per render |
+
+**React ports:** none required — existing host divs and input IDs still match.
+
+**Theme note:** upstream `styles.css` unchanged in this range (cache busters
+only in HTML). `brand-theme.css` overrides still apply.
+
+### 2026-06-05 — `cd22150f`
 
 **57 upstream commits** absorbed (`4efeb0f..cd22150f`): 29 legacy files
 changed, ~2,900 insertions. Engine-heavy sync — tax comparison, master

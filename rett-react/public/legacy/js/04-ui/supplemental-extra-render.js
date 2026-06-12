@@ -161,7 +161,7 @@
       name: 'Equipment Leasing Fund',
       shortName: 'Equip Leasing',
       keyaspect: 'Bonus Pass-Through',
-      descriptor: 'Through active participation, an investment offsets ordinary income or generates income deductions.',
+      descriptor: 'Through active participation, an investment offsets ordinary income.',
       audience: 'Active investor',
       bucket: 'capital',
       investmentField: 'investmentAmount',
@@ -172,14 +172,12 @@
       },
       detailRows: [
         { id: 'investmentAmount', label: 'Investment amount',                kind: 'usd', placeholder: '500,000' },
-        { id: 'depreciablePct',   label: 'Depreciable basis (% of capital)', kind: 'pct', placeholder: '90' },
-        // Material participation is a strict requirement under §469
-        // (otherwise the loss is suspended as passive). The simplest
-        // §469-5T(a) test for active investors is 100 hours/year + at
-        // least as many as anyone else. Asking the user this directly
-        // captures the binding constraint without requiring them to
-        // self-classify under multi-prong tests.
-        { id: 'commitHours',      label: 'Will commit ≥100 hours/year?',     kind: 'yesno' }
+        { id: 'depreciablePct',   label: 'Depreciable basis (% of capital)', kind: 'pct', placeholder: '90' }
+        // Material participation (§469-5T(a), the 100-hours test) is now
+        // ASSUMED when the client marks this Interested — the calc treats
+        // the K-1 loss as non-passive automatically — so the old
+        // "Will commit ≥100 hours/year?" question was removed
+        // (advisor 2026-06-10): expressing interest is the commitment.
       ]
     },
     {
@@ -188,12 +186,12 @@
       name: 'Augusta Rule &mdash; §280A(g)',
       shortName: 'Augusta Rule',
       keyaspect: 'Tax-Free Home Rental',
-      descriptor: 'Each rental day shifts up to $2,500 from the business to you tax-free &mdash; capped at 14 days/year under §280A(g).',
+      descriptor: 'Reporting property as rented to business produces tax benefits.',
       audience: 'S-corp / partnership owner',
       bucket: 'ordinary',
       defaults: {
         daysRented:      14,
-        fmvPerDay:       1500,
+        fmvPerDay:       2000,      // advisor 2026-06-10: assume $2,000/day FMV by default (override in Details)
         annualRecurring: true       // Augusta is structurally annual — recurs every recognition year of the
                                     // viewed strategy (Strategy A → Y0 only via _strategyYearCount; B/C → each year)
       },
@@ -210,7 +208,7 @@
       name: 'Farm / Business Equipment',
       shortName: 'Equipment',
       keyaspect: 'Equipment Expensing',
-      descriptor: 'Each dollar of equipment cost fully deducts in year one through &sect;179 plus 100% bonus depreciation.',
+      descriptor: 'Each dollar of equipment fully offsets income in year one.',
       audience: 'Farm / business operator',
       bucket: 'asset',
       // No investmentField — equipment is a physical-asset purchase the
@@ -433,26 +431,14 @@
         '<span class="supp-details-arrow-label">' + (st.valueOpen ? 'Hide value' : 'See value') + '</span>' +
       '</button>';
 
-    // Inline amount box: when Interested, show a single input for the
-    // strategy's primary dollar figure (investment / equipment cost /
-    // daily FMV). Replaces the prior quick-pick chips ($250K/$500K/Custom)
-    // per advisor — advisors type the exact number rather than picking a
-    // suggested amount. Bound to the same data-supx-input the Details
-    // panel uses, so the host 'input' listener updates state WITHOUT a
-    // re-render (caret stays put while typing). Stays visible while
-    // Interested (not just at $0) so the figure can be edited in place.
+    // Inline amount box REMOVED (advisor 2026-06-10). Like Oil & Gas, the
+    // investment / equipment cost / daily-FMV figure is no longer shown on
+    // the card face — it's computed in the background (the auto-sizer sizes
+    // Equipment Leasing and Farm; Augusta defaults to its spec value) and
+    // the advisor can still click "Details" to open and override it. Keeping
+    // the amount off the face matches the Oil & Gas card and keeps the rail
+    // clean. The Details panel (detailRows) still carries the editable field.
     var amountBlock = '';
-    var chipsCfg = CHIPS_CONFIG[spec.id];
-    if (!isPlaceholder && chipsCfg && iState[spec.id] === true) {
-      var primaryVal = Number(st[chipsCfg.primaryField]) || 0;
-      amountBlock =
-        '<div class="supx-chips-row supx-amount-row">' +
-          '<span class="supx-chips-prompt">' + chipsCfg.prompt + ':</span>' +
-          '<div class="currency-input supx-amount-input-wrap">' +
-            '<input type="text" class="supx-amount-input" data-supx-input="' + spec.id + ':' + chipsCfg.primaryField + '" inputmode="numeric" autocomplete="off" value="' + (primaryVal > 0 ? _fmtUSD(primaryVal) : '') + '" placeholder="0">' +
-          '</div>' +
-        '</div>';
-    }
 
     var hiddenCls = (root.__rettSuppHidden && root.__rettSuppHidden[spec.id]) ? ' is-supp-hidden' : '';
     return '' +
@@ -507,6 +493,27 @@
   function _specVisible(spec) {
     if (BUSINESS_GATED[spec.id] && !_businessIncomePresent()) return false;
     return true;
+  }
+
+  // Debounced heavy rebuild. Toggling Interested changes the rivalry-funded
+  // supplemental total -> Brooklyn's pool, so the full pipeline + Strategy
+  // Summary must re-run. But running it SYNCHRONOUSLY on every click made the
+  // extra-supp cards lag a second or two while the core rail (oilGas/delphi)
+  // already felt instant — because the core rail debounces this exact work via
+  // _scheduleP5Refresh. Mirror that here: the card re-render gives immediate
+  // visual feedback, and the expensive auto-sizer runs once, ~150ms after the
+  // last click, instead of once per click. (advisor 2026-06-10.)
+  var _heavyTimer;
+  function _scheduleHeavyRebuild() {
+    clearTimeout(_heavyTimer);
+    _heavyTimer = setTimeout(function () {
+      if (typeof root.runFullPipeline === 'function') {
+        try { root.runFullPipeline(); } catch (e) { /* */ }
+      }
+      if (typeof root.renderStrategySummary === 'function') {
+        try { root.renderStrategySummary(); } catch (e) { /* */ }
+      }
+    }, 150);
   }
 
   function _renderHost() {
@@ -583,9 +590,14 @@
           if (st && spec) {
             (spec.detailRows || []).forEach(function (row) {
               if (row.kind !== 'usd') return;
-              // Skip the chip-managed primary field — chips show when
-              // it's $0 and let the advisor pick a value explicitly.
-              if (chipsCfg && chipsCfg.primaryField === row.id) return;
+              // Fill the default for every USD field INCLUDING the primary
+              // investment/equipment amount. The inline chip box that used to
+              // manage the primary field is gone (the amount is now hidden +
+              // auto-sized), so without seeding the default here the field
+              // would sit at $0, the supp would never compute, and the
+              // auto-sizer would have nothing to size (advisor 2026-06-10).
+              // The auto-sizer sets _userTouched while sweeping, so its $0
+              // candidate and its final pick are still respected below.
               var current = Number(st[row.id]) || 0;
               var defaultVal = Number((spec.defaults || {})[row.id]) || 0;
               var touched = st._userTouched && st._userTouched[row.id];
@@ -602,17 +614,12 @@
         _renderHost();
         _persist();
         // Conservation: toggling Interested changes the rivalry-funded
-        // supplemental total, which changes Brooklyn's effective pool.
-        // Run the full pipeline first so __lastResult / cfg.investment
-        // reflect the new allocation, THEN re-render Page 5. Without
-        // this, Page 5 would surface stale Brooklyn deployment numbers
-        // until another input change triggered a pipeline rerun.
-        if (typeof root.runFullPipeline === 'function') {
-          try { root.runFullPipeline(); } catch (e) { /* */ }
-        }
-        if (typeof root.renderStrategySummary === 'function') {
-          try { root.renderStrategySummary(); } catch (e) { /* */ }
-        }
+        // supplemental total -> Brooklyn's effective pool, so the full
+        // pipeline + Strategy Summary must re-run. DEBOUNCED (see
+        // _scheduleHeavyRebuild) so the card toggle above is instant and
+        // rapid multi-card clicking doesn't fire the expensive auto-sizer
+        // once per click — matching the core supp rail's _scheduleP5Refresh.
+        _scheduleHeavyRebuild();
         return;
       }
 
@@ -708,6 +715,13 @@
       // price / cost basis change later.
       if (!st._userTouched) st._userTouched = {};
       st._userTouched[fieldId] = true;
+      // Mark user-OVERRIDE (distinct from _userTouched, which the auto-size
+      // sweep also sets internally). When the advisor explicitly types an
+      // investment amount, the engine's auto-sizer respects it (clamped at
+      // the per-supp cap) instead of choosing its own size. (advisor
+      // 2026-06-10.)
+      if (!st._userOverride) st._userOverride = {};
+      st._userOverride[fieldId] = true;
       _persist();
     });
   }

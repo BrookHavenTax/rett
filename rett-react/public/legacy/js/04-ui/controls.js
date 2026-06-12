@@ -214,7 +214,17 @@ function _bindCaseControls() {
       if (raw == null) return '';
       var s = String(raw);
       try { s = s.normalize('NFKC'); } catch (e) { /* */ }
-      s = s.replace(/[^A-Za-z0-9 ,.'\-]/g, '');
+      // Use Unicode property classes so non-Latin characters survive
+      // (José Núñez, 北京, etc.). Audit R2 #13: prior /[^A-Za-z0-9 ...]/
+      // stripped non-ASCII letters silently, e.g. 'José Núñez' →
+      // 'Jos Nez'. \p{L} = any letter, \p{M} = combining mark,
+      // \p{N} = number. The 'u' flag enables Unicode mode.
+      try {
+        s = s.replace(/[^\p{L}\p{M}\p{N} ,.'\-]/gu, '');
+      } catch (e) {
+        // Fallback for very old engines without /u support.
+        s = s.replace(/[^A-Za-z0-9 ,.'\-]/g, '');
+      }
       // Collapse runs of spaces and trim — names like "  John   Smith  "
       // normalize cleanly.
       s = s.replace(/\s+/g, ' ').trim();
@@ -343,10 +353,40 @@ function resetAllInputs(skipConfirm, stayOnCurrentPage) {
     // interest + dividends in the NIIT base, SS through the §86
     // worksheet, business income into the ordinary stack (+ SE tax).
     'interest-income', 'qualified-dividends', 'social-security',
-    'business-income-amount',
-    // Page 1: Appreciated Assets
+    'business-income-amount', 'business-income-type',
+    // Page 1: Appreciated Assets (property 1) + §1245/§1250 recap split
     'sale-price', 'cost-basis', 'accelerated-depreciation',
+    'accelerated-depreciation-1245', 'accelerated-depreciation-1250',
     'computed-gain', 'short-term-gain', 'long-term-gain',
+    // Personal-use + amount-owed reducers on property 1
+    'personal-use-amount-1', 'amount-owed-amount-1',
+    'personal-use-yesno-1', 'amount-owed-yesno-1',
+    'holding-period-1',
+    // Properties 2-5 (multi-property): sale price, basis, recap split,
+    // personal-use, amount-owed, holding-period. Audit R2 #9 — these
+    // were stale-state risks before being added to the allowlist.
+    'sale-price-2', 'cost-basis-2', 'accelerated-depreciation-2',
+    'accelerated-depreciation-1245-2', 'accelerated-depreciation-1250-2',
+    'personal-use-amount-2', 'amount-owed-amount-2', 'holding-period-2',
+    'sale-price-3', 'cost-basis-3', 'accelerated-depreciation-3',
+    'accelerated-depreciation-1245-3', 'accelerated-depreciation-1250-3',
+    'personal-use-amount-3', 'amount-owed-amount-3', 'holding-period-3',
+    'sale-price-4', 'cost-basis-4', 'accelerated-depreciation-4',
+    'accelerated-depreciation-1245-4', 'accelerated-depreciation-1250-4',
+    'personal-use-amount-4', 'amount-owed-amount-4', 'holding-period-4',
+    'sale-price-5', 'cost-basis-5', 'accelerated-depreciation-5',
+    'accelerated-depreciation-1245-5', 'accelerated-depreciation-1250-5',
+    'personal-use-amount-5', 'amount-owed-amount-5', 'holding-period-5',
+    // Future-sale + cover-taxes + supplemental-related toggles
+    'future-estimated-gain', 'cover-taxes-yes-no',
+    'additional-funds-toggle', 'structured-sale-duration-months',
+    // Additional-funds amount inputs + the Tab-1 yes/no select. Audit
+    // 2026-06-09: clearing only the `additional-funds-toggle` checkbox
+    // left a stale $X dollar amount + yes/no select on the form when
+    // the user started a new client. Now all fields under the Additional
+    // Funds group reset together.
+    'additional-funds-yes-no', 'additional-funds',
+    'additional-account-value', 'additional-lt-gain', 'additional-st-gain',
     // Page 1: Withholding from sale
     'withhold-yes-no', 'withhold-amount',
     // Page 1: Implementation timing
@@ -355,9 +395,6 @@ function resetAllInputs(skipConfirm, stayOnCurrentPage) {
     'custodian-select', 'leverage-cap-select',
     // Page 2: Brooklyn config
     'available-capital', 'invested-capital', 'strategy-select'
-    // Note: legacy IDs that don't exist in the current HTML
-    // ('beta1', 'computed-total-taxable') were removed from this list
-    // — forEach silently skipped them but they were drift indicators.
   ];
   resetIds.forEach(function (id) {
     const el = document.getElementById(id);
@@ -382,10 +419,21 @@ function resetAllInputs(skipConfirm, stayOnCurrentPage) {
   });
 
   // Cleared computed-gain/computed-total-taxable above; trigger re-derivation
-  // by dispatching input events on the source fields.
-  ['sale-price', 'cost-basis', 'accelerated-depreciation'].forEach(function (id) {
+  // by dispatching input events on the source fields. Audit 2026-06-09:
+  // also dispatch change on the yes/no selects that gate visible field-groups
+  // (additional-funds, future-sale, cover-taxes, withhold, personal-use,
+  // amount-owed) so the hidden/visible state matches the freshly-reset
+  // default. Without these dispatches a "Yes" group stayed visible on the
+  // page after reset even though the underlying value defaulted back to "no".
+  ['sale-price', 'cost-basis', 'accelerated-depreciation',
+   'additional-funds-yes-no', 'future-sale-yes-no', 'cover-taxes-yes-no',
+   'withhold-yes-no',
+   'personal-use-yesno-1', 'amount-owed-yesno-1'].forEach(function (id) {
     const el = document.getElementById(id);
-    if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+    if (el) {
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true }));
+    }
   });
 
   // Repopulate custodian-driven UI (leverage caps, strategy availability).
@@ -1076,7 +1124,11 @@ function runFullPipeline() {
           ? (window.__rettAutoPickEnabled !== false) : true;
         if (chosenStrat && autoPickAllowed && typeof window._autoPickSection === 'function') {
           try {
-            var apk = window._autoPickSection(chosenStrat, cfg);
+            // Standalone Projection-tab view: auto-pick must ignore the
+            // supplemental draw so the headline net HOLDS when supps are
+            // toggled (advisor 2026-06-08). _suppBlind gates the
+            // _suppY0Floor inside _autoPickSection.
+            var apk = window._autoPickSection(chosenStrat, Object.assign({}, cfg, { _suppBlind: true }));
             if (apk && Number.isFinite(apk.shortPct) && Number.isFinite(apk.horizon)) {
               // Patch leverage / horizon / comboId / recognition / duration
               // from the auto-picked combo. cfg.investment + cfg.availableCapital
@@ -1112,28 +1164,25 @@ function runFullPipeline() {
           } catch (apErr) { /* leave cfg unchanged on auto-pick failure */ }
         }
 
-        // Dollar conservation (advisor 2026-05-06): a single dollar
-        // can't simultaneously fund Brooklyn AND a supplemental — the
-        // pool is finite. Ask the rivalry allocator how much of
-        // availableCapital was claimed by funded supps and reduce
-        // Brooklyn's effective investment by that amount BEFORE
-        // running the engine. Without this, the page would show
-        // Brooklyn deployed at full availCap plus supps deploying
-        // their own slice, double-counting the same dollars.
-        var fundedSuppTotal = 0;
-        if (typeof window.runAllocator === 'function') {
-          try {
-            var alloc = window.runAllocator(cfg.availableCapital);
-            if (alloc && Number.isFinite(alloc.allocatedToSupplementals)) {
-              fundedSuppTotal = alloc.allocatedToSupplementals;
-            }
-          } catch (allocErr) { /* leave fundedSuppTotal = 0 */ }
-        }
-        var brooklynPool = Math.max(0,
-          (Number(cfg.availableCapital) || 0) - fundedSuppTotal);
-        if (brooklynPool < (Number(cfg.investment) || 0)) {
-          cfg = Object.assign({}, cfg, { investment: brooklynPool });
-        }
+        // Projection-tab semantics (advisor 2026-06-08): the Projection
+        // tab is the STANDALONE Brooklyn strategy view. Its headline net
+        // benefit must HOLD when the advisor toggles supplementals on
+        // Page-5 and navigates back — otherwise the number drops (supps
+        // pull capital out of Brooklyn) and reads as "wait, I thought it
+        // was higher." So __lastResult (which feeds the dashboard hero,
+        // savings ribbon, narrative, and cash-flow schedule — all on this
+        // tab) is computed at the FULL availableCapital, ignoring the
+        // supplemental rivalry draw.
+        //
+        // The dollar-conservation combined view (Brooklyn reduced by the
+        // funded supps, supps deploying their own slice) still lives
+        // downstream on Strategy Summary / Temp / Admin, which build from
+        // buildInterestedSummary() — that path runs its OWN allocator
+        // reduction (projection-dashboard-render.js ~3218). So the two
+        // views are intentionally distinct: Projection = standalone,
+        // Summary/Temp = combined-with-supps. Supersedes the earlier
+        // 2026-05-06 reduction that applied the draw here too.
+        var brooklynPool = Math.max(0, Number(cfg.availableCapital) || 0);
 
         // Two-pass optimizer wiring: run the engine once at the user's
         // requested investment to learn cumulative Brooklyn loss, then
@@ -2234,13 +2283,29 @@ function bindControls() {
                  (parseUSD((document.getElementById('retirement-distributions') || {}).value) || 0);
     var wages  = (parseUSD((document.getElementById('w2-wages') || {}).value) || 0) +
                  (parseUSD((document.getElementById('se-income') || {}).value) || 0);
+    // Pull §1245/§1250 split from form, mirror the same fallback used by
+    // baseline-table.js: if either explicit field is > 0, trust the user's
+    // split; otherwise default the whole recap to §1250 (legacy behavior).
+    // Audit R2 finding #1: previously this caller passed investmentIncome
+    // omitting the §1250 portion, so NIIT was understated by 3.8% × recap
+    // on the Available-Capital tile (over-sizing every downstream strategy
+    // by ~$19K per $500K of recap).
+    var _recap1245Form = parseUSD((document.getElementById('accelerated-depreciation-1245') || {}).value) || 0;
+    var _recap1250Form = parseUSD((document.getElementById('accelerated-depreciation-1250') || {}).value) || 0;
+    var _hasRecapSplit = (_recap1245Form + _recap1250Form) > 0;
+    var recap1245 = _hasRecapSplit ? Math.max(0, _recap1245Form) : 0;
+    var recap1250 = _hasRecapSplit ? Math.max(0, _recap1250Form) : Math.max(0, deprVal);
     var fed = 0, st = 0;
     try {
       if (typeof computeFederalTax === 'function') {
         fed = computeFederalTax(ord + stGainForTax, year, status, {
           longTermGain: ltGain,
-          depreciationRecapture: deprVal,
-          investmentIncome: ltGain + stGainForTax,
+          depreciationRecapture:      deprVal,
+          depreciationRecapture1245:  recap1245,
+          depreciationRecapture1250:  recap1250,
+          // §1250 IS in the NIIT base (§1411); §1245 is NOT (active trade
+          // or business carve-out per the engine's documented design).
+          investmentIncome: ltGain + stGainForTax + recap1250,
           wages: wages
         }) || 0;
       }
@@ -2385,6 +2450,19 @@ function bindControls() {
         window.__rettSupplementalInterest[k] = null;
       });
     }
+    // Extra (slot-based) supplementals — ptet, slot05–12, charitable, etc.
+    // (advisor 2026-06-08). Previously this reset cleared ONLY the core
+    // supps (oilGas / delphi), leaving every slot supp's Interested mark
+    // stale after a fundamentals change — a confusing half-reset where
+    // Tab 5 showed some picks cleared and others retained. Clear the slot
+    // supps' interest marks too. Keep their entered amounts/config intact
+    // (don't call resetSupplementalExtra — that wipes amounts); only the
+    // interest marks reset, matching the core behavior above.
+    if (window.__rettSupplementalExtraInterest) {
+      Object.keys(window.__rettSupplementalExtraInterest).forEach(function (k) {
+        window.__rettSupplementalExtraInterest[k] = null;
+      });
+    }
     // Reset default-risk toggle to "no" — both the hidden select and
     // its visible button widget. Without this the toggle would stay
     // blue/Yes after an inputs change while Cards 2+3 visibility re-
@@ -2420,6 +2498,12 @@ function bindControls() {
       try { window.renderSupplementalPage(); } catch (e) { /* */ }
     } else if (typeof window.refreshSupplementalCards === 'function') {
       try { window.refreshSupplementalCards(); } catch (e) { /* */ }
+    }
+    // Extra (slot-based) supp cards render through their own host — force
+    // a re-render so the cleared Interested marks show on Tab 5 (the core
+    // renderSupplementalPage above doesn't own the slot cards).
+    if (typeof window.renderSupplementalExtra === 'function') {
+      try { window.renderSupplementalExtra(); } catch (e) { /* */ }
     }
   }
 
@@ -2577,30 +2661,3 @@ function bindControls() {
 }
 
 document.addEventListener('DOMContentLoaded', bindControls);
-
-// Cache-buster mismatch guard. Every <script src=".../?v=NNN"> is
-// expected to share the same v= value (we bump them together on every
-// push). If a partial deploy ships some files and not others, the
-// browser will load a mix of fresh and cached scripts — the engine
-// might be the new shape while the renderer still expects the old one,
-// producing subtle wrong numbers instead of a clean error. Surface the
-// mismatch in the console at boot so it's debuggable from the start.
-(function _checkCacheBusterSync() {
-  try {
-    var scripts = document.querySelectorAll('script[src]');
-    var versions = {};
-    scripts.forEach(function (s) {
-      var m = /[?&]v=([^&]+)/.exec(s.src || '');
-      if (m) {
-        var v = m[1];
-        if (!versions[v]) versions[v] = [];
-        versions[v].push(s.src.split('/').pop());
-      }
-    });
-    var keys = Object.keys(versions);
-    if (keys.length > 1) {
-      console.warn('[RETT cache-buster] Mixed script versions loaded — ' +
-        'partial deploy or stale cache. Versions:', versions);
-    }
-  } catch (e) { /* never block boot on a guard */ }
-})();

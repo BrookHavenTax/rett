@@ -38,6 +38,23 @@
   var REGISTRY_KEY = '__rettSupplementalRegistry';
   var ENABLED_KEY  = '__rettSupplementalEnabled';
 
+  // ── Oil & Gas IDC AMT preference fraction ────────────────────────────────
+  // Only the "excess IDC" is an AMT preference (IRC §57(a)(2)): the IDC
+  // deducted MINUS what 120-month (10-year) straight-line amortization would
+  // allow. In the first year ~1/10 of the IDC is recovered by that
+  // amortization and stays deductible for AMT, so the preference is ~90% of
+  // the IDC, NOT 100%. The advisor chose the conservative middle ground
+  // (option C, 2026-06-12 research): use 90% and deliberately SKIP the
+  // independent-producer exception (§57(a)(2)(E)) + 40% AMTI cap, which would
+  // exempt most individual working-interest investors entirely. Single source
+  // of truth — temp-page-render reads this same global. Dial later for a
+  // partial-IDC split or to model the independent-producer exemption.
+  if (root.__rettIdcAmtPrefFraction == null) root.__rettIdcAmtPrefFraction = 0.90;
+  function _idcAmtPrefFraction() {
+    var f = Number(root.__rettIdcAmtPrefFraction);
+    return (isNaN(f) || f < 0) ? 0.90 : Math.min(1, f);
+  }
+
   function _registry() {
     if (!root[REGISTRY_KEY]) root[REGISTRY_KEY] = {};
     return root[REGISTRY_KEY];
@@ -117,17 +134,140 @@
   // next supp realizes ~$0. That both removes the double-count and picks
   // the best combination (high-rate Farm/Equipment/Oil&Gas win the pool;
   // low-rate Delphi/PTET get crowded out when capital is the constraint).
+  // Ordinary-income FLOOR — the optimizer shelters ordinary income down to
+  // this floor, never to $0. The standard-deduction band is taxed at 0% and
+  // the first 10% bracket band at only 10%, so spending a supplemental
+  // deduction (or capital) to shelter those low-value dollars wastes a
+  // deduction that yields far more against higher-bracket income — leave
+  // them unsheltered and redeploy the capital (advisor 2026-06-10). Floor =
+  // standard deduction + top of the 10% bracket, per filing status and year.
+  // Brackets inflate ~2%/yr so it's computed for the specific projection
+  // year (yearOffset 0 = sale year). Std deduction is held flat per the
+  // engine's projection model.
+  function _ordFloor(cfg, yearOffset) {
+    var status   = (cfg && cfg.filingStatus) || 'mfj';
+    var baseYear = Number(cfg && cfg.year1) || 2026;
+    var year     = baseYear + (Number(yearOffset) || 0);
+    var stdDed = (typeof root.getFederalStandardDeduction === 'function')
+      ? Number(root.getFederalStandardDeduction(year, status)) || 0 : 0;
+    var tenTop = 0;
+    if (typeof root.getFederalBrackets === 'function') {
+      var br = root.getFederalBrackets(year, status) || [];
+      for (var i = 0; i < br.length; i++) {
+        if (Math.abs((Number(br[i][1]) || 0) - 0.10) < 1e-9) { tenTop = Number(br[i][0]) || 0; break; }
+      }
+    }
+    return Math.max(0, stdDed + tenTop);
+  }
+  // Brooklyn-first recapture (advisor 2026-06-11). The §1250 unrecaptured-
+  // depreciation recapture that the chosen PRIMARY (Brooklyn) strategy already
+  // absorbs with its short-term losses must NOT also be sheltered by the
+  // ordinary-offset supps — otherwise a supp sizes up to offset recapture
+  // Brooklyn has already wiped (a double-offset; the supp "does the excess").
+  // buildInterestedSummary stashes how much §1250 Brooklyn absorbs AT FULL
+  // STRENGTH (supp-blind) on __rettPrimaryRecap1250Absorbed each render — full
+  // strength because we run Brooklyn first and never dial it back to feed the
+  // offsetters. The loss waterfall is ST -> LT -> §1250, so this is >0 only
+  // when Brooklyn's loss exceeds the regular LT gain; otherwise it's 0 and the
+  // supps keep the full recapture (a real, non-overlapping offset).
+  function _suppExposedRecap(r1245, r1250) {
+    var absorbed = Math.max(0, Number(root.__rettPrimaryRecap1250Absorbed) || 0);
+    // §1245 is ordinary income — Brooklyn capital losses can't net it past the
+    // §1211(b) $3K cap — so it stays fully exposed. Only the §1250 slice
+    // Brooklyn absorbs is removed.
+    var e1245 = Math.max(0, Number(r1245) || 0);
+    var e1250 = Math.max(0, (Number(r1250) || 0) - absorbed);
+    return { recap1245: e1245, recap1250: e1250, total: e1245 + e1250 };
+  }
+  // Resolve a cfg's recapture into the §1245/§1250 split (lump defaults to
+  // §1250, matching the engine's real-estate convention) then return the
+  // slice still exposed to the supps.
+  function _exposedRecapFromCfg(cfg) {
+    if (!cfg) return { recap1245: 0, recap1250: 0, total: 0 };
+    var r1245 = Number(cfg.acceleratedDepreciation1245 || cfg.depreciationRecapture1245) || 0;
+    var r1250 = Number(cfg.acceleratedDepreciation1250 || cfg.depreciationRecapture1250) || 0;
+    if (r1245 + r1250 === 0) {
+      r1250 = Number(cfg.acceleratedDepreciation || cfg.depreciationRecapture || cfg.recap) || 0;
+    }
+    return _suppExposedRecap(r1245, r1250);
+  }
+
+  // Year-0 shared ordinary pool available to ord-offset supps: total Y0
+  // ordinary income (recurring + the EXPOSED accelerated-depreciation
+  // recapture — net of what Brooklyn already absorbs) LESS the floor we
+  // deliberately leave unsheltered.
   function _y0OrdPool(cfg) {
     if (!cfg) return 0;
-    return Math.max(0,
-      (Number(cfg.baseOrdinaryIncome) || 0) +
-      (Number(cfg.acceleratedDepreciation) || 0));
+    var gross = (Number(cfg.baseOrdinaryIncome) || 0) + _exposedRecapFromCfg(cfg).total;
+    return Math.max(0, gross - _ordFloor(cfg, 0));
   }
+  // Recurring (Y1+) shared ordinary pool. Each future year has its OWN pool
+  // — the recapture is Y0-only, so out-years see just the recurring ordinary
+  // income, again less the floor. Used to saturate multi-year supps so the
+  // sum of their out-year offsets can't exceed a single year's income
+  // (advisor 2026-06-10: multi-year allocations must report correctly).
+  function _y1OrdPool(cfg) {
+    if (!cfg) return 0;
+    return Math.max(0, (Number(cfg.baseOrdinaryIncome) || 0) - _ordFloor(cfg, 1));
+  }
+  // Extract the Y0-only tax savings from a supp's result. Multi-year
+  // recurring supps (PTET/Augusta/charitable/401k) report netBenefit =
+  // benY0 + benRest×(yearCount-1), but the saturation pool is Y0-only —
+  // so the rate calc must use the Y0 slice, not the multi-year sum.
+  // Without this split, PTET/Augusta crowded out single-year supps with
+  // higher TRUE Y0 yields (rate was inflated by ~yearCount×).
+  // Audit 2026-06-08 findings #2 + #5.
+  function _y0NetOf(result) {
+    if (!result) return 0;
+    var d  = result.detail || {};
+    var py = result.perYear;
+    // perYear shape (Oil & Gas, sometimes Delphi): first-year totalSaved.
+    if (Array.isArray(py) && py[0] && py[0].totalSaved != null) {
+      return Math.max(0, Number(py[0].totalSaved) || 0);
+    }
+    // Multi-year recurring (PTET/Augusta/charitable/401k): explicit Y0 field.
+    if (d.taxSavingsY0 != null) {
+      return Math.max(0, Number(d.taxSavingsY0) || 0);
+    }
+    // Single-year fallback: full netBenefit is Y0.
+    return Math.max(0, Number(result.netBenefit) || 0);
+  }
+
+  // Per-recurring-year (Y1+) ordinary demand + per-year net for a supp.
+  // Multi-year supps repeat an offset each future year against that year's
+  // own ordinary pool; this returns the ONE-YEAR demand + net so the Y1+
+  // pool can be saturated the same way Y0 is. null when the supp has no
+  // recurring ordinary offset (single-year supps — their restNet is ~0).
+  function _y1OrdInfo(id, result) {
+    if (!result) return null;
+    var d  = result.detail || {};
+    var py = result.perYear;
+    if (Array.isArray(py) && py.length > 1 && py[1]) {
+      var p1  = py[1];
+      var dem = (id === 'delphi')
+        ? (Number(p1.ordExpense) || 0)
+        : (Number(p1.deduction) || Number(p1.absorbed) || 0);
+      var net = Number(p1.totalSaved) || 0;
+      if (dem > 0 && net > 0) return { demand: dem, netPerYear: net };
+      return null;
+    }
+    // Unified recurring shape (PTET, Augusta, charitable, 401k):
+    // ordOffsetRestPerYear is the per-year offset, taxSavingsRestPerYear the
+    // per-year tax saved.
+    var dem2 = Number(d.ordOffsetRestPerYear) || 0;
+    var net2 = Number(d.taxSavingsRestPerYear) || 0;
+    if (dem2 > 0 && net2 > 0) return { demand: dem2, netPerYear: net2 };
+    return null;
+  }
+
   // Per-supp ordinary-deduction demand + realized per-dollar rate.
   // `demand` is the supp's UNCAPPED desired ordinary offset; `rate` is the
-  // $ saved per $ of deduction it actually realized (net / basis, where
-  // basis is the deduction that produced its reported net). Returns null
-  // for supps that don't offset ordinary income (they keep full net).
+  // $ saved per $ of deduction it actually realized AT Y0 ONLY. `restNet`
+  // is the supp's Y1+ tax savings (sum across future years); `y1Demand` /
+  // `y1Rate` describe one recurring year so _saturateOrdinary can ration the
+  // Y1+ pool too and scale restNet down when multi-year supps over-subscribe
+  // a future year's income. Returns null for supps that don't offset
+  // ordinary income (they keep full net).
   function _ordInfoOf(id, result, net) {
     if (!result) return null;
     var d = result.detail || {};
@@ -138,7 +278,19 @@
       demand = Number(py.deduction) || Number(py.absorbed) || 0;
       basis  = Number(py.absorbed) || demand;
     } else if (id === 'delphi') {
-      demand = Number(al.ordinaryExpense) || 0; basis = demand;
+      // When Delphi is multi-year, allocations.ordinaryExpense is the
+      // SUM across years but the Y0 ord-offset pool only cares about Y0.
+      // Read perYear[0].ordExpense when present (multi-year path); fall
+      // back to allocations.ordinaryExpense for single-year deployments.
+      // Audit R2 finding #2: prior version used the sum, which (a)
+      // understated Delphi's rate by ~yearCount× — sinking it in the
+      // rate-sorted order — and (b) inflated its demand, over-claiming
+      // the Y0 pool and starving other ord-offset supps.
+      var _delphiY0Ord = (Array.isArray(result.perYear) && result.perYear[0]
+        && result.perYear[0].ordExpense != null)
+        ? Number(result.perYear[0].ordExpense) || 0
+        : Number(al.ordinaryExpense) || 0;
+      demand = _delphiY0Ord; basis = _delphiY0Ord;
     } else if (id === 'ptet') {
       demand = Number(d.ordOffsetY0) || 0; basis = demand;
     } else if (id === 'slot07') {
@@ -149,33 +301,172 @@
     } else if (id === 'slot12') {
       demand = Number(d.totalUncapped) || Number(d.total) || 0;
       basis  = Number(d.total) || demand;
+    } else if (id === 'charitableGifts') {
+      // Charitable gift cash + appreciated-asset ord deduction.
+      // Engine writes detail.deductibleAmount (capped at AGI %) and
+      // detail.ordOffsetY0 (the Y0 deductible slice). Audit 2026-06-08:
+      // previously fell through to else→null, bypassing saturation.
+      demand = Number(d.deductibleAmount) || Number(d.ordOffsetY0) || 0;
+      basis  = Number(d.ordOffsetY0)     || demand;
+    } else if (id === 'slot09') {
+      // 401(k) + profit-sharing reduces W-2/SE income by total contribution.
+      demand = Number(d.ordOffsetY0) || Number(d.totalContribution) || 0;
+      basis  = Number(d.ordOffsetY0) || demand;
+    } else if (id === 'slot10') {
+      // Aircraft §168 bonus / ADS depreciation on bizUse-qualified cost.
+      demand = Number(d.yr1DeductionUncapped) || Number(d.yr1Deduction) || 0;
+      basis  = Number(d.yr1Deduction)         || demand;
+    } else if (id === 'slot11') {
+      // STR loophole — non-passive year-1 cost-seg deduction.
+      demand = Number(d.year1DeductionUncapped) || Number(d.year1Deduction) || 0;
+      basis  = Number(d.year1Deduction)         || demand;
     } else {
       return null;
     }
     if (demand <= 0 || basis <= 0) return null;
-    return { demand: demand, rate: (Number(net) || 0) / basis };
+    var y0Net   = _y0NetOf(result);
+    var fullNet = Math.max(0, Number(net) || 0);
+    var restNet = Math.max(0, fullNet - y0Net);  // Y1+ total (rationed below)
+    var y1 = _y1OrdInfo(id, result);
+    return {
+      demand:   demand,
+      rate:     y0Net / basis,   // Y0-only rate (not multi-year inflated)
+      restNet:  restNet,         // Y1+ total — scaled by the Y1 saturation
+      y1Demand: y1 ? y1.demand : 0,
+      y1Rate:   (y1 && y1.demand > 0) ? (y1.netPerYear / y1.demand) : 0
+    };
   }
   // Allocate the shared Y0 ordinary pool across funded supps best-first.
   // Input items: [{ id, netBenefit, ordInfo }]. Returns
   //   { total, realized: { id -> realizedNet } }.
   // Supps with no ordInfo keep their full net (they don't touch the pool).
-  function _saturateOrdinary(items, pool) {
+  //
+  // Multi-year supps: their Y0 component is rationed against the Y0 pool and
+  // their recurring (Y1+) component against the SEPARATE recurring pool
+  // (y1Pool). Each future year has its own independent ordinary income, so
+  // restNet is scaled by the fraction of one recurring year's demand that
+  // fits — not wiped proportionally to Y0 crowding (audit 2026-06-08 #5),
+  // but no longer passed through at 100% either (advisor 2026-06-10: when
+  // several multi-year supps over-subscribe a future year's income their
+  // out-year offsets must be rationed, or the sum exceeds that year's income).
+  function _saturateOrdinary(items, pool, y1Pool) {
     var realized = {};
+    // realizedDetail[id] = { y0, rest, y0Demand, rate, y1Scale }. Consumers
+    // (temp-page-render) read y0SaturationScale = y0/(y0Demand*rate) and
+    // y1PlusSaturationScale = y1Scale to scale each year band independently.
+    var realizedDetail = {};
     var ordList = [];
     items.forEach(function (s) {
       if (s.ordInfo) ordList.push(s);
-      else realized[s.id] = Math.round(Number(s.netBenefit) || 0);
+      else {
+        realized[s.id] = Math.round(Number(s.netBenefit) || 0);
+        realizedDetail[s.id] = { y0: realized[s.id], rest: 0, y0Demand: 0, rate: 0, y1Scale: 1 };
+      }
     });
-    ordList.sort(function (a, b) { return b.ordInfo.rate - a.ordInfo.rate; });
+    // ---- Y0 ration. FREE supps first: Augusta / PTET deploy no capital —
+    // they're "set-and-forget" benefits the client gets just for opting in —
+    // so they claim their slice of the shared ordinary pool BEFORE the
+    // capital strategies (Oil & Gas, Delphi, Equipment Leasing, Farm). A
+    // capital supp's deduction that over-subscribes the pool is wasted NOL
+    // anyway, so seating the free supps first never costs total benefit and
+    // makes them show every applicable year instead of being crowded out of
+    // Y0 (advisor 2026-06-10). Within each tier: sort by Y0 rate desc; tie ->
+    // smaller restNet first (single-year supps get first dibs; a multi-year
+    // supp can still realize Y1+ even if Y0 is crowded out). Audit R2 #10.
+    ordList.sort(function (a, b) {
+      var af = a.isFree ? 1 : 0, bf = b.isFree ? 1 : 0;
+      if (af !== bf) return bf - af;
+      var d = b.ordInfo.rate - a.ordInfo.rate;
+      if (d !== 0) return d;
+      return (a.ordInfo.restNet || 0) - (b.ordInfo.restNet || 0);
+    });
+    var y0Realized = {};
     var remaining = Math.max(0, Number(pool) || 0);
     ordList.forEach(function (s) {
       var take = Math.min(s.ordInfo.demand, remaining);
-      realized[s.id] = Math.round(take * s.ordInfo.rate);
+      y0Realized[s.id] = take * s.ordInfo.rate;
       remaining -= take;
+    });
+    // ---- Y1+ ration: ration the recurring pool by one-year demand best-
+    // first; each supp's restNet scales by the fraction of its recurring
+    // demand that fits. Supps with no recurring ord demand keep full restNet.
+    var y1Scale = {};
+    var y1List = ordList.filter(function (s) { return (s.ordInfo.y1Demand || 0) > 0; });
+    y1List.sort(function (a, b) {
+      var af = a.isFree ? 1 : 0, bf = b.isFree ? 1 : 0;
+      if (af !== bf) return bf - af;   // free (no-capital) supps first, same as Y0
+      var d = (b.ordInfo.y1Rate || 0) - (a.ordInfo.y1Rate || 0);
+      if (d !== 0) return d;
+      return (a.ordInfo.restNet || 0) - (b.ordInfo.restNet || 0);
+    });
+    var y1Remaining = Math.max(0, Number(y1Pool) || 0);
+    y1List.forEach(function (s) {
+      var dem = s.ordInfo.y1Demand || 0;
+      var take1 = Math.min(dem, y1Remaining);
+      y1Scale[s.id] = dem > 0 ? (take1 / dem) : 1;
+      y1Remaining -= take1;
+    });
+    // ---- combine
+    ordList.forEach(function (s) {
+      var realized_y0 = y0Realized[s.id] || 0;
+      var sc          = (y1Scale[s.id] != null) ? y1Scale[s.id] : 1;
+      var rest        = (s.ordInfo.restNet || 0) * sc;
+      realized[s.id] = Math.round(realized_y0 + rest);
+      realizedDetail[s.id] = {
+        y0:        realized_y0,
+        rest:      rest,
+        y0Demand:  s.ordInfo.demand,
+        rate:      s.ordInfo.rate,
+        y1Scale:   sc
+      };
     });
     var total = 0;
     Object.keys(realized).forEach(function (k) { total += realized[k]; });
-    return { total: Math.round(total), realized: realized };
+    return { total: Math.round(total), realized: realized, detail: realizedDetail };
+  }
+
+  // Oil & Gas IDC AMT clawback (advisor 2026-06-12). O&G's intangible drilling
+  // cost is deducted for regular tax but added BACK to AMTI post-strategy (IDC
+  // isn't deductible for AMT — see tax-calc-federal `amtIdcPreference`). After
+  // the primary (Brooklyn) strategy wipes the capital gain, the residual is the
+  // recurring ordinary income; adding the IDC back there often triggers AMT
+  // that claws back most of O&G's federal benefit. The FUNDING layer (rivalry +
+  // auto-sizer) must rank/size O&G by this AFTER-AMT value so it doesn't
+  // over-invest in O&G when AMT eats it (and funds higher-benefit supps first).
+  //
+  // Returns a SHALLOW CLONE of the O&G result with each year's totalSaved (and
+  // the rollup) reduced by that year's incremental IDC AMT. The original
+  // lastResult is NOT mutated — the per-year display recompute
+  // (__rettHonestSuppBenefit / temp-page) applies the IDC AMT itself from the
+  // untouched absorbedOrd, so there's no double-count. Demand/absorbed fields
+  // are left intact so the shared-ordinary-pool rationing is unchanged.
+  function _oilGasResultAfterAmt(cfg, result) {
+    if (!result || typeof root.computeFederalTaxBreakdown !== 'function') return result;
+    var py = Array.isArray(result.perYear) ? result.perYear : null;
+    if (!py || !py.length) return result;
+    var year     = Number(cfg && cfg.year1) || 2026;
+    var status   = (cfg && cfg.filingStatus) || 'mfj';
+    var residOrd = Math.max(0, Number(cfg && cfg.baseOrdinaryIncome) || 0);
+    var wages    = Math.max(0, Number(cfg && cfg.wages) || 0);
+    var touched  = false;
+    var newPy = py.map(function (p, i) {
+      // Only the excess IDC (~90%) is an AMT preference — see _idcAmtPrefFraction.
+      var idc = Math.max(0, Number(p && p.absorbedOrd) || 0) * _idcAmtPrefFraction();
+      if (idc <= 0) return p;
+      var regOrd = Math.max(0, residOrd - idc);
+      var clawback = 0;
+      try {
+        var w = root.computeFederalTaxBreakdown(regOrd, year + i, status, { longTermGain: 0, wages: wages, amtIdcPreference: idc }) || {};
+        var n = root.computeFederalTaxBreakdown(regOrd, year + i, status, { longTermGain: 0, wages: wages }) || {};
+        clawback = Math.max(0, (Number(w.amtTopUp) || 0) - (Number(n.amtTopUp) || 0));
+      } catch (e) { clawback = 0; }
+      if (clawback <= 0) return p;
+      touched = true;
+      return Object.assign({}, p, { totalSaved: Math.max(0, (Number(p.totalSaved) || 0) - clawback) });
+    });
+    if (!touched) return result;
+    var newTotal = newPy.reduce(function (a, p) { return a + (Number(p.totalSaved) || 0); }, 0);
+    return Object.assign({}, result, { perYear: newPy, totalSaved: newTotal });
   }
 
   // Rivalry optimizer — for each Interested supplemental, compare its
@@ -236,6 +527,8 @@
       })
       .map(function (spec) {
         var result = (typeof spec.getResult === 'function') ? spec.getResult() : null;
+        // Rank O&G by its AFTER-AMT benefit (IDC added back post-strategy).
+        if (spec.id === 'oilGas') result = _oilGasResultAfterAmt(cfg, result);
         var net = (typeof spec.getNetBenefit === 'function')
           ? Number(spec.getNetBenefit(result)) || 0 : 0;
         var inv = (typeof spec.getInvestment === 'function')
@@ -252,6 +545,15 @@
     // (PTET / Augusta) that are funded unconditionally but still draw from
     // the shared pool, so every subset's saturation must include them.
     var ordPool = _y0OrdPool(cfg);
+    // Recurring (Y1+) pool — the rivalry's subset objective must credit the
+    // SAME out-year benefit the final realization does (runMasterSolver passes
+    // this to _saturateOrdinary at funding time). Without it, a multi-year
+    // capital supp whose Year 0 is crowded out (e.g. Farm / Equipment Leasing
+    // behind Oil & Gas) evaluates to ~$0 net here and is denied funding as
+    // 'capital-exhausted', even though its Year 1+ deduction is real and gets
+    // realized downstream — a funding-vs-realization inconsistency (advisor
+    // 2026-06-10).
+    var y1Pool = _y1OrdPool(cfg);
     var alwaysOnOrd = [];
 
     var decisions = {};
@@ -315,7 +617,7 @@
     // Baseline: fund no rivals — Brooklyn keeps all capital and only the
     // investment-free pool supps realize benefit. Any rival subset must
     // beat this saturated baseline net of the capital it pulls.
-    var bestObj = _saturateOrdinary(alwaysOnOrd, ordPool).total;
+    var bestObj = _saturateOrdinary(alwaysOnOrd, ordPool, y1Pool).total;
     if (k > 0 && k <= 20) {
       var subsetCount = 1 << k;
       for (var m = 1; m < subsetCount; m++) {
@@ -332,7 +634,7 @@
         // allocated best-first), minus the Brooklyn yield foregone on the
         // capital the subset pulls. A crowded-out ord supp adds ~$0
         // saturated net but costs sumInv*brooklynRate, so it loses here.
-        var sumNet = _saturateOrdinary(items, ordPool).total;
+        var sumNet = _saturateOrdinary(items, ordPool, y1Pool).total;
         var obj = sumNet - sumInv * brooklynYieldRate;
         if (obj > bestObj || (obj === bestObj && sumInv < bestInv)) {
           bestObj = obj;
@@ -359,11 +661,41 @@
       });
     }
 
+    // cfg._forceDisabledSupps: { id: true } — let upstream callers force
+    // specific rivals to funded=false (used by buildInterestedSummary's
+    // combined-net drop-one verification, where the FULL pipeline cost
+    // of recognizing Y0 gain to fund a supp is computed and compared).
+    // Mark forced-disabled supps with reason 'forced-disabled' so
+    // downstream consumers know it's an upstream override, not rivalry.
+    var _forceDisabled = (cfg && cfg._forceDisabledSupps) || {};
+    if (Object.keys(_forceDisabled).length > 0) {
+      var origMask = bestMask;
+      var maskOut = 0;
+      for (var fi = 0; fi < k; fi++) {
+        if (!((origMask >> fi) & 1)) continue;
+        if (_forceDisabled[rivals[fi].id]) continue;
+        maskOut |= (1 << fi);
+      }
+      bestMask = maskOut;
+      bestInv = 0;
+      for (var fri = 0; fri < k; fri++) {
+        if ((bestMask >> fri) & 1) bestInv += rivals[fri].investment;
+      }
+    }
+
     // Assign decisions to rivals based on the selected subset.
     rivals.forEach(function (c, i) {
       if ((bestMask >> i) & 1) {
         decisions[c.id] = { funded: true, reason: 'beats-brooklyn',
           granted: c.investment, rate: c.rate, brooklynRate: brooklynYieldRate,
+          netBenefit: c.netBenefit, requested: c.investment };
+      } else if (_forceDisabled[c.id]) {
+        // Upstream caller (buildInterestedSummary drop-one verification)
+        // determined this supp's marginal combined-net contribution was
+        // negative when the full B/C down-payment recognition cost is
+        // included. Distinct from 'capital-exhausted' (knapsack-bound).
+        decisions[c.id] = { funded: false, reason: 'drop-one-verified',
+          granted: 0, rate: c.rate, brooklynRate: brooklynYieldRate,
           netBenefit: c.netBenefit, requested: c.investment };
       } else {
         // Beat Brooklyn standalone but excluded from the optimum subset
@@ -399,18 +731,27 @@
   //     anyInterested:               bool,
   //     rivalry: { decisions, brooklynRate, capitalRemaining }
   //   }
-  function runMasterSolver(primaryNetBenefit) {
+  function runMasterSolver(primaryNetBenefit, opts) {
     var primary = Number(primaryNetBenefit) || 0;
     var list = listSupplementals();
 
     // Pull live cfg so the rivalry can compute Brooklyn's yield rate.
+    // opts.forceDisabledSupps lets buildInterestedSummary's drop-one
+    // verification pin specific rivals to funded=false for a counter-
+    // factual evaluation (audit handoff Bug A).
     var cfg = (typeof root.collectInputs === 'function') ? root.collectInputs() : null;
-    var rivalry = _computeRivalryDecisions(cfg || {});
+    cfg = cfg || {};
+    if (opts && opts.forceDisabledSupps) {
+      cfg = Object.assign({}, cfg, { _forceDisabledSupps: opts.forceDisabledSupps });
+    }
+    var rivalry = _computeRivalryDecisions(cfg);
 
     var supplementals = list
       .map(function (spec) {
         var interest = (typeof spec.getInterest === 'function') ? spec.getInterest() : null;
         var result   = (typeof spec.getResult   === 'function') ? spec.getResult()   : null;
+        // O&G ranked/saturated by its AFTER-AMT benefit (IDC added back).
+        if (spec.id === 'oilGas') result = _oilGasResultAfterAmt(cfg, result);
         var benefit  = (typeof spec.getNetBenefit === 'function')
           ? Number(spec.getNetBenefit(result)) || 0
           : 0;
@@ -447,21 +788,73 @@
     var sat = _saturateOrdinary(
       fundedSupps.map(function (s) {
         return { id: s.id, netBenefit: s.netBenefit,
+                 // Free (no-capital) supps — PTET / Augusta — are funded
+                 // unconditionally as 'free-benefit'; they claim the shared
+                 // ordinary pool ahead of the capital strategies (2026-06-10).
+                 isFree: !!(s.rivalry && s.rivalry.reason === 'free-benefit'),
                  ordInfo: _ordInfoOf(s.id, s.result, s.netBenefit) };
       }),
-      _y0OrdPool(cfg)
+      _y0OrdPool(cfg),
+      _y1OrdPool(cfg)
     );
     supplementals.forEach(function (s) {
       s.realizedNetBenefit = Object.prototype.hasOwnProperty.call(sat.realized, s.id)
         ? sat.realized[s.id]
         : 0;
-      // Scale factor consumers can apply to per-year / per-bucket figures
-      // (1 when unsaturated; <1 when the shared pool clipped this supp).
+      // Legacy single-scalar scale (kept for back-compat consumers).
       s.saturationScale = (Number(s.netBenefit) > 0)
         ? (s.realizedNetBenefit / s.netBenefit)
         : (s.realizedNetBenefit > 0 ? 1 : 0);
+      // Per-year split: Y0 is rationed against the Y0 pool and Y1+ against
+      // the recurring pool. Consumers (temp-page-render) apply
+      // y0SaturationScale ONLY to perYear[0] and y1PlusSaturationScale to
+      // perYear[1..]. Audit R2 #5: per-year split avoids mis-attributing
+      // dollars across years on clipped supps; advisor 2026-06-10: Y1+ is
+      // now itself rationed so out-year offsets can't exceed a year's income.
+      var det = sat.detail && sat.detail[s.id];
+      if (det && det.y0Demand > 0 && det.rate > 0) {
+        var y0FullNet = det.y0Demand * det.rate;
+        s.y0SaturationScale = y0FullNet > 0 ? (det.y0 / y0FullNet) : 1;
+      } else {
+        s.y0SaturationScale = 1;
+      }
+      s.y1PlusSaturationScale = (det && Number.isFinite(Number(det.y1Scale)))
+        ? Number(det.y1Scale) : 1;
     });
     var totalSupp = sat.total;
+
+    // Cross-strategy residual cap (advisor 2026-06-09). Each funded supp's
+    // netBenefit is computed against its OWN pre-primary baseline, so when
+    // the primary strategy (Brooklyn) already eliminated part of the year's
+    // tax, the supps would double-claim that overlap — making combined
+    // "tax saved" exceed the tax that was EVER owed (measured case:
+    // Brooklyn $152K + Oil&Gas standalone $178K = $330K "saved" on a $324K
+    // bill → $6K phantom in the Tab-6 hero). Supps can only offset the tax
+    // that REMAINS after the primary strategy. The caller — which knows the
+    // chosen strategy's dialed-back deployment — supplies that residual
+    // (Σ withStrategy.total across the chosen comp rows) via
+    // opts.postPrimaryTaxRemaining. We cap the funded-supp total there and
+    // scale each funded supp's realized benefit proportionally so per-supp
+    // figures + saturationScale stay consistent. _saturateOrdinary already
+    // handles supp-vs-supp ordinary-pool crowding; THIS is the orthogonal
+    // supp-vs-primary cap. Omitted (no cap) when the caller can't supply it.
+    // Applies even alongside forceDisabledSupps so buildInterestedSummary's
+    // drop-one verification optimizes the SAME capped combined net the
+    // hero/Temp/admin display (the cap is caller-supplied — no re-entrancy).
+    var _ppCap = (opts && Number.isFinite(Number(opts.postPrimaryTaxRemaining)))
+      ? Math.max(0, Number(opts.postPrimaryTaxRemaining)) : null;
+    if (_ppCap != null && totalSupp > _ppCap + 0.5) {
+      var _ppScale = totalSupp > 0 ? (_ppCap / totalSupp) : 0;
+      supplementals.forEach(function (s) {
+        if (s && s.rivalry && s.rivalry.funded) {
+          s.realizedNetBenefit = Math.round((Number(s.realizedNetBenefit) || 0) * _ppScale);
+          s.saturationScale = (Number(s.netBenefit) > 0)
+            ? (s.realizedNetBenefit / s.netBenefit)
+            : (s.realizedNetBenefit > 0 ? 1 : 0);
+        }
+      });
+      totalSupp = Math.round(_ppCap);
+    }
 
     return {
       primaryNetBenefit:        primary,
@@ -513,15 +906,22 @@
   //   overAllocated         — true if supplementals exceed totalAvailable.
   //                           Surfaces in the Implementation panel so
   //                           the advisor can spot a broken rule.
-  function runAllocator(totalAvailable) {
+  function runAllocator(totalAvailable, opts) {
     var avail = Math.max(0, Number(totalAvailable) || 0);
 
     // Build a cfg snapshot that the rivalry optimizer can use to
     // compute Brooklyn's per-dollar yield. collectInputs is the same
     // reader buildInterestedSummary uses — lives on window.
+    // opts.forceDisabledSupps lets the combined-net drop-one verification
+    // pin specific rivals to funded=false so the allocator reports the
+    // reduced supp Y0 deployment for that counterfactual.
     var cfg = (typeof root.collectInputs === 'function') ? root.collectInputs() : null;
-    if (cfg) cfg.availableCapital = avail;
-    var rivalry = _computeRivalryDecisions(cfg || { availableCapital: avail });
+    cfg = cfg || { availableCapital: avail };
+    cfg.availableCapital = avail;
+    if (opts && opts.forceDisabledSupps) {
+      cfg = Object.assign({}, cfg, { _forceDisabledSupps: opts.forceDisabledSupps });
+    }
+    var rivalry = _computeRivalryDecisions(cfg);
 
     var list = listSupplementals();
     var supps = list
@@ -792,4 +1192,37 @@
   root.runMasterSolver              = runMasterSolver;
   root.runAllocator                 = runAllocator;
   root.runBrooklynOptimizer         = runBrooklynOptimizer;
+  // Shared by the supp calc modules (calc-oil-gas, calc-supplemental-extra) so
+  // they size against the SAME Brooklyn-net-of recapture pool the solver uses.
+  root.__rettSuppExposedRecap       = _suppExposedRecap;
+
+  // Post-primary residual tax for a chosen-strategy entry = Σ withStrategy
+  // .total across the engine rows = the tax that REMAINS after the primary
+  // (Brooklyn) strategy, before any supplemental. Funded supps can only
+  // offset this residual; pass it as runMasterSolver's
+  // opts.postPrimaryTaxRemaining so the combined hero/temp/admin net can't
+  // claim more tax saved than was ever owed (advisor 2026-06-09). Takes a
+  // buildInterestedSummary entry (has .cfg + ._partialDeploy dial-back).
+  // Returns null when it can't compute (caller then passes no cap → prior
+  // behavior). Cheap: one unifiedTaxComparison, no buildInterestedSummary,
+  // so it's safe to call from runMasterSolver's consumers without re-entrancy.
+  root.__rettResidualCapForEntry = function (entry) {
+    if (!entry || !entry.cfg || typeof root.unifiedTaxComparison !== 'function') return null;
+    var ecfg = entry.cfg;
+    var pd = entry._partialDeploy;
+    if (pd && Number.isFinite(Number(pd.deployed)) &&
+        Math.round(Number(pd.deployed)) !== Math.round(Number(ecfg.availableCapital) || 0)) {
+      var d = Math.max(0, Math.round(Number(pd.deployed)));
+      ecfg = Object.assign({}, ecfg, { availableCapital: d, investment: d, investedCapital: d });
+    }
+    if (typeof root.rettFlavorEngineCfg === 'function') {
+      try { ecfg = root.rettFlavorEngineCfg(ecfg); } catch (e) { /* */ }
+    }
+    var comp;
+    try { comp = root.unifiedTaxComparison(ecfg); } catch (e) { return null; }
+    if (!comp || !Array.isArray(comp.rows)) return null;
+    return comp.rows.reduce(function (a, r) {
+      return a + ((r.withStrategy && Number(r.withStrategy.total)) || 0);
+    }, 0);
+  };
 })(window);

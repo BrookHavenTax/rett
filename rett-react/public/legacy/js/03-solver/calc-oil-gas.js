@@ -49,7 +49,10 @@
     if (snap) {
       return {
         year: snap.year, status: snap.status, state: snap.state,
-        ordTotal: snap.ordTotal, recap: snap.recap,
+        ordTotal: snap.ordTotal,
+        recap: snap.recap,
+        recap1245: Number(snap.recap1245) || 0,
+        recap1250: Number(snap.recap1250) || 0,
         stGain: snap.stGain, ltGain: snap.ltGain,
         wages: snap.wages, seInc: snap.seInc,
         qualifiedDividend: snap.qualifiedDividend,
@@ -96,22 +99,38 @@
         typeof computeStateTax !== 'function') {
       return { fed: 0, state: 0, niit: 0, addmed: 0, seTax: 0, total: 0 };
     }
-    var ord = (ordOverride == null) ? (snap.ordTotal + snap.recap) : ordOverride;
+    // Route recap through the engine's split path so §1250 caps at 25%
+    // and lands in the NIIT base, while §1245 stays full marginal and
+    // out of NIIT (matches the primary engine path in tax-comparison.js).
+    // Prior version folded snap.recap into the ordinary stack and omitted
+    // recap from niitBase entirely — sizing OG against a fictitious
+    // marginal-rate landscape. Audit R2 finding #4.
+    var hasSplit = (snap.recap1245 + snap.recap1250) > 0;
+    var r1245 = hasSplit ? snap.recap1245 : 0;
+    var r1250 = hasSplit ? snap.recap1250 : (snap.recap || 0);
+    var ord = (ordOverride == null) ? snap.ordTotal : ordOverride;
+    var niitBaseWithRecap = (snap.niitBase || 0) + r1250;
     var fedB = computeFederalTaxBreakdown(ord, snap.year, snap.status, {
       longTermGain:    snap.ltGain,
       shortTermGain:   snap.stGain,
+      depreciationRecapture:     r1245 + r1250,
+      depreciationRecapture1245: r1245,
+      depreciationRecapture1250: r1250,
       qualifiedDividend: snap.qualifiedDividend || 0,
-      investmentIncome: snap.niitBase,
+      investmentIncome: niitBaseWithRecap,
       wages:           snap.wages,
       seIncome:        snap.seInc
     }) || {};
     var fedOrd = Number(fedB.ordinaryTax) || 0;
     var fedLt  = Number(fedB.ltTax)       || 0;
+    var fedRcp1245 = Number(fedB.recapTax1245) || 0;
+    var fedRcp1250 = Number(fedB.recapTax1250) || 0;
+    var fedRcp = Number(fedB.recapTax)    || (fedRcp1245 + fedRcp1250);
     var amt    = Number(fedB.amtTopUp)    || 0;
     var niit   = Number(fedB.niit)        || 0;
     var addmed = Number(fedB.addlMedicare)|| 0;
     var seTax  = Number(fedB.seTax)       || 0;
-    var fedTotal = fedOrd + fedLt + amt;
+    var fedTotal = fedOrd + fedLt + fedRcp + amt;
     var stateTax = computeStateTax(
       ord + Math.max(0, snap.ltGain) + snap.stGain,
       snap.year, snap.state, snap.status,
@@ -120,6 +139,19 @@
     return {
       fed: fedTotal, state: stateTax,
       niit: niit, addmed: addmed, seTax: seTax,
+      // Per-line breakdown — display layer (Tab 7 right column) uses
+      // these to show post-supp tax per bucket instead of an approximate
+      // proportional allocation. Audit 2026-06-09: prior allocation
+      // could zero out ordinary tax when supp savings exceeded engine's
+      // pre-supp ord tax line, even when meaningful ord income remained
+      // after the supp offset (W2 $500K - OG $380K = $120K still owes
+      // ~$15K tax, not $0).
+      fedOrd: fedOrd,
+      fedLt:  fedLt,
+      fedRcp: fedRcp,
+      fedRcp1245: fedRcp1245,
+      fedRcp1250: fedRcp1250,
+      amt: amt,
       total: fedTotal + niit + addmed + seTax + stateTax
     };
   }
@@ -143,16 +175,56 @@
   function _computeYearImpact(snap, investment, idcPct) {
     var ordBaseline = snap.ordTotal + snap.recap;
     var deduction = Math.max(0, investment) * idcPct;
-    var absorbed = Math.min(deduction, Math.max(0, ordBaseline));
-    var nolGenerated = Math.max(0, deduction - Math.max(0, ordBaseline));
-    var newOrd = Math.max(0, ordBaseline - deduction);
+    // Apply the deduction to ord FIRST, then to the EXPOSED recapture. The
+    // §1250 slice the chosen primary (Brooklyn) strategy already absorbs with
+    // its short-term losses is removed so the IDC deduction can't ALSO shelter
+    // recapture Brooklyn has wiped — a double-offset where the supp "does the
+    // excess" (advisor 2026-06-11). §1245 is ordinary recapture (Brooklyn
+    // can't net it past §1211(b)) so it stays fully exposed. When Brooklyn
+    // doesn't reach the §1250 bucket (loss < regular LT gain), exposed == full
+    // recapture and behavior is unchanged. Keep §1245/§1250 fields reduced so
+    // _totalTaxAt re-derives the optimized recap tax correctly (audit
+    // 2026-06-08 — don't double-count recap in the optimized scenario).
+    var absorbedFromOrd   = Math.min(deduction, Math.max(0, snap.ordTotal));
+    var leftAfterOrd      = Math.max(0, deduction - absorbedFromOrd);
+    var _snapR1245 = Number(snap.recap1245) || 0;
+    var _snapR1250 = ((_snapR1245 + (Number(snap.recap1250) || 0)) > 0)
+      ? (Number(snap.recap1250) || 0)
+      : Math.max(0, Number(snap.recap) || 0);   // lump -> §1250 (real-estate)
+    var _exp = (typeof root.__rettSuppExposedRecap === 'function')
+      ? root.__rettSuppExposedRecap(_snapR1245, _snapR1250)
+      : { recap1245: _snapR1245, recap1250: _snapR1250, total: _snapR1245 + _snapR1250 };
+    var absorbedFromRecap = Math.min(leftAfterOrd, Math.max(0, _exp.total));
+    var absorbed       = absorbedFromOrd + absorbedFromRecap;
+    var nolGenerated   = Math.max(0, deduction - absorbed);
+    var newOrd         = Math.max(0, ordBaseline - deduction);   // display only
+    var newOrdOnly     = Math.max(0, snap.ordTotal - absorbedFromOrd);
+    // Waterfall the recap absorption §1245-first (ordinary, full value) then
+    // the exposed §1250 slice.
+    var absorbed1245 = Math.min(absorbedFromRecap, _exp.recap1245);
+    var absorbed1250 = Math.max(0, absorbedFromRecap - absorbed1245);
+    var newRecap1245 = Math.max(0, _snapR1245 - absorbed1245);
+    var newRecap1250 = Math.max(0, _snapR1250 - absorbed1250);
+    var newRecapTotal = Math.max(0, (snap.recap || 0) - absorbedFromRecap);
+    var optimizedSnap = Object.assign({}, snap, {
+      ordTotal:  newOrdOnly,
+      recap:     newRecapTotal,
+      recap1245: newRecap1245,
+      recap1250: newRecap1250
+    });
     var baseline  = _totalTaxAt(snap, null);
-    var optimized = _totalTaxAt(snap, newOrd);
+    var optimized = _totalTaxAt(optimizedSnap, null);
+    // Split detail (absorbed1245 / absorbed1250) computed above in the
+    // ord → §1245 → exposed-§1250 waterfall — Tab 7's right-column income/tax
+    // lines read these to show the post-supp reduction per bucket.
     return {
       investment:     investment,
       idcPct:         idcPct,
       deduction:      deduction,
       absorbed:       absorbed,
+      absorbedOrd:    absorbedFromOrd,
+      absorbed1245:   absorbed1245,
+      absorbed1250:   absorbed1250,
       nolGenerated:   nolGenerated,
       ordBaseline:    ordBaseline,
       ordOptimized:   newOrd,
@@ -162,7 +234,17 @@
       fedSaved:       baseline.fed   - optimized.fed,
       stateSaved:     baseline.state - optimized.state,
       niitDelta:      baseline.niit  - optimized.niit,
-      addmedDelta:    baseline.addmed - optimized.addmed
+      addmedDelta:    baseline.addmed - optimized.addmed,
+      // Per-line tax-savings deltas — Tab 7 right column uses these to
+      // compute the true post-supp tax on each bucket (ord/§1250/etc.)
+      // instead of allocating supp savings proportionally by absorbed-$.
+      // Prior allocation could zero out ordinary tax when supp savings
+      // happened to exceed engine pre-supp ord tax — even if meaningful
+      // ordinary income remained post-offset.
+      fedOrdSaved:   (baseline.fedOrd  || 0) - (optimized.fedOrd  || 0),
+      fed1245Saved:  (baseline.fedRcp1245 || 0) - (optimized.fedRcp1245 || 0),
+      fed1250Saved:  (baseline.fedRcp1250 || 0) - (optimized.fedRcp1250 || 0),
+      amtDelta:      (baseline.amt    || 0) - (optimized.amt    || 0)
     };
   }
 

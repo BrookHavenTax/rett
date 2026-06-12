@@ -142,6 +142,16 @@
     var primaryNet = (typeof m.net === 'number')
       ? m.net
       : (primarySavings - fees);
+    // Force-recompute supp math before solving. Oil & Gas / Delphi
+    // calcs are strategy-dependent (year-count comes from
+    // _resolvedSaleStrategyKey()) but only re-fire on supp-input events,
+    // NOT on __rettChosenStrategy changes. Without this prefix call,
+    // switching A→B→C left lastResult frozen at the prior strategy's
+    // year-count, causing the hero, admin, and Tab 7 to display
+    // different OG values for the same scenario.
+    if (typeof root.__rettRunAllSuppMath === 'function') {
+      try { root.__rettRunAllSuppMath(); } catch (e) { /* */ }
+    }
     // Pull supplementals through the master solver. The rivalry has
     // already decided which Interested supps actually get funded —
     // anything rejected (brooklyn-beats, capital-exhausted, negative-net)
@@ -151,11 +161,26 @@
     // stay consistent with the Implementation panel and the per-supp
     // rows below: a rejected supp shows $0 everywhere and is excluded
     // from totals everywhere.
+    // Cap funded-supp benefit at the tax remaining after the chosen
+    // (primary) strategy — supps can't save tax Brooklyn already
+    // eliminated (advisor 2026-06-09). Without this the hero over-claims.
+    var _ppCap = (typeof root.__rettResidualCapForEntry === 'function')
+      ? root.__rettResidualCapForEntry(entry) : null;
     var solverOut = (typeof root.runMasterSolver === 'function')
-      ? root.runMasterSolver(primaryNet) : null;
+      ? root.runMasterSolver(primaryNet, (_ppCap != null ? { postPrimaryTaxRemaining: _ppCap } : undefined)) : null;
+    // Honest (recompute-based) supplemental benefit — the actual stacked tax
+    // saved, not the master solver's standalone-marginal-rate sum (which
+    // overstates when supps stack). Falls back to the solver total when the
+    // recompute helper isn't available (advisor 2026-06-10).
     var supplementalBenefit = (solverOut && Number.isFinite(solverOut.totalSupplementalBenefit))
       ? solverOut.totalSupplementalBenefit
       : 0;
+    if (typeof root.__rettHonestSuppBenefitForEntry === 'function') {
+      try {
+        var _honest = root.__rettHonestSuppBenefitForEntry(entry, solverOut);
+        if (Number.isFinite(_honest)) supplementalBenefit = _honest;
+      } catch (e) { /* keep solver value */ }
+    }
     // For print iteration / per-supp rows: only the FUNDED supps
     // surface as contributing. Rejected supps still appear in
     // _renderSupplementalLeftColumn (so the advisor sees the toggle)
@@ -619,7 +644,16 @@
         '<div class="print-section-head">Supplemental Strategies</div>' +
         '<table class="print-table"><tbody>';
       d.supplements.forEach(function (s) {
-        h += '<tr><td>' + s.name + '</td><td class="print-num print-green">+' + _fmt(s.netBenefit) + '</td></tr>';
+        // Use saturation-adjusted realized net (matches the screen path's
+        // _realized helper at line ~957 and the hero's combined-net total).
+        // Pre-fix this used s.netBenefit (raw, pre-saturation) so printed
+        // per-supp rows could sum to more than the printed hero on heavy
+        // ord-offset stacks. Audit 2026-06-08 finding #7.
+        var printNet = Number.isFinite(Number(s.realizedNetBenefit))
+          ? Number(s.realizedNetBenefit)
+          : (Number(s.netBenefit) || 0);
+        if (printNet <= 0) return;  // skip crowded-out supps
+        h += '<tr><td>' + s.name + '</td><td class="print-num print-green">+' + _fmt(printNet) + '</td></tr>';
       });
       h += '</tbody></table></div>';
     }
@@ -948,28 +982,50 @@
       return Number.isFinite(Number(s.realizedNetBenefit))
         ? Number(s.realizedNetBenefit) : (Number(s.netBenefit) || 0);
     }
-    var contributing = solverOut.supplementals.filter(function (s) {
+    // ACTIVE = supps currently adding benefit (enabled, funded, realized > 0).
+    var active = solverOut.supplementals.filter(function (s) {
       if (!s.enabled || !s.available) return false;
       if (s.rivalry && !s.rivalry.funded) return false;
       // Hide supps the shared ordinary pool fully crowded out (realized $0)
       // — they don't add to the client's net, so they shouldn't list here.
       return _realized(s) > 0;
     });
-    if (!contributing.length) return '';
-    var rows = contributing.map(function (s) {
-      var rNet = _realized(s);
-      var sign = rNet >= 0 ? '+' : '';
-      var amt = sign + _fmt(rNet);
+    // INACTIVE = Interested supps the advisor has TOGGLED OFF. Keep them
+    // visible as a muted row with the toggle (unchecked) so they can be
+    // flipped back on — toggling a supplemental off must NOT make it vanish
+    // (advisor 2026-06-12: "what if I want to bring it back"). Still skips
+    // supps that never produced a result (nothing to bring back).
+    var inactive = solverOut.supplementals.filter(function (s) {
+      // Toggled off — keep visible regardless of whether the disabled supp
+      // still has a computed result. Capital supps (Equipment Leasing, Farm)
+      // auto-size to $0 when disabled, which nulls their result (available =
+      // false); we still want the muted row + re-enable toggle.
+      return !s.enabled;
+    });
+    if (!active.length && !inactive.length) return '';
+    function _suppRow(s, isActive) {
+      var amt, rowAttr, checked;
+      if (isActive) {
+        var rNet = _realized(s);
+        amt = (rNet >= 0 ? '+' : '') + _fmt(rNet);
+        rowAttr = ''; checked = ' checked';
+      } else {
+        amt = 'Not active';
+        rowAttr = ' style="opacity:.5"'; checked = '';
+      }
       return '' +
-        '<div class="supp-strat-row" data-supp-row="' + s.id + '">' +
+        '<div class="supp-strat-row" data-supp-row="' + s.id + '"' + rowAttr + '>' +
           '<label class="supp-row-toggle">' +
-            '<input type="checkbox" data-supp-toggle="' + s.id + '" checked>' +
+            '<input type="checkbox" data-supp-toggle="' + s.id + '"' + checked + '>' +
             '<span class="supp-row-switch" aria-hidden="true"></span>' +
           '</label>' +
           '<div class="supp-strat-name">' + s.name + '</div>' +
           '<div class="supp-strat-amt">' + amt + '</div>' +
         '</div>';
-    }).join('');
+    }
+    var rows = active.map(function (s) { return _suppRow(s, true); })
+      .concat(inactive.map(function (s) { return _suppRow(s, false); }))
+      .join('');
 
     return '' +
       '<div class="input-section">' +
@@ -1082,7 +1138,7 @@
       '<div class="growth-head">' +
         '<h2>Grow Your Net Benefit</h2>' +
         '<div class="growth-savings-hero">' +
-          '<span class="growth-savings-label">Tax Savings</span>' +
+          '<span class="growth-savings-label">Net Benefit (to invest)</span>' +
           '<span class="growth-savings-amt">' + _fmt(principal) + '</span>' +
         '</div>' +
         '<p class="growth-desc">The growth phase starts when planning wraps and capital is freed; pick the date the client wants the money out and an assumed annual return.</p>' +
@@ -1144,7 +1200,7 @@
       finalHost.innerHTML = '';
       chartHost.setAttribute('aria-hidden', 'true');
       if (heroAmt)   heroAmt.textContent = _fmt(principal);
-      if (heroLabel) heroLabel.textContent = 'Tax Savings';
+      if (heroLabel) heroLabel.textContent = 'Net Benefit (to invest)';
       return;
     }
     chartHost.setAttribute('aria-hidden', 'false');

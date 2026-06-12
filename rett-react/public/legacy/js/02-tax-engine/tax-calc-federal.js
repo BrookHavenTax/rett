@@ -424,8 +424,20 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       const shortTermGain     = Math.max(0, _st || 0);
       const qualifiedDividend = Math.max(0, _qd || 0);
       const seIncomeRaw       = Math.max(0, Number(_se) || 0);
+      // Default NIIT base must include §1250 unrecaptured gain (§1411
+       // treats it as net investment income). Callers that pass
+       // opts.investmentIncome explicitly win as before. Audit 2026-06-08
+       // caught secondary callers (controls.js, strategy-summary preview,
+       // engine-self-test) under-stating NIIT by 3.8% × §1250 because
+       // the prior default omitted recap. §1245 stays excluded (active
+       // trade/business — not NII per the engine's documented design).
+      var _dr1250Default = (opts.depreciationRecapture1250 != null)
+        ? Math.max(0, Number(opts.depreciationRecapture1250) || 0)
+        : ((opts.depreciationRecapture1245 != null || opts.depreciationRecapture1250 != null)
+            ? 0  // explicit split provided; §1245 only — no §1250 to add
+            : Math.max(0, Number(opts.depreciationRecapture) || 0));  // legacy: lump = §1250
       const investmentIncome  = Math.max(0, _inv != null
-                                          ? _inv : (longTermGain + qualifiedDividend + shortTermGain));
+                                          ? _inv : (longTermGain + qualifiedDividend + shortTermGain + _dr1250Default));
       // Wage base for Additional Medicare per Form 8959. W-2 wages are
       // counted dollar-for-dollar; SE income is multiplied by 0.9235
       // (the SE-earnings adjustment that excludes the half-of-SE-tax
@@ -559,7 +571,18 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       // high-LTCG / low-ord scenarios escape AMT that would actually
       // owe top-up on a real return.
       const _stdDedAddback = (deduction === stdDed && stdDed > 0) ? stdDed : 0;
-      const amtAmti     = taxableOrdinary + _stdDedAddback + ltAmount;
+      // Oil & Gas IDC AMT preference (advisor 2026-06-12). Intangible drilling
+      // costs are deducted for REGULAR tax but NOT for AMT — the deducted amount
+      // is added back to AMTI. The caller passes the O&G IDC ordinary offset
+      // here; it is re-included in the AMTI ordinary base (NOT the regular base,
+      // which keeps the deduction), so AMT is computed as if the IDC had not
+      // been deducted. The caller has ALREADY scaled the offset by the excess-
+      // IDC fraction (root.__rettIdcAmtPrefFraction = 0.90 — only the IDC net
+      // of first-year 120-month amortization is an AMT preference per IRC
+      // §57(a)(2)); this engine adds back exactly what it is handed. $0 for
+      // non-O&G supps and for regular tax.
+      const _amtIdcPref = Math.max(0, Number(opts.amtIdcPreference) || 0);
+      const amtAmti     = taxableOrdinary + _stdDedAddback + ltAmount + _amtIdcPref;
       // AMT slice routing:
       //   §1245 stays in the ORDINARY AMTI slice (26/28% rate, no carve-
       //     out) — it's ordinary income for both regular and AMT.
@@ -571,31 +594,26 @@ function computeFederalTaxBreakdown(ordinaryIncome, year, status, opts) {
       const amtOrdOnly  = _computeAmt(amtAmti, year, status, ltAmount, _recap1250InTaxable, recapTax1250);
 
       // === AMT preferential-rate layer (TMT capital-gains stacking) ===
-      // INTENTIONAL DEPARTURE FROM Form 6251 Part III line 44.
-      //
-      // Form 6251 positions the LTCG brackets using line 44 = "line 5 of
-      // the Qualified Dividends & Cap Gain Tax Worksheet (as figured for
-      // the regular tax)" — i.e. regular taxable ordinary income, which is
-      // NET of the standard deduction. Reusing the regular `ltTax` (stacked
-      // on `taxableOrdinary`) would reproduce that.
-      //
-      // Per advisor (CPA-confirmed 2026-06-03): the standard deduction is
-      // disallowed for AMT, full stop — it must not reduce the LTCG stacking
-      // base any more than it reduces the 26/28% ordinary slice. The 26%
-      // ordinary slice already runs on the FULL ordinary AMTI ($230k, std
-      // ded added back via _stdDedAddback); the gains must stack on that
-      // same $230k base, NOT on the regular $197,800. So we recompute the
-      // LTCG layer here with the std-deduction add-back baked into both the
-      // stacking base AND the leftover-deduction shift.
+      // CONSERVATIVE: the standard deduction is disallowed at EVERY point in the
+      // AMT calc — not just the 26/28% ordinary slice (which already runs on the
+      // full ordinary AMTI via _stdDedAddback), but ALSO the LTCG bracket
+      // positioning. The gains stack on `taxableOrdinary + _stdDedAddback` (the
+      // full ordinary AMTI), NOT on the regular post-std-ded taxable income.
+      // This OVERRIDES the literal Form 6251 Part III line 44 (which would
+      // position the gains using the regular, std-ded-net taxable income); the
+      // advisor's accountant circled back 2026-06-12 and chose the most
+      // conservative reading — no standard deduction anywhere in AMT. (This
+      // re-reverts the 2026-06-11 `_amtLtTax = ltTax` change back to the
+      // 2026-06-03 method. Canonical $250k ord / $2M gain MFJ: AMT = $29,252.)
       //
       // Mirrors the regular LTCG bracket walk above exactly, but:
       //   stackBase   = taxableOrdinary + _stdDedAddback  (full AMTI ordinary)
       //   taxableLt   = ltAmount - _amtLeftoverDeduction  (std ded NOT shifting floors)
-      // For an ITEMIZED filer _stdDedAddback = 0, so this reduces to the
-      // regular ltTax (itemized deductions are retained for AMT) — the
-      // departure only bites when the standard deduction is in play.
+      // For an ITEMIZED filer _stdDedAddback = 0, so this reduces to the regular
+      // ltTax (itemized deductions are retained for AMT) — the override only
+      // bites when the standard deduction is in play.
       const _amtDeduction = Math.max(0, deduction - _stdDedAddback);
-      const _amtTaxableOrd = Math.max(0, ordinaryGross - _amtDeduction - _carriedLossOrdOffset);
+      const _amtTaxableOrd = Math.max(0, ordinaryGross - _amtDeduction - _carriedLossOrdOffset) + _amtIdcPref;
       const _amtDeductionConsumedOnOrd = Math.max(0, ordinaryGross - _amtTaxableOrd - _carriedLossOrdOffset);
       const _amtLeftoverDeduction = Math.max(0, _amtDeduction - _amtDeductionConsumedOnOrd);
       let _amtLtTax = 0;

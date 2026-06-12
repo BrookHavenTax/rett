@@ -104,28 +104,108 @@
     return '$' + Math.round(n).toLocaleString('en-US');
   }
 
+  // Prefer the field's associated <label> for human-readable banner text;
+  // fall back to the kebab-cased id if no label is wired. Audit R2 #14.
+  function _labelFor(el) {
+    if (!el) return '';
+    if (el.id) {
+      var lbl = document.querySelector('label[for="' + el.id + '"]');
+      if (lbl && lbl.textContent) {
+        return lbl.textContent.replace(/\s+/g, ' ').trim();
+      }
+      // Inputs inside a parent .field with a <div class="label"> sibling.
+      var field = el.closest && el.closest('.field, .input-row');
+      if (field) {
+        var dl = field.querySelector('.label');
+        if (dl && dl.textContent) return dl.textContent.replace(/\s+/g, ' ').trim();
+      }
+      return el.id.replace(/-/g, ' ');
+    }
+    return '(field)';
+  }
+
+  // Loss indicator: for the gain/loss-capable fields, show a red "(loss)"
+  // tag in the field's label whenever the entered value is negative (a
+  // capital loss). The value itself already renders in accounting
+  // parentheses — "($100,000)" — and parseUSD round-trips it; this adds the
+  // explicit word the advisor asked for so a loss can't be mistaken for a
+  // gain. (advisor 2026-06-10)
+  var LOSS_LABEL_IDS = { 'short-term-gain': 1, 'long-term-gain': 1 };
+  function _updateLossTag(el) {
+    if (!el || !el.id || !LOSS_LABEL_IDS[el.id]) return;
+    var row = el.closest ? el.closest('.input-row') : null;
+    if (!row) return;
+    var label = row.querySelector('.label');
+    if (!label) return;
+    var tag = label.querySelector('.rett-loss-tag');
+    var n = _toNum(el.value);
+    var isLoss = isFinite(n) && n < 0;
+    if (isLoss) {
+      if (!tag) {
+        tag = document.createElement('span');
+        tag.className = 'rett-loss-tag';
+        tag.textContent = ' (loss)';
+        tag.style.cssText = 'color:#c0392b;font-weight:700;white-space:nowrap;';
+        label.appendChild(tag);
+      }
+      tag.style.display = '';
+    } else if (tag) {
+      tag.style.display = 'none';
+    }
+  }
+
   function _format(el) {
     if (!el) return;
     var raw = el.value;
-    if (raw === '' || raw == null) return;
+    if (raw === '' || raw == null) { _updateLossTag(el); return; }
+    // Detect a paste of pure non-numeric characters (e.g. "abc") so we
+    // can surface that the field was discarded instead of silently
+    // showing $0. parseUSD strips to '' → 0; the flag captures intent.
+    // Audit R2 #12.
+    var rawStr = String(raw);
+    var strippedDigits = rawStr.replace(/[^0-9.\-]/g, '');
+    var letterOnly = (rawStr.length > 0 && strippedDigits.length === 0);
     var n = _toNum(raw);
     if (!isFinite(n)) return;
     if (n < 0 && el.id && NON_NEGATIVE_IDS[el.id]) {
       n = 0;
       if (typeof window.showBanner === 'function') {
-        try { window.showBanner('warning', 'Negative value not allowed for ' + el.id.replace(/-/g, ' ') + ' — set to $0.'); } catch (e) { /* */ }
+        try { window.showBanner('warning', 'Negative value not allowed for ' + _labelFor(el) + ' — set to $0.'); } catch (e) { /* */ }
         setTimeout(function () { if (typeof window.hideBanner === 'function') window.hideBanner(); }, 2500);
       }
     }
+    // Detect parseUSD's silent $1B clamp (audit R2 #11). The raw value
+    // had a parseable number > $1B; parseUSD returned exactly the cap.
+    // Tell the user instead of accepting a typo silently.
+    var RAW_CAP = 1e9;
+    var rawAsNum = parseFloat(strippedDigits);
+    var hitCap = isFinite(rawAsNum) && Math.abs(rawAsNum) > RAW_CAP && Math.abs(n) === RAW_CAP;
+    if (hitCap) {
+      el.classList.add('input-error');
+      if (typeof window.showBanner === 'function') {
+        try { window.showBanner('warning', _labelFor(el) + ' clamped to $1B max — please verify the entered amount.'); } catch (e) { /* */ }
+        setTimeout(function () { if (typeof window.hideBanner === 'function') window.hideBanner(); }, 3500);
+      }
+    } else if (letterOnly) {
+      el.classList.add('input-error');
+      if (typeof window.showBanner === 'function') {
+        try { window.showBanner('warning', _labelFor(el) + ' contained no number — value set to $0.'); } catch (e) { /* */ }
+        setTimeout(function () { if (typeof window.hideBanner === 'function') window.hideBanner(); }, 3500);
+      }
+    } else {
+      el.classList.remove('input-error');
+    }
     el.value = _formatNum(n);
+    _updateLossTag(el);
   }
 
   function _strip(el) {
     if (!el) return;
-    if (el.value === '' || el.value == null) return;
+    if (el.value === '' || el.value == null) { _updateLossTag(el); return; }
     var n = _toNum(el.value);
     if (!isFinite(n)) return;
     el.value = String(n);
+    _updateLossTag(el);
   }
 
   function wire(el) {
@@ -133,6 +213,9 @@
     el.__rettMoneyWired = true;
     el.addEventListener('blur',  function () { _format(el); });
     el.addEventListener('focus', function () { _strip(el);  });
+    // Live-toggle the "(loss)" label tag as the user types a negative
+    // (or parenthesized) value, before blur reformats it.
+    el.addEventListener('input', function () { _updateLossTag(el); });
     // Programmatic value writes (case restore, _recomputeAvailableCapital)
     // dispatch `change` after setting el.value. Reformat then, but only
     // when the user isn't actively typing in this field.

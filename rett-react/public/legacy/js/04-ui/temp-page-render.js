@@ -26,6 +26,16 @@
 (function (root) {
   'use strict';
 
+  // Oil & Gas IDC AMT preference fraction — only the "excess IDC" (~90%, the
+  // IDC net of first-year 120-month amortization) is an AMT add-back, not 100%
+  // (IRC §57(a)(2); advisor option C, 2026-06-12). Single source of truth lives
+  // in master-solver (root.__rettIdcAmtPrefFraction); fall back to 0.90 if the
+  // solver hasn't initialized it yet.
+  function _idcAmtPrefFraction() {
+    var f = Number(root.__rettIdcAmtPrefFraction);
+    return (isNaN(f) || f < 0) ? 0.90 : Math.min(1, f);
+  }
+
   // Default number of year cards (Y0..Y_TOTAL_YEARS-1). The actual
   // count is max(TOTAL_YEARS, engineRows.length) — see render() — so a
   // C scenario whose recognition extends past the default still gets
@@ -86,27 +96,25 @@
     var recap  = Math.max(0, Number(opts.recap) || 0);
     var status = _readVal('filing-status', 'mfj');
     var state  = _readVal('state-code', 'NONE');
-    // Apply the same 2%/yr inflation factor the engine uses in
-    // _baseScenarioForYear so synthetic trailing rows don't silently drift
-    // into a lower effective rate as brackets inflate but income stays flat.
-    var _year1 = parseInt(_readVal('year1', String(new Date().getFullYear())), 10) || new Date().getFullYear();
-    var _idx   = Math.max(0, year - _year1);
-    var _infl  = (typeof root.TAX_DATA !== 'undefined' && root.TAX_DATA && typeof root.TAX_DATA.inflationRate === 'number')
-                   ? root.TAX_DATA.inflationRate : 0.02;
-    var _inflF = Math.pow(1 + _infl, _idx);
-    var ord    = _recurringOrdinary() * _inflF;
+    // Income is held FLAT across the projection — only the brackets inflate
+    // 2%/yr (passed via `year` to the tax functions). We do NOT project the
+    // client's income upward: the engine's own rows keep income constant
+    // (so the effective rate drifts DOWN slightly as brackets widen), and
+    // the synthetic trailing rows must match. Inflating income here used to
+    // grow ordinary income, wages, SE income, and therefore Additional
+    // Medicare year-over-year — which is wrong, the threshold is statutory
+    // and income is frozen (advisor 2026-06-10).
+    var ord    = _recurringOrdinary();
     var stGain = Math.max(0, _readNum('short-term-gain'));
-    var wages  = Math.max(0, _readNum('w2-wages')) * _inflF;
-    var seInc  = _recurringSeIncome() * _inflF;
-    var qualDiv = _recurringQualDiv() * _inflF;
-    // Passive investment income (rental + dividend + interest)
-    // inflated alongside ord. stGain is asset-specific, not inflated
-    // (no recurring annual gain to grow). Qualified-div goes in
-    // separately for LTCG bracket routing AND NIIT base.
+    var wages  = Math.max(0, _readNum('w2-wages'));
+    var seInc  = _recurringSeIncome();
+    var qualDiv = _recurringQualDiv();
+    // NIIT base = recurring passive investment income (rental + dividend +
+    // interest) + ST gain + qualified dividends + any recapture. All flat.
     var nIIT_base = stGain + qualDiv
-                  + Math.max(0, _readNum('rental-income'))  * _inflF
-                  + Math.max(0, _readNum('dividend-income')) * _inflF
-                  + Math.max(0, _readNum('interest-income')) * _inflF
+                  + Math.max(0, _readNum('rental-income'))
+                  + Math.max(0, _readNum('dividend-income'))
+                  + Math.max(0, _readNum('interest-income'))
                   + recap;
     var fedB = (typeof root.computeFederalTaxBreakdown === 'function')
       ? root.computeFederalTaxBreakdown(ord, year, status, {
@@ -236,17 +244,24 @@
     // upstream calc modules that would inflate the per-year sum without
     // a corresponding increase in the aggregate, creating phantom gaps.
     var fundedSupps = [];
+    var solverOut = null;
     if (typeof root.runMasterSolver === 'function') {
       var primaryNet = (entry.metrics && Number.isFinite(entry.metrics.net)) ? entry.metrics.net : 0;
-      var solverOut = null;
-      try { solverOut = root.runMasterSolver(primaryNet); } catch (e) { /* */ }
+      // Post-primary residual cap = Σ withStrategy.total across THIS comp's
+      // rows (tax remaining after Brooklyn). Funded supps can't save more
+      // than that; passing it keeps the bottom-panel/hero supp total from
+      // over-claiming the Brooklyn overlap (advisor 2026-06-09).
+      var _ppCap = (comp && Array.isArray(comp.rows))
+        ? comp.rows.reduce(function (a, r) { return a + ((r.withStrategy && Number(r.withStrategy.total)) || 0); }, 0)
+        : null;
+      try { solverOut = root.runMasterSolver(primaryNet, (_ppCap != null ? { postPrimaryTaxRemaining: _ppCap } : undefined)); } catch (e) { /* */ }
       if (solverOut && Array.isArray(solverOut.supplementals)) {
         fundedSupps = solverOut.supplementals.filter(function (s) {
           return s && s.enabled && s.available && s.rivalry && s.rivalry.funded;
         });
       }
     }
-    return { entry: entry, comp: comp, chosen: chosen, fundedSupps: fundedSupps };
+    return { entry: entry, comp: comp, chosen: chosen, fundedSupps: fundedSupps, solverOut: solverOut };
   }
 
   function _isRelevant(row, i, chosen, cfg) {
@@ -346,7 +361,28 @@
     var setax  = Number(b.seTax)       || 0;
     var state  = Number(b.state)       || 0;
     var fedTotal = (b.federalIncomeTax != null) ? Number(b.federalIncomeTax) : (fedOrd + fedRcp + fedLt + amt);
-    var total = (b.total != null) ? Number(b.total) : (fedTotal + niit + addmed + setax + state);
+    // Sum of the component tax lines this function will render. The displayed
+    // recap contribution depends on whether the §1245/§1250 split is shown.
+    var _recapShown = (fedRcp1245 > 0 || fedRcp1250 > 0) ? (fedRcp1245 + fedRcp1250) : fedRcp;
+    var _componentSum = fedOrd + fedLt + _recapShown + amt + niit + addmed + setax + state;
+    // Bridge mode (Results column): the caller passes the CANONICAL post-
+    // strategy total (engine total net of all supplemental savings). Render a
+    // visible "Less: supplemental tax savings" row equal to the gap between
+    // the component lines and that total, so the column literally adds up —
+    // components − supplemental savings = Total tax — instead of a Total that
+    // silently disagrees with the lines above it (advisor 2026-06-10).
+    var _bridgeRow = '';
+    var total;
+    if (opts.bridgeTotal != null) {
+      total = Math.max(0, Number(opts.bridgeTotal) || 0);
+      var _less = Math.max(0, _componentSum - total);
+      if (_less > 0.5) {
+        _bridgeRow = '<tr class="temp-feeline-row"><td>Less: supplemental tax savings</td>' +
+          '<td class="temp-amt">&minus;' + _fmt(_less) + '</td></tr>';
+      }
+    } else {
+      total = (b.total != null) ? Number(b.total) : (fedTotal + niit + addmed + setax + state);
+    }
 
     // opts.forceRecap — show the recap lines even when $0 (Results column
     // uses this so the CPA sees the strategy drove recapture tax from $X
@@ -365,9 +401,23 @@
     } else {
       rows.push(['Depreciation recap tax',         fedRcp,     !!opts.forceRecap]);
     }
-    rows.push(['AMT top-up',              amt,    false]);
+    // When the with-strategy AMT includes an Oil & Gas IDC add-back, label the
+    // line so the CPA sees the AMT is IDC-driven and how much was added back
+    // (IDC is deducted for regular tax but not AMT — advisor 2026-06-12).
+    var _idcAddback = Math.max(0, Number(b.amtIdcAddback) || 0);
+    var _amtLabel = _idcAddback > 0
+      ? 'AMT top-up — incl. Oil & Gas IDC (' + _fmt(_idcAddback) + ' added back)'
+      : 'AMT top-up';
+    rows.push([_amtLabel,                 amt,    false]);
     rows.push(['NIIT (3.8%)',             niit,   false]);
-    rows.push(['Additional Medicare',     addmed, false]);
+    // Additional Medicare = 0.9% × (W-2 wages − threshold). Threshold is
+    // statutory (not indexed) and varies by filing status: $250K MFJ /
+    // $200K single / $125K MFS / $200K HoH. Show the ACTUAL threshold for
+    // THIS return's filing status — the label previously hardcoded "$250K
+    // MFJ" for every filer, which mis-stated the trigger for MFS ($125K),
+    // single ($200K) and HoH ($200K). (audit 2026-06-12)
+    var _amThresh = ({ single: 200000, mfj: 250000, mfs: 125000, hoh: 200000 })[_readVal('filing-status', 'mfj')] || 250000;
+    rows.push(["Add'l Medicare (0.9% on W-2 over $" + Math.round(_amThresh / 1000) + "K)", addmed, false]);
     rows.push(['SE / FICA tax',           setax,  false]);
     rows.push(['State income tax',        state,  true]);
     return rows.map(function (r) {
@@ -375,6 +425,7 @@
       if (!r[2] && amt2 === 0) return '';
       return '<tr><td>' + r[0] + '</td><td class="temp-amt">' + _fmt(amt2) + '</td></tr>';
     }).join('') +
+      _bridgeRow +
       '<tr class="temp-total-row"><td><strong>Total tax</strong></td><td class="temp-amt"><strong>' + _fmt(total) + '</strong></td></tr>';
   }
 
@@ -385,26 +436,262 @@
   // "Tax saved vs baseline" line comparing to the baseline total so the
   // CPA sees the year's net tax movement. withStrategy carries the same
   // keys baseline does (verified) so _renderTaxRows works directly.
-  function _renderResultsCell(withStrategy, baseline) {
-    if (!withStrategy) return '<div class="temp-baseline-empty">No result data.</div>';
-    // Income RECOGNIZED under the strategy this year — same recognition
-    // event as the baseline column (LT gain recognized + §1250 recap),
-    // so the CPA sees that the $200K recapture and the LT gain are still
-    // recognized even though the strategy's Brooklyn losses drive the
-    // TAX on them down. Pulled from baseline._incomes (set by
-    // _deriveIncomesForEngineRow in the render loop).
-    var incomeRows = '';
-    if (baseline && baseline._incomes) {
-      incomeRows = _renderIncomeRows(baseline._incomes, 0);
+  // Pull per-line tax-savings deltas from each funded supp's perYear slice
+  // (OG ships fedOrdSaved / fed1245Saved / fed1250Saved / niitDelta / stateSaved
+  // / amtDelta). Tab 7 right column uses these to compute the TRUE post-supp
+  // tax on each bucket — replaces the prior proportional-by-absorbed-$
+  // allocation, which over-attributed savings to ordinary tax when supp
+  // total exceeded the engine's pre-supp ord tax line (zeroing it out
+  // even when meaningful ordinary income remained).
+  // Per-year saturation scale for a funded supp — the SINGLE source of
+  // truth shared by every per-supp reconstruction on this page (activity
+  // column, results-column ord offset, results-column per-line tax savings,
+  // and the gross/net path). When the funded supps' combined Y0 ordinary
+  // deduction exceeds the available Y0 ordinary pool, the master-solver
+  // clips each supp's realized benefit; Y0 may be scaled down while Y1+
+  // passes through unchanged (each future year has its own pool). Every
+  // column MUST apply the same scale or the year card contradicts itself —
+  // e.g. the activity column showing a clipped offset while the results
+  // column reduces income by the unclipped amount (advisor 2026-06-10).
+  function _suppSatScale(s, displayedI) {
+    var y0 = Number.isFinite(Number(s.y0SaturationScale))
+      ? Number(s.y0SaturationScale)
+      : (Number.isFinite(Number(s.saturationScale)) ? Number(s.saturationScale) : 1);
+    var y1 = Number.isFinite(Number(s.y1PlusSaturationScale))
+      ? Number(s.y1PlusSaturationScale) : 1;
+    return (displayedI === 0) ? y0 : y1;
+  }
+
+  function _computeSuppLineSavings(displayedI, fundedSupps) {
+    var acc = { fedOrd: 0, fed1245: 0, fed1250: 0, fedLt: 0, amt: 0, niit: 0, addmed: 0, state: 0 };
+    if (!Array.isArray(fundedSupps)) return acc;
+    fundedSupps.forEach(function (s) {
+      var coreSpec  = (root.__rettSupplemental      && root.__rettSupplemental[s.id])      || null;
+      var extraSpec = (root.__rettSupplementalExtra && root.__rettSupplementalExtra[s.id]) || null;
+      var last = (coreSpec && coreSpec.lastResult) || (extraSpec && extraSpec.lastResult) || null;
+      if (!last) return;
+      var perYear = Array.isArray(last.perYear) ? last.perYear : null;
+      var py = (perYear && perYear[displayedI]) ? perYear[displayedI] : null;
+      if (!py) return;
+      var sc = _suppSatScale(s, displayedI);
+      acc.fedOrd  += Math.max(0, Number(py.fedOrdSaved)  || 0) * sc;
+      acc.fed1245 += Math.max(0, Number(py.fed1245Saved) || 0) * sc;
+      acc.fed1250 += Math.max(0, Number(py.fed1250Saved) || 0) * sc;
+      acc.niit    += Math.max(0, Number(py.niitDelta)    || 0) * sc;
+      acc.addmed  += Math.max(0, Number(py.addmedDelta)  || 0) * sc;
+      acc.state   += Math.max(0, Number(py.stateSaved)   || 0) * sc;
+      acc.amt     += Math.max(0, Number(py.amtDelta)     || 0) * sc;
+    });
+    return acc;
+  }
+
+  // Recompute the post-strategy tax on the ACTUAL post-strategy income,
+  // exactly the way the engine computes every other row (same federal
+  // breakdown + state fold-in). The old Results column hand-synthesized the
+  // tax by subtracting per-supp savings line-by-line, which (a) never
+  // restacked the LT-gain brackets after the supps lowered ordinary income —
+  // so LT tax stayed at its full-income value — and (b) drove Total tax to a
+  // value that didn't match its own line items (advisor 2026-06-10: "Total
+  // tax 0 while ordinary + state ~ $32K"). Recomputing on the reduced income
+  // makes every line correct AND the total the sum of those lines by
+  // construction. Mirrors tax-comparison.js's fed/state call verbatim.
+  function _recomputePostStrategyTax(incomes, year, status, stateCode, struct) {
+    if (typeof root.computeFederalTaxBreakdown !== 'function') return null;
+    incomes = incomes || {}; struct = struct || {};
+    var ord    = Math.max(0, Number(incomes.ordinary)      || 0);
+    var lt     = Math.max(0, Number(incomes.longTermGain)  || 0);
+    var st     = Math.max(0, Number(incomes.shortTermGain) || 0);
+    var r1245  = Math.max(0, Number(incomes.recapture1245) || 0);
+    var r1250  = Math.max(0, Number(incomes.recapture1250) || 0);
+    var rcp    = (r1245 + r1250) > 0 ? (r1245 + r1250)
+                                     : Math.max(0, Number(incomes.recapture) || 0);
+    var qd  = Math.max(0, Number(struct.qualifiedDividend) || 0);
+    // Earned-income bases for SE/FICA tax + Additional Medicare. The caller
+    // passes seReduction = the SUPPLEMENTAL ordinary offset for the year (NOT
+    // the Brooklyn §1211(b) capital-loss offset, which doesn't touch earned
+    // income). It reduces SE earnings first (active business deductions —
+    // working-interest IDC, §179+bonus, materially-participated K-1 loss — do
+    // lower SE net earnings, dropping SE/FICA tax and the SE side of Add'l
+    // Medicare). Any remainder is then applied to the W-2 wage base.
+    //
+    // ADVISOR OVERRIDE (2026-06-10): reducing the W-2 wage base makes Add'l
+    // Medicare fall with taxable income even for a pure W-2 earner. This is NOT
+    // strictly correct — employer-reported Medicare wages (Box 5) aren't
+    // reduced by these deductions — so it OVERSTATES the benefit for a W-2
+    // client by the Add'l Medicare delta. Deliberate model choice per advisor.
+    var earnedRed = Math.max(0, Number(struct.seReduction) || 0);
+    var seRaw = Math.max(0, Number(struct.seIncome) || 0);
+    var seCut = Math.min(earnedRed, seRaw);
+    var se  = seRaw - seCut;
+    var w   = Math.max(0, (Number(struct.wages) || 0) - Math.max(0, earnedRed - seCut));
+    var itm = Math.max(0, Number(struct.itemized) || 0);
+    // NIIT base = net investment income. §1250 unrecaptured gain IS net
+    // investment income (gain on disposition of property) and must be in the
+    // base — the baseline path (_recurringBaselineForYear + the engine row)
+    // already includes recapture, so excluding it here understated the Results
+    // NIIT and overstated the tax saved (audit 2026-06-10). §1245 is ORDINARY
+    // income, not capital gain, so it stays OUT of the NIIT base.
+    var inv = lt + qd + st + r1250;
+    var fed;
+    try {
+      fed = root.computeFederalTaxBreakdown(ord, year, status, {
+        longTermGain: lt, shortTermGain: st, qualifiedDividend: qd,
+        depreciationRecapture: rcp,
+        depreciationRecapture1245: r1245,
+        depreciationRecapture1250: r1250,
+        investmentIncome: inv, wages: w, seIncome: se, itemized: itm,
+        // Oil & Gas IDC AMT preference: the O&G IDC ordinary offset is deducted
+        // for regular tax (already removed from `ord`) but added BACK to AMTI —
+        // IDC isn't deductible for AMT (advisor 2026-06-12).
+        amtIdcPreference: Math.max(0, Number(struct.amtIdcPreference) || 0)
+      }) || {};
+    } catch (e) { return null; }
+    var capLossOff = Math.max(0, Number(fed.lossOrdOffsetApplied) || 0);
+    var stateLT = Number.isFinite(Number(fed.netLongTermGain))  ? Number(fed.netLongTermGain)  : lt;
+    var stateST = Number.isFinite(Number(fed.netShortTermGain)) ? Number(fed.netShortTermGain) : st;
+    var stateTax = 0;
+    if (typeof root.computeStateTax === 'function') {
+      try {
+        stateTax = Number(root.computeStateTax(
+          (ord - capLossOff) + rcp + qd + stateLT + stateST,
+          year, stateCode, status,
+          { itemized: itm, longTermGain: stateLT, lossOrdOffsetApplied: capLossOff }
+        )) || 0;
+      } catch (e) { stateTax = 0; }
     }
+    var _o = Number(fed.ordinaryTax) || 0;
+    var _r = Number(fed.recapTax)    || 0;
+    var _l = Number(fed.ltTax)       || 0;
+    var _a = Number(fed.amtTopUp)    || 0;
+    return {
+      ordinaryTax:  _o,
+      recapTax:     _r,
+      recapTax1245: Number(fed.recapTax1245) || 0,
+      recapTax1250: Number(fed.recapTax1250) || 0,
+      ltTax:        _l,
+      amt:          _a,
+      niit:         Number(fed.niit) || 0,
+      addlMedicare: Number(fed.addlMedicare) || 0,
+      seTax:        Number(fed.seTax) || 0,
+      state:        stateTax,
+      amtIdcAddback: Math.max(0, Number(struct.amtIdcPreference) || 0),
+      federalIncomeTax: _o + _r + _l + _a,
+      total:        (Number(fed.total) || 0) + stateTax
+    };
+  }
+
+  function _renderResultsCell(withStrategy, baseline, suppTaxSaved, suppOffsetSplit, suppLineSavings, row, lowerBracketBenefit) {
+    if (!withStrategy) return '<div class="temp-baseline-empty">No result data.</div>';
+    var _suppTaxSaved = Math.max(0, Math.round(Number(suppTaxSaved) || 0));
+    // suppOffsetSplit shape: { ord, r1245, r1250, total } (post-2026-06-08).
+    // Legacy numeric fallback supported (treat as all-ord) so older callers
+    // still render correctly.
+    var _split = suppOffsetSplit;
+    if (typeof _split === 'number') _split = { ord: _split, r1245: 0, r1250: 0, total: _split };
+    if (!_split) _split = { ord: 0, r1245: 0, r1250: 0, total: 0 };
+    var _offOrd   = Math.max(0, Math.round(Number(_split.ord)   || 0));
+    var _off1245  = Math.max(0, Math.round(Number(_split.r1245) || 0));
+    var _off1250  = Math.max(0, Math.round(Number(_split.r1250) || 0));
+    var _offTotal = _offOrd + _off1245 + _off1250;
+    // Income RECOGNIZED under the strategy this year — show the income
+    // that ACTUALLY hits the tax engine after EVERY activity item this
+    // year has been applied. Two sources of reduction stack:
+    //
+    //   1. Supplemental ord/§1245/§1250 absorption (OG IDC, Delphi ord
+    //      expense, etc.). Tracked in suppOffsetSplit{ ord, r1245, r1250 }.
+    //
+    //   2. Brooklyn ST-loss application — split across buckets:
+    //        row.ltOffsetApplied         → reduces LT capital gain
+    //        row.ordOffsetApplied        → reduces ordinary income
+    //                                      (§1211(b) cap, typically $3K MFJ)
+    //        row.recap1250OffsetApplied  → reduces §1250 unrecap gain
+    //        row.shortOffsetApplied      → reduces short-term gain
+    //
+    // Without subtracting #2, the income lines showed the full pre-Brooklyn
+    // gain even though the tax lines below reflected Brooklyn's full
+    // absorption — internally inconsistent (e.g., "LT gain $7.6M / LT
+    // tax $0" reads as "$0 tax on $7.6M of gain"). User feedback
+    // 2026-06-09: shown income = what's being taxed. Apply both stacks.
+    var _btLt   = Math.max(0, Number(row && row.ltOffsetApplied)        || 0);
+    var _btOrd  = Math.max(0, Number(row && row.ordOffsetApplied)       || 0);
+    var _bt1250 = Math.max(0, Number(row && row.recap1250OffsetApplied) || 0);
+    var _btSt   = Math.max(0, Number(row && row.shortOffsetApplied)     || 0);
+    var incomeRows = '';
+    var _incomes = null;
+    if (baseline && baseline._incomes) {
+      _incomes = baseline._incomes;
+      if (_offTotal > 0 || _btLt > 0 || _btOrd > 0 || _bt1250 > 0 || _btSt > 0) {
+        _incomes = Object.assign({}, _incomes, {
+          ordinary:       Math.max(0, Number(_incomes.ordinary       || 0) - _offOrd  - _btOrd),
+          longTermGain:   Math.max(0, Number(_incomes.longTermGain   || 0) - _btLt),
+          shortTermGain:  Math.max(0, Number(_incomes.shortTermGain  || 0) - _btSt),
+          recapture1245:  Math.max(0, Number(_incomes.recapture1245  || 0) - _off1245),
+          recapture1250:  Math.max(0, Number(_incomes.recapture1250  || 0) - _off1250 - _bt1250),
+          recapture:      Math.max(0, Number(_incomes.recapture      || 0) - _off1245 - _off1250 - _bt1250)
+        });
+      }
+      incomeRows = _renderIncomeRows(_incomes, 0);
+    }
+    // Recompute the post-strategy tax on the post-strategy income (_incomes)
+    // the SAME way the engine computes every other row, so the tax lines
+    // actually correspond to the income shown and the Total is their honest
+    // sum. The structural (strategy-invariant) inputs — wages, SE income,
+    // qualified dividends, itemized — come from the live inputs; the
+    // reducible income comes from _incomes. Falls back to the raw engine
+    // row only if the calc functions or income aren't available.
+    var _struct = {};
+    var _status = 'mfj', _stateCode = (typeof row !== 'undefined' && row && row.stateCode) || 'NONE';
+    if (typeof root.collectInputs === 'function') {
+      try {
+        var _ci = root.collectInputs() || {};
+        _status    = _ci.filingStatus || 'mfj';
+        _stateCode = _ci.state || _ci.stateCode || _stateCode;
+        _struct = {
+          qualifiedDividend: _ci.qualifiedDividend,
+          wages:             _ci.wages,
+          seIncome:          _ci.seIncome,
+          itemized:          _ci.itemizedDeductions || _ci.itemized,
+          // Supps reduce SE earnings (and thus SE tax + the SE side of Add'l
+          // Medicare). Use ONLY the supplemental ord offset (_offOrd), never
+          // the Brooklyn §1211(b) offset (_btOrd) — capital losses don't
+          // reduce earned income. W-2 wages stay fixed in `wages` above.
+          seReduction:       _offOrd,
+          // Oil & Gas IDC is added back to AMTI (deducted for regular tax only).
+          // Only the excess IDC (~90%) is the preference — see _idcAmtPrefFraction.
+          amtIdcPreference:  Math.max(0, Math.round((Number(_split.oilGasOrd) || 0) * _idcAmtPrefFraction()))
+        };
+      } catch (e) { /* keep defaults */ }
+    }
+    var _year = Number(row && row.year) || 0;
+    if (!_year && typeof root.collectInputs === 'function') {
+      try { _year = Number((root.collectInputs() || {}).year1) || 0; } catch (e) {}
+    }
+    var _recomp = _incomes ? _recomputePostStrategyTax(_incomes, _year, _status, _stateCode, _struct) : null;
+    var _wsDisplay = _recomp || Object.assign({}, withStrategy);
     // Force the recap line to show when the baseline had recapture tax,
     // so the CPA sees it drop to $0 (or whatever residual) under the
     // strategy rather than the row silently disappearing.
     var baselineHadRecap = baseline && Number(baseline.recapTax) > 0;
-    var taxRows = _renderTaxRows(withStrategy, { forceRecap: baselineHadRecap });
+    var taxRows = _renderTaxRows(_wsDisplay, { forceRecap: baselineHadRecap });
+    var suppSavedRow = '';
+    // No "Net tax after supplementals" row needed — the synthesized
+    // _wsDisplay.total in the Total row above already reflects post-supp
+    // tax (per-line reductions handled the bulk; residual row above
+    // explains any remainder).
+    var netTaxRow = '';
     var savedRow = '';
-    if (baseline && baseline.total != null && withStrategy.total != null) {
-      var saved = Number(baseline.total) - Number(withStrategy.total);
+    if (baseline && baseline.total != null && _wsDisplay && _wsDisplay.total != null) {
+      // Saved = baseline total − recomputed post-strategy total. Both sides
+      // are computed the same way (engine federal breakdown + state fold-in)
+      // so this is an apples-to-apples year tax delta that ties to the lines
+      // shown above it (baseline − results = saved). PLUS the deferral /
+      // lower-tax-bracket benefit (allocated to Y0 by the render loop): the
+      // value of recognizing the gain in a later year is a real saving that
+      // the matched-timing baseline can't see on any single year, so it's
+      // folded into Y0's tax-saved here. This makes Σ (per-year tax saved)
+      // across the cards equal the bottom panel's "total tax saved" — the
+      // advisor's reconciliation model (advisor 2026-06-10).
+      var saved = Number(baseline.total) - Number(_wsDisplay.total) + (Number(lowerBracketBenefit) || 0);
       if (Math.abs(saved) > 0.5) {
         var cls = saved >= 0 ? 'temp-result-saved-row' : 'temp-result-saved-row temp-result-saved-neg';
         var label = saved >= 0 ? 'Tax saved vs baseline' : 'Tax increase vs baseline';
@@ -420,6 +707,8 @@
             : '') +
           '<tr class="temp-section-head"><td colspan="2">Tax with strategy applied</td></tr>' +
           taxRows +
+          suppSavedRow +
+          netTaxRow +
           savedRow +
         '</tbody>' +
       '</table>';
@@ -497,6 +786,15 @@
         var last      = (extraSpec && extraSpec.lastResult)
                      || (coreSpec  && coreSpec.lastResult) || null;
         if (!last) return;
+        // Per-year saturation scale — shared with _computeSuppSavingsForYear,
+        // _computeSuppOrdOffsetForYear and _computeSuppLineSavings via the
+        // _suppSatScale helper so every column of the year card reflects the
+        // SAME post-competition allocation. Without it, a supp's ordinary
+        // offset / "other tax savings" stayed frozen at its STANDALONE demand
+        // when a rival supp was added to the same Y0 ordinary pool — e.g. Oil
+        // & Gas offset didn't shrink and PTET printed its uncompeted net
+        // (advisor 2026-06-10).
+        var _satScale = _suppSatScale(s, displayedI);
         // Track whether THIS supp contributed to ord/LT/ST in this
         // year. If it didn't but it has netBenefit > 0 (e.g. PTET, which
         // shifts state tax to federal deduction without offsetting
@@ -523,17 +821,17 @@
           var ordContribution = (py.absorbed != null)
             ? Number(py.absorbed)
             : Number(py.deduction || 0);
-          if (ordContribution > 0) { ordOffsetSupp += ordContribution; contributedThisYear = true; }
+          if (ordContribution > 0) { ordOffsetSupp += ordContribution * _satScale; contributedThisYear = true; }
           var ltAdd = Number(py.longTermGainAdded || 0) || 0;
-          if (ltAdd > 0) { ltGainAddedSupp += ltAdd; contributedThisYear = true; }
+          if (ltAdd > 0) { ltGainAddedSupp += ltAdd * _satScale; contributedThisYear = true; }
           var stAdd = Number(py.shortTermLoss || 0) || 0;
-          if (stAdd > 0) { stLossSupp += stAdd; contributedThisYear = true; }
+          if (stAdd > 0) { stLossSupp += stAdd * _satScale; contributedThisYear = true; }
           // Per-year netBenefit / taxSaved that didn't come through
           // an ord/LT/ST contribution (e.g. PTET when engine ships
           // multi-year). Falls into "Other tax savings" line.
           if (!contributedThisYear) {
             var pyTax = Number(py.netBenefit || py.taxSaved || 0) || 0;
-            if (pyTax > 0) { otherTaxSaved += pyTax; contributedThisYear = true; }
+            if (pyTax > 0) { otherTaxSaved += pyTax * _satScale; contributedThisYear = true; }
           }
           return;
         }
@@ -559,7 +857,7 @@
             var offsetThisYear = (displayedI === 0)
               ? Number(detail.ordOffsetY0 || 0)
               : Number(detail.ordOffsetRestPerYear || 0);
-            if (offsetThisYear > 0) { ordOffsetSupp += offsetThisYear; contributedThisYear = true; }
+            if (offsetThisYear > 0) { ordOffsetSupp += offsetThisYear * _satScale; contributedThisYear = true; }
           }
           return;
         }
@@ -572,7 +870,7 @@
             var netThisYear = (displayedI === 0)
               ? Number(detail.taxSavingsY0 || 0)
               : Number(detail.taxSavingsRestPerYear || 0);
-            if (netThisYear > 0) { otherTaxSaved += netThisYear; contributedThisYear = true; }
+            if (netThisYear > 0) { otherTaxSaved += netThisYear * _satScale; contributedThisYear = true; }
           }
           return;
         }
@@ -605,17 +903,23 @@
           || detail.expense
           || 0
         ) || 0;
-        if (ordKeyValue > 0) { ordOffsetSupp += ordKeyValue; contributedThisYear = true; }
+        if (ordKeyValue > 0) { ordOffsetSupp += ordKeyValue * _satScale; contributedThisYear = true; }
         var ltAdd2 = Number(allocations.longTermGainAdded || detail.longTermGainAdded || 0) || 0;
-        if (ltAdd2 > 0) { ltGainAddedSupp += ltAdd2; contributedThisYear = true; }
+        if (ltAdd2 > 0) { ltGainAddedSupp += ltAdd2 * _satScale; contributedThisYear = true; }
         var stAdd2 = Number(allocations.shortTermLoss || detail.shortTermLoss || 0) || 0;
-        if (stAdd2 > 0) { stLossSupp += stAdd2; contributedThisYear = true; }
+        if (stAdd2 > 0) { stLossSupp += stAdd2 * _satScale; contributedThisYear = true; }
         // Indirect-effect supps (PTET shifts state→fed, no direct ord
         // offset) — when nothing in ord/LT/ST captured the supp's
-        // impact this year, surface its full netBenefit under "Other
+        // impact this year, surface its competed net under "Other
         // tax savings" so the CPA sees what each strategy is doing.
+        // Prefer realizedNetBenefit (saturation + residual-cap clipped,
+        // the SAME figure the Strategy Summary prints per supp) so the two
+        // surfaces agree; fall back to scaled raw net only when realized
+        // isn't present.
         if (!contributedThisYear) {
-          var net = Number(s.netBenefit || last.netBenefit || last.totalSaved || 0) || 0;
+          var net = Number.isFinite(Number(s.realizedNetBenefit))
+            ? Number(s.realizedNetBenefit)
+            : (Number(s.netBenefit || last.netBenefit || last.totalSaved || 0) || 0) * _satScale;
           if (net > 0) otherTaxSaved += net;
         }
       };
@@ -682,11 +986,28 @@
     var lbb = (displayedI === 0 && Number.isFinite(Number(lowerBracketBenefit)))
       ? Math.round(Number(lowerBracketBenefit))
       : 0;
-    // Supp savings for the year — already NET of per-year supp mgmt fee
-    // (see _computeSuppSavingsForYear's perYear branch). The mgmt fee
-    // line above is informational, surfacing what was deducted.
+    // Supp savings for the year — TRUE gross (no fees subtracted).
+    // The supp mgmt fee is displayed as its own "Less:" row below and
+    // subtracted once in netForYear. (Pre-fix this was pre-netted at
+    // line 866 AND subtracted again at the netForYear render — caught
+    // by the audit 2026-06-08 as ~$87K/yr Delphi double-sub.)
     var suppSavings = _computeSuppSavingsForYear(displayedI, fundedSupps);
-    var grossBenefit = brooklynSavings + lbb + suppSavings;
+    // Invariant: gross benefit (Brooklyn + supp savings, BEFORE the LBB
+    // timing benefit) cannot exceed baseline.total — you can't save more
+    // tax than was owed. The supp's lastResult.totalSaved is computed
+    // against the supp's OWN baseline (pre-Brooklyn), so when Brooklyn
+    // already absorbed most of the year's tax, the supp's marginal
+    // contribution is smaller than its lastResult claims. Cap the supp
+    // share at (baseline.total − brooklynSavings) so the displayed gross
+    // matches what's actually attainable. LBB (deferral-timing benefit)
+    // is a SEPARATE concept — it represents savings shifted to Y0 from
+    // do-nothing-Y0-lump vs matched-timing — and is allowed to push
+    // gross above this year's matched-timing baseline.
+    // User feedback 2026-06-09: gross $481K > baseline $442K is impossible.
+    var _baseTotal = Number(row && row.baseline && row.baseline.total) || 0;
+    var _maxSuppMarginal = Math.max(0, _baseTotal - brooklynSavings);
+    var _suppDisplayCapped = Math.min(suppSavings, _maxSuppMarginal);
+    var grossBenefit = brooklynSavings + lbb + _suppDisplayCapped;
 
     if (stLoss === 0 && ordOffset === 0 && ltGainAdded === 0 && other === 0 && grossBenefit === 0 && suppMgmtFee === 0 && lbb === 0) {
       return '<div class="temp-activity-empty">No strategy activity this year.</div>';
@@ -704,7 +1025,7 @@
     var bhScale = (feeScale && Number.isFinite(feeScale.bh)) ? feeScale.bh : 1;
     var amFeeYear = Math.round((Number(row && row.fee) || 0) * amScale);
     var bhFeeYear = Math.round((Number(row && row.brookhavenFee) || 0) * bhScale);
-    var netForYear = grossBenefit - amFeeYear - bhFeeYear;
+    var netForYear = grossBenefit - suppMgmtFee - amFeeYear - bhFeeYear;
 
     // Surface what Brooklyn losses were APPLIED against this year as
     // SEPARATE rows per bucket — the engine now exposes the per-bucket
@@ -767,35 +1088,23 @@
     // splitting it across years for LTCG-bracket arbitrage).
     if (lbb !== 0) rows.push(['Gain from lower tax bracket (deferred recognition)', _fmt(lbb)]);
 
-    var grossRow = (grossBenefit !== 0)
-      ? '<tr class="temp-gross-row"><td>Gross benefit (tax saved)</td><td class="temp-amt">' + _fmt(grossBenefit) + '</td></tr>'
-      : '';
-
-    // Fee lines AFTER the gross row. Order: supp mgmt fee → Asset
-    // Manager fee → Brookhaven fee → net-this-year. Supp mgmt fee
-    // moved here per advisor: gross is gross before any fees.
-    var feeRows = '';
-    if (suppMgmtFee > 0) {
-      feeRows += '<tr class="temp-feeline-row"><td>Less: Supplemental management fee</td><td class="temp-amt">&minus;' + _fmt(suppMgmtFee) + '</td></tr>';
-    }
-    if (amFeeYear > 0) {
-      feeRows += '<tr class="temp-feeline-row"><td>Less: Asset Manager fee</td><td class="temp-amt">&minus;' + _fmt(amFeeYear) + '</td></tr>';
-    }
-    if (bhFeeYear > 0) {
-      feeRows += '<tr class="temp-feeline-row"><td>Less: Brookhaven fee</td><td class="temp-amt">&minus;' + _fmt(bhFeeYear) + '</td></tr>';
-    }
-    var netForYearRow = (suppMgmtFee > 0 || amFeeYear > 0 || bhFeeYear > 0)
-      ? '<tr class="temp-netyear-row"><td><strong>Net benefit this year</strong></td><td class="temp-amt"><strong>' + _fmt(netForYear - suppMgmtFee) + '</strong></td></tr>'
-      : '';
+    // Per-year GROSS BENEFIT / fee / net-this-year rows intentionally
+    // removed (advisor 2026-06-10). The activity column now shows only WHAT
+    // HAPPENED that year (Brooklyn loss, supplemental offsets, deferral gain);
+    // the dollar the CPA cares about per year is "Tax saved vs baseline" in
+    // the Results column, and ALL fees + the net reconciliation live once at
+    // the bottom (Σ yearly tax saved − Asset Manager fee − Brookhaven fee =
+    // net). Showing a per-year "gross benefit" that didn't match the Results
+    // tax-saved (it carried the deferral benefit, fees, etc.) was the source
+    // of the "that math doesn't make sense" confusion. _suppDisplayCapped /
+    // grossBenefit / netForYear are still computed above for the year-card
+    // relevance gate but no longer rendered here.
 
     return '<table class="temp-activity-table"><tbody>' +
       rows.map(function (r) {
         var cls = r[2] ? (' class="' + r[2] + '"') : '';
         return '<tr' + cls + '><td>' + r[0] + '</td><td class="temp-amt">' + r[1] + '</td></tr>';
       }).join('') +
-      grossRow +
-      feeRows +
-      netForYearRow +
       '</tbody></table>';
   }
 
@@ -843,35 +1152,28 @@
       var last      = (extraSpec && extraSpec.lastResult)
                    || (coreSpec  && coreSpec.lastResult) || null;
       if (!last) return;
-      // Shared ordinary-pool saturation scale from the master solver: when
-      // multiple ord-offset supps stacked and the Y0 ordinary income ran
-      // out, the crowded-out supp's realized benefit is scaled down (often
-      // to 0). Apply it here so the per-year cards sum to the bottom panel
-      // (which already uses the saturated solverOut.totalSupplementalBenefit).
-      var satScale = Number(s.saturationScale);
-      if (!Number.isFinite(satScale)) satScale = 1;
+      // Per-year saturation scale (audit R2 #5): Y0 may be clipped by the
+      // shared ord pool; Y1+ passes through unchanged because each future
+      // year has its own pool. Shared with the other per-supp reconstructions
+      // via _suppSatScale so the columns can't disagree.
+      var satScale = _suppSatScale(s, displayedI);
       var detail = last.detail || {};
       var perYear = Array.isArray(last.perYear) ? last.perYear : null;
       // Multi-year (Oil & Gas style): perYear[i].totalSaved already
-      // includes federal + state + NIIT delta for that year. Subtract
-      // perYear[i].mgmtFeeDollars when the supp carries a per-year
-      // management fee (Delphi). O&G's perYear has no mgmtFeeDollars
-      // field, so the subtraction is a no-op there. This makes the
-      // per-year sum reconcile to the master-solver's funded-supps net
-      // total (the same source the Strategy Summary hero uses).
+      // includes federal + state + NIIT delta for that year. Pre-fix
+      // also subtracted perYear[i].mgmtFeeDollars (double-sub with the
+      // netForYear render — fixed earlier). Return TRUE gross; the mgmt
+      // fee is displayed as its own "Less:" row and subtracted once in
+      // netForYear.
       if (perYear && perYear[displayedI] != null) {
         var py = perYear[displayedI];
         var pyGross = Number(py.totalSaved || 0) || 0;
-        var pyFee   = Number(py.mgmtFeeDollars || 0) || 0;
-        sum += Math.max(0, pyGross - pyFee) * satScale;
+        sum += Math.max(0, pyGross) * satScale;
         return;
       }
       // Unified multi-year shape (post-rename 2026-05-09): every
       // annual-recurring supp ships taxSavingsY0 + taxSavingsRestPerYear
       // already in tax dollars. Charitable, PTET, Augusta, 401(k).
-      // Earlier code multiplied charitable's deductionY0 (which was
-      // actually tax-savings, badly named) by marginal — under-counting
-      // by a factor of marginal. The rename + this read fixes it.
       if (detail.taxSavingsY0 != null || detail.taxSavingsRestPerYear != null) {
         var yc = Number(detail.yearCount || 1);
         if (displayedI < yc) {
@@ -968,11 +1270,30 @@
     var suppBenefit = 0;
     if (typeof root.runMasterSolver === 'function') {
       try {
-        var sOut = root.runMasterSolver(Number(m.net) || 0);
+        // Same post-primary residual cap as _resolveChosen / the hero —
+        // supps can't save more than the tax remaining after Brooklyn
+        // (advisor 2026-06-09), so the bottom panel matches Strategy Summary.
+        var _ppCapFP = (comp && Array.isArray(comp.rows))
+          ? comp.rows.reduce(function (a, r) { return a + ((r.withStrategy && Number(r.withStrategy.total)) || 0); }, 0)
+          : null;
+        var sOut = root.runMasterSolver(Number(m.net) || 0, (_ppCapFP != null ? { postPrimaryTaxRemaining: _ppCapFP } : undefined));
         if (sOut && Number.isFinite(Number(sOut.totalSupplementalBenefit))) {
           suppBenefit = Math.round(Number(sOut.totalSupplementalBenefit));
         }
       } catch (e) { /* */ }
+    }
+    // Override with the HONEST recompute-based benefit (the actual stacked
+    // tax saved) so the bottom total = Σ per-year card "tax saved" and the
+    // net ties to the Strategy Summary, which now also uses the honest value
+    // (advisor 2026-06-10). Falls back to the solver total above if anything
+    // is missing.
+    if (typeof root.__rettHonestSuppBenefit === 'function' &&
+        comp && Array.isArray(ctx.fundedSupps) && ctx.fundedSupps.length) {
+      try {
+        var _hsb = root.__rettHonestSuppBenefit(comp, ctx.fundedSupps,
+          { chosen: ctx.chosen, cfg: ctx.entry && ctx.entry.cfg });
+        if (Number.isFinite(_hsb)) suppBenefit = Math.round(_hsb);
+      } catch (e) { /* keep solver value */ }
     }
     // Carryover-loss offset credit (A/B/C) — the value of the free
     // §1211(b) $3,000/$1,500 ordinary offset the residual carryforward
@@ -1021,19 +1342,98 @@
 
     return '' +
       '<div class="temp-fees-panel">' +
-        '<div class="temp-fees-head">Fees &amp; Net Benefit Reconciliation</div>' +
+        '<div class="temp-fees-head">Total Tax Saved &rarr; Net Benefit</div>' +
         '<table class="temp-fees-table"><tbody>' +
+          '<tr class="temp-fees-foot"><td colspan="2" class="temp-fees-foot"><em>Sum of each year’s &ldquo;tax saved vs baseline&rdquo; above:</em></td></tr>' +
           brooklynRows +
           '<tr><td>Supplemental tax savings (vetted total)</td><td class="temp-amt">' + _fmt(suppBenefit) + '</td></tr>' +
           carryoverRow +
-          '<tr class="temp-fees-subtotal"><td><strong>Total gross benefit</strong></td><td class="temp-amt temp-fees-gross"><strong>' + _fmt(totalGross) + '</strong></td></tr>' +
-          '<tr><td>Asset Manager fees (across all years)</td><td class="temp-amt">&minus;' + _fmt(brooklynFees) + '</td></tr>' +
-          '<tr><td>Brookhaven fees (across all years)</td><td class="temp-amt">&minus;' + _fmt(brookhavenFees) + '</td></tr>' +
+          '<tr class="temp-fees-subtotal"><td><strong>Total tax saved (vs doing nothing)</strong></td><td class="temp-amt temp-fees-gross"><strong>' + _fmt(totalGross) + '</strong></td></tr>' +
+          '<tr><td>Less: Asset Manager fee (across all years)</td><td class="temp-amt">&minus;' + _fmt(brooklynFees) + '</td></tr>' +
+          '<tr><td>Less: Brookhaven fee (across all years)</td><td class="temp-amt">&minus;' + _fmt(brookhavenFees) + '</td></tr>' +
           addlFundsTaxRow +
-          '<tr class="temp-fees-total"><td><strong>Net benefit (gross − fees)</strong></td><td class="temp-amt"><strong>' + _fmt(net) + '</strong></td></tr>' +
+          '<tr class="temp-fees-total"><td><strong>Net benefit (tax saved − fees)</strong></td><td class="temp-amt"><strong>' + _fmt(net) + '</strong></td></tr>' +
           '<tr class="temp-fees-check' + (checkOk ? ' is-ok' : ' is-mismatch') + '"><td>Strategy Summary net benefit ' + (checkOk ? '✓ matches' : '⚠ mismatch') + '</td><td class="temp-amt">' + _fmt(ssDisplayedNet) + '</td></tr>' +
         '</tbody></table>' +
       '</div>';
+  }
+
+  // Total supp deduction this year, split by what bucket it absorbed
+  // against: ordinary income / §1245 recapture / §1250 unrecap. Display-
+  // only — feeds the results column so each income line AND the matching
+  // tax line shows post-supp reduction. Audit 2026-06-08: a §162-style
+  // ordinary deduction (Oil & Gas IDC, Delphi ord expense, equipment
+  // leasing PAL) waterfalls ord → §1245 (ordinary-flavored) → §1250
+  // (unrecap, 25% capped). OG's calc-oil-gas now ships absorbedOrd /
+  // absorbed1245 / absorbed1250 per year so we can mirror the split here.
+  // Supps that only generate standard / itemized deductions (charitable,
+  // 401k unified shape, augusta, PTET) only absorb against ordinary
+  // income — they don't reach recap. We default those to ord-only.
+  function _computeSuppOrdOffsetForYear(displayedI, fundedSupps) {
+    var ZERO = { ord: 0, r1245: 0, r1250: 0, total: 0, oilGasOrd: 0 };
+    if (!Array.isArray(fundedSupps)) return ZERO;
+    // oilGasOrd = the Oil & Gas portion of the ordinary offset — IDC, which is
+    // deducted for regular tax but added back for AMT (see amtIdcPreference).
+    var acc = { ord: 0, r1245: 0, r1250: 0, oilGasOrd: 0 };
+    fundedSupps.forEach(function (s) {
+      var extraSpec = (root.__rettSupplementalExtra && root.__rettSupplementalExtra[s.id]) || null;
+      var coreSpec  = (root.__rettSupplemental      && root.__rettSupplemental[s.id])      || null;
+      var last      = (extraSpec && extraSpec.lastResult)
+                   || (coreSpec  && coreSpec.lastResult) || null;
+      if (!last) return;
+      // Same per-year saturation scale the activity column and gross/net
+      // path apply — without it the results column reduces ordinary income
+      // by the UNCLIPPED offset while the activity column shows the clipped
+      // one, so the two halves of the year card disagree (advisor 2026-06-10).
+      var sc = _suppSatScale(s, displayedI);
+      var perYear = Array.isArray(last.perYear) ? last.perYear : null;
+      if (perYear && perYear[displayedI]) {
+        var py = perYear[displayedI];
+        // OG ships absorbedOrd / absorbed1245 / absorbed1250 (post-fix).
+        // Other multi-year supps may only ship `absorbed` (single number);
+        // attribute that fully to ordinary (they don't reach recap today).
+        var hasSplit = (py.absorbedOrd != null) || (py.absorbed1245 != null) || (py.absorbed1250 != null);
+        if (hasSplit) {
+          var _ordAdd = Math.max(0, Number(py.absorbedOrd) || 0) * sc;
+          acc.ord   += _ordAdd;
+          acc.r1245 += Math.max(0, Number(py.absorbed1245)  || 0) * sc;
+          acc.r1250 += Math.max(0, Number(py.absorbed1250)  || 0) * sc;
+          if (s.id === 'oilGas') acc.oilGasOrd += _ordAdd;
+        } else {
+          var c = (py.absorbed != null) ? Number(py.absorbed) : Number(py.deduction || 0);
+          if (c > 0) { acc.ord += c * sc; if (s.id === 'oilGas') acc.oilGasOrd += c * sc; }
+        }
+        return;
+      }
+      var detail = last.detail || {};
+      if (detail.ordOffsetY0 != null || detail.ordOffsetRestPerYear != null) {
+        var yc = Number(detail.yearCount || 1);
+        if (displayedI < yc) {
+          acc.ord += ((displayedI === 0)
+            ? Math.max(0, Number(detail.ordOffsetY0 || 0))
+            : Math.max(0, Number(detail.ordOffsetRestPerYear || 0))) * sc;
+        }
+        return;
+      }
+      if (displayedI !== 0) return;
+      var allocations = last.allocations || {};
+      var ordKey = Number(
+        allocations.ordinaryExpense
+        || detail.deductibleAmount
+        || detail.year1Deduction
+        || detail.yr1Deduction
+        || detail.yr1Loss
+        || detail.businessRent
+        || detail.totalContribution
+        || detail.total
+        || detail.deduction
+        || detail.expense
+        || 0
+      ) || 0;
+      if (ordKey > 0) acc.ord += ordKey * sc;
+    });
+    acc.total = acc.ord + acc.r1245 + acc.r1250;
+    return acc;
   }
 
   function _renderYearCard(row, i, chosen, cfg, fundedSupps, stateCode, carryIn, carryOut, feeScale, lowerBracketBenefit) {
@@ -1043,6 +1443,17 @@
     // If lower-bracket benefit lands on Y0, the year is relevant even if
     // there's no other Brooklyn/supp activity that year.
     if (i === 0 && lowerBracketBenefit && Math.abs(lowerBracketBenefit) > 5) rel = true;
+    // Cap supp tax saved so it can't exceed (baseline.total − Brooklyn
+    // savings). Same invariant the activity column enforces — keeps the
+    // right-column "Tax saved vs baseline" line consistent with the
+    // activity column's "Gross benefit (tax saved)" and the underlying
+    // mathematical bound (savings ≤ tax owed). Audit 2026-06-09.
+    var _rawSuppSaved = _computeSuppSavingsForYear(i, fundedSupps);
+    var _ycBaseTotal = Number(row && row.baseline && row.baseline.total) || 0;
+    var _ycBrooklynSavings = (row && row.withStrategy)
+      ? Math.max(0, _ycBaseTotal - (Number(row.withStrategy.total) || 0))
+      : 0;
+    var _suppSavedCapped = Math.min(_rawSuppSaved, Math.max(0, _ycBaseTotal - _ycBrooklynSavings));
     var relClass = rel ? 'temp-rel-yes' : 'temp-rel-no';
     var relText  = rel ? 'Relevant' : 'Not relevant';
     var stateTag = stateCode ? ' &mdash; <span class="temp-state-tag">' + stateCode + '</span>' : '';
@@ -1062,7 +1473,15 @@
         '</div>' +
         '<div class="temp-year-results">' +
           '<div class="temp-year-head temp-year-head-result">Results &mdash; with strategy</div>' +
-          _renderResultsCell(row.withStrategy || row.baseline, row.baseline) +
+          _renderResultsCell(
+            row.withStrategy || row.baseline,
+            row.baseline,
+            _suppSavedCapped,
+            _computeSuppOrdOffsetForYear(i, fundedSupps),
+            _computeSuppLineSavings(i, fundedSupps),
+            row,
+            lowerBracketBenefit
+          ) +
         '</div>' +
         _renderWithdrawalCell(row, year, cfg) +
       '</div>';
@@ -1294,6 +1713,89 @@
     host.classList.toggle('temp-baselines--withdrawals', !!coversTax);
     host.innerHTML = html + _renderExcessLossPanel(ctx) + _renderFeesPanel(ctx);
   }
+
+  // ── Honest supplemental benefit ───────────────────────────────────────
+  // The master solver estimates each supp's benefit at its OWN standalone
+  // marginal rate, so stacking several overstates the combined supplemental
+  // contribution (the real saved tax is lower once income drops into lower
+  // brackets). This helper measures the TRUE supplemental benefit for a
+  // given strategy's engine output: for each year, recompute the tax with
+  // only Brooklyn's offsets, then again with Brooklyn + the (saturated)
+  // supplemental offsets, and sum the difference. Both sides use the SAME
+  // recompute path so any recompute-vs-engine drift cancels and we isolate
+  // the pure supplemental delta. Returns a whole-dollar number (advisor
+  // 2026-06-10 — make the honest, recomputed number authoritative).
+  function _honestSuppBenefitForComp(comp, fundedSupps, opts) {
+    if (!comp || !Array.isArray(comp.rows)) return 0;
+    if (!Array.isArray(fundedSupps) || !fundedSupps.length) return 0;
+    if (typeof _recomputePostStrategyTax !== 'function') return 0;
+    opts = opts || {};
+    var status = 'mfj', stateCode = 'NONE', year1 = 0, struct = {};
+    if (typeof root.collectInputs === 'function') {
+      try {
+        var ci = root.collectInputs() || {};
+        status    = ci.filingStatus || 'mfj';
+        stateCode = ci.state || ci.stateCode || 'NONE';
+        year1     = Number(ci.year1) || 0;
+        struct = { qualifiedDividend: ci.qualifiedDividend, wages: ci.wages,
+                   seIncome: ci.seIncome, itemized: ci.itemizedDeductions || ci.itemized };
+      } catch (e) { /* defaults */ }
+    }
+    var total = 0;
+    comp.rows.forEach(function (row, i) {
+      if (!row) return;
+      if (row.baseline && !row.baseline._incomes && typeof _deriveIncomesForEngineRow === 'function') {
+        try { row.baseline._incomes = _deriveIncomesForEngineRow(row, i, opts.chosen, opts.cfg); } catch (e) {}
+      }
+      var baseInc = row.baseline && row.baseline._incomes;
+      if (!baseInc) return;
+      // Brooklyn loss offsets already applied by the engine this year.
+      var btLt   = Math.max(0, Number(row.ltOffsetApplied)        || 0);
+      var btOrd  = Math.max(0, Number(row.ordOffsetApplied)       || 0);
+      var bt1250 = Math.max(0, Number(row.recap1250OffsetApplied) || 0);
+      var btSt   = Math.max(0, Number(row.shortOffsetApplied)     || 0);
+      // Saturated supplemental offsets for this year.
+      var split  = (typeof _computeSuppOrdOffsetForYear === 'function')
+        ? (_computeSuppOrdOffsetForYear(i, fundedSupps) || { ord: 0, r1245: 0, r1250: 0 })
+        : { ord: 0, r1245: 0, r1250: 0 };
+      var offOrd  = Math.max(0, Math.round(Number(split.ord)   || 0));
+      var off1245 = Math.max(0, Math.round(Number(split.r1245) || 0));
+      var off1250 = Math.max(0, Math.round(Number(split.r1250) || 0));
+      if (offOrd + off1245 + off1250 <= 0) return;  // no supp activity this year
+      var year = Number(row.year) || (year1 + i);
+      // Brooklyn-only income (baseline less Brooklyn offsets).
+      var brkInc = Object.assign({}, baseInc, {
+        ordinary:      Math.max(0, Number(baseInc.ordinary      || 0) - btOrd),
+        longTermGain:  Math.max(0, Number(baseInc.longTermGain  || 0) - btLt),
+        shortTermGain: Math.max(0, Number(baseInc.shortTermGain || 0) - btSt),
+        recapture1250: Math.max(0, Number(baseInc.recapture1250 || 0) - bt1250),
+        recapture:     Math.max(0, Number(baseInc.recapture     || 0) - bt1250)
+      });
+      // Brooklyn + supplemental income (also less the supp offsets).
+      var suppInc = Object.assign({}, brkInc, {
+        ordinary:      Math.max(0, Number(brkInc.ordinary      || 0) - offOrd),
+        recapture1245: Math.max(0, Number(brkInc.recapture1245 || 0) - off1245),
+        recapture1250: Math.max(0, Number(brkInc.recapture1250 || 0) - off1250),
+        recapture:     Math.max(0, Number(brkInc.recapture     || 0) - off1245 - off1250)
+      });
+      var brkTax  = _recomputePostStrategyTax(brkInc,  year, status, stateCode, struct);
+      // The supp side also reduces the SE earnings base by the supplemental
+      // ordinary offset (offOrd) — so SE/FICA tax + the SE part of Additional
+      // Medicare fall as ordinary/SE income is offset. Brooklyn's recompute
+      // (brkTax) keeps the full SE base — capital losses don't reduce earned
+      // income. (advisor 2026-06-10.)
+      var suppStruct = Object.assign({}, struct, { seReduction: offOrd,
+        // O&G IDC added back to AMTI on the supp side (brkTax has no supp offset,
+        // so its IDC preference is 0) — this is what trims the O&G supp's
+        // incremental benefit when the IDC add-back triggers AMT.
+        amtIdcPreference: Math.max(0, Math.round((Number(split.oilGasOrd) || 0) * _idcAmtPrefFraction())) });
+      var suppTax = _recomputePostStrategyTax(suppInc, year, status, stateCode, suppStruct);
+      if (!brkTax || !suppTax) return;
+      total += (Number(brkTax.total) || 0) - (Number(suppTax.total) || 0);
+    });
+    return Math.round(total);
+  }
+  root.__rettHonestSuppBenefit = _honestSuppBenefitForComp;
 
   root.renderTempPage = render;
 })(window);
