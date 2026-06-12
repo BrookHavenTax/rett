@@ -97,6 +97,17 @@ export function verifyPin(pin) {
   }
 }
 
+// Only the calculator LOGIC is gated — the engine JS (tax math, solvers) and
+// the tax-bracket data. The upstream stylesheet and other static assets are
+// NOT gated: index.html requests /legacy/css/styles.css via a static <link>
+// during the initial (still-locked) page load, so gating it would 403 the
+// base stylesheet and leave the app unstyled. CSS is presentation, not IP;
+// the engine JS is loaded dynamically only AFTER unlock, so those requests
+// always carry the session cookie.
+function isGatedAsset(path) {
+  return path.startsWith('/legacy/js/') || path.startsWith('/data/');
+}
+
 export function createAccessGateMiddleware() {
   return (req, res, next) => {
     const path = req.path || req.url?.split('?')[0] || '';
@@ -107,7 +118,7 @@ export function createAccessGateMiddleware() {
       res.end(JSON.stringify({ error: 'Access required. Enter the access code to continue.' }));
       return;
     }
-    if (path.startsWith('/legacy/') && !isAccessGranted(req)) {
+    if (isGatedAsset(path) && !isAccessGranted(req)) {
       res.statusCode = 403;
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.end('Access denied');
