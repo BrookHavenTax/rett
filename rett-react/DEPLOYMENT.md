@@ -115,8 +115,6 @@ PORT=8787
 ALLOWED_ORIGINS=https://rett.yourdomain.com
 RATE_LIMIT_WINDOW_MS=600000
 RATE_LIMIT_MAX=30
-ACCESS_PIN=39281
-ACCESS_SECRET=PASTE_A_LONG_RANDOM_STRING_HERE
 EOF
 
 sudo chown root:rett /etc/rett/server.env
@@ -174,17 +172,6 @@ server {
     proxy_read_timeout   120s; # Gemini extraction can take ~20s on big PDFs
   }
 
-  # Calculator engine scripts — must go through Express so the PIN gate can
-  # enforce the httpOnly session cookie. Do NOT serve /legacy/ as plain static.
-  location /legacy/ {
-    proxy_pass         http://127.0.0.1:8787;
-    proxy_http_version 1.1;
-    proxy_set_header   Host              $host;
-    proxy_set_header   X-Real-IP         $remote_addr;
-    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header   X-Forwarded-Proto $scheme;
-  }
-
   # Long-cache the hashed Vite assets; never cache index.html.
   location /assets/ {
     expires 30d;
@@ -216,54 +203,25 @@ HTTP→HTTPS redirect, and installs an auto-renew systemd timer.
 
 ## 9. Updating the site
 
-After making code changes locally (or after `git pull` on the server):
+**Simple deploy (git + pm2 — same as always):**
 
 ```bash
-# On EC2 (git deploy — repo already cloned at /var/www/rett-react)
-cd /var/www/rett-react
+cd ~/rett-react
 git pull origin main
 cd rett-react
 npm ci
 npm run build
-cd server && npm install --omit=dev
-sudo -u rett pm2 reload rett-api
-sudo nginx -t && sudo systemctl reload nginx
+pm2 restart rett
 ```
 
-Or from your laptop via rsync (if you build locally):
+The site PIN lives in `server/access-config.js` in the repo — no new env
+vars on EC2. Your existing `server/.env` (Gemini key only) is unchanged.
+
+Smoke test:
 
 ```bash
-# Build fresh
-cd rett-react && npm run build
-
-# Push static bundle
-rsync -avz --delete dist/ ubuntu@HOST:/var/www/rett-react/rett-react/dist/
-
-# If server/ changed:
-rsync -avz --delete server/ ubuntu@HOST:/var/www/rett-react/rett-react/server/
-ssh ubuntu@HOST "cd /var/www/rett-react/rett-react/server && npm install --omit=dev && \
-                 sudo -u rett pm2 reload rett-api"
-```
-
-**Deploy this PIN gate release:** ensure `/etc/rett/server.env` includes
-`ACCESS_PIN` and `ACCESS_SECRET`, and that Nginx proxies `/legacy/` to
-Express (see section 7). Without the `/legacy/` proxy block, the calculator
-JS would bypass the gate because Nginx would serve it as static files.
-
-Smoke test after deploy:
-
-```bash
-curl -s https://rett.yourdomain.com/api/access/status
-# {"unlocked":false}
-
-curl -s -o /dev/null -w "%{http_code}\n" https://rett.yourdomain.com/legacy/js/04-ui/controls.js
-# 403
-
-curl -s -c /tmp/rett-cookie.txt -X POST https://rett.yourdomain.com/api/access/verify \
-  -H 'Content-Type: application/json' -d '{"pin":"39281"}'
-curl -s -o /dev/null -w "%{http_code}\n" -b /tmp/rett-cookie.txt \
-  https://rett.yourdomain.com/legacy/js/04-ui/controls.js
-# 200
+curl -s http://127.0.0.1:8787/api/health
+curl -s http://127.0.0.1:8787/api/access/status
 ```
 
 When the upstream calculator changes:

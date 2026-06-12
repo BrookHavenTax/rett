@@ -7,12 +7,7 @@
 // Gemini proxy.
 
 import crypto from 'node:crypto';
-
-const ACCESS_PIN = String(process.env.ACCESS_PIN || '39281');
-const ACCESS_SECRET =
-  process.env.ACCESS_SECRET ||
-  process.env.GEMINI_API_KEY ||
-  'rett-dev-access-secret-change-in-production';
+import { ACCESS_PIN, ACCESS_COOKIE_SECRET } from './access-config.js';
 
 const COOKIE_NAME = 'rett_access';
 const PUBLIC_API_PATHS = new Set([
@@ -37,7 +32,7 @@ function parseCookies(req) {
 
 function signToken(ts) {
   return crypto
-    .createHmac('sha256', ACCESS_SECRET)
+    .createHmac('sha256', ACCESS_COOKIE_SECRET)
     .update(String(ts))
     .digest('base64url');
 }
