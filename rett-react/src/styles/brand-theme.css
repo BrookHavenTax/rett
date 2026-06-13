@@ -703,6 +703,114 @@ body {
   .compliance-disclosures-extended { padding-left: 4px; padding-right: 4px; }
 }
 
+/* ----------------------------------------------------------------------------
+   17. MOBILE LAYER — phone-only adjustments (≤768px) + fine tuning (≤480px).
+   ----------------------------------------------------------------------------
+   This block is the dedicated "mobile" stylesheet the desktop layout never
+   sees: everything here lives inside max-width media queries, so the web /
+   desktop presentation (≥769px) is byte-for-byte unchanged. brand-theme.css
+   loads AFTER the upstream styles.css, so these rules win the cascade over
+   both the upstream base rules and upstream's own mobile breakpoints.
+
+   Primary fixes:
+     - Stack each input row (label above a full-width input) instead of the
+       rigid `label | 240px` grid that crushed labels like "W-2 Wages" into
+       a 3-line sliver on a phone.
+     - Restore a clean single-row horizontally-scrollable nav (the upstream
+       intent) instead of the 4-row wrap our tablet block introduced.
+     - Tighten page / header / hero padding and type scale for small screens.
+   -------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+  /* ---- Page shell: less gutter, smaller titles ---- */
+  .page { padding: 18px 14px; }
+  .page > h2,
+  .page-inputs-title { font-size: 1.4rem; line-height: 1.2; }
+  .page-inputs-title--banner { padding: 16px 18px; }
+
+  /* ---- Nav: single scrollable row (upstream intent) ---- */
+  .nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 0 6px;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 12px 13px;
+    font-size: 0.85rem;
+  }
+
+  /* ---- Income / proceeds / all input rows: stack vertically ---- */
+  .input-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 7px;
+    margin-bottom: 16px;
+  }
+  .input-row .label { font-size: 1rem; }
+  .input-row input,
+  .input-row select,
+  .input-row .yes-no,
+  .input-row .currency-input { width: 100%; }
+  /* §1245 / §1250 recap split + any inherited grid rows also stack. */
+  .input-row.recap-split { grid-template-columns: 1fr; }
+
+  /* Two-column inputs wrapper is already 1fr; keep section padding tight. */
+  .inputs-2col { gap: 16px; }
+
+  /* ---- Header: keep the lockup tidy, shrink the secondary mark ---- */
+  .header { padding: 12px 16px; }
+  .header-brand__product { font-size: 0.6rem; }
+
+  /* ---- Page action buttons: full-width, stacked ---- */
+  .page-actions,
+  .strategy-pick-actions,
+  .page-supplemental-actions,
+  .page-projection-actions {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .page-actions .actions-left,
+  .page-actions .actions-right { width: 100%; }
+  .page-actions .btn,
+  .strategy-pick-actions .btn,
+  .page-supplemental-actions .btn { width: 100%; }
+
+  /* ---- Baseline proceeds bar: keep segment labels legible ---- */
+  .proceeds-bar .pseg .pamt { font-size: 0.72rem; }
+  .proceeds-bar .pseg .pnm { font-size: 0.56rem; }
+
+  /* ---- Wide tables (projection / CPA view) scroll instead of overflowing the page ---- */
+  .baseline-table-wrapper,
+  .temp-baseline-table-wrap,
+  .scenario-comparison,
+  .year-projection-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 480px) {
+  .page { padding: 14px 11px; }
+  .page > h2,
+  .page-inputs-title { font-size: 1.25rem; }
+
+  /* Supplemental / strategy card inner padding tightened for narrow phones. */
+  .strategy-pick-card,
+  .supp-card { padding-left: 14px; padding-right: 14px; }
+
+  /* Baseline hero tiles: comfortable stacked sizing. */
+  .baseline-tile-value { font-size: 2rem; }
+  .baseline-tile { padding: 18px 16px; }
+
+  /* Header product tagline can wrap on the very narrowest screens. */
+  .rett-logo-lockup__name { font-size: 1.3rem; }
+  .rett-logo-lockup__icon { height: 38px; }
+}
+
 /* Respect reduced-motion preferences. */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
