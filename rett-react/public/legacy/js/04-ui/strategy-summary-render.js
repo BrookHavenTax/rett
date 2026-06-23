@@ -78,6 +78,24 @@
   function renderStrategySummary() {
     var host = document.getElementById('strategy-fee-summary-host');
     if (!host) return;
+    // Don't blow away the Future Sales Estimator while the advisor is typing
+    // in it. A reactive re-render (the supplemental pipeline / supp-refresh
+    // fires on ANY input via document-level listeners) mid-keystroke would
+    // replace host.innerHTML, destroying the focused input and eating the
+    // caret — the "click in, edit, then it poses out" bug. The estimator is a
+    // standalone calc whose rows live in window.__rettFutureSalesPlanner and
+    // recompute themselves on input, so skipping the full re-render while one
+    // of its fields is focused loses nothing; it renders normally once focus
+    // leaves. Single-point guard so EVERY re-render source is covered.
+    // (advisor 2026-06-17.)
+    // Only skip when the focused fsp-input is INSIDE this host (would be
+    // destroyed by the re-render). The future-sale inputs now live on Page 1
+    // (#future-sale-inputs-host), a different host — re-rendering Tab 6 while
+    // one of those is focused is harmless, and blocking it left the summary
+    // stale after future-sale edits (advisor 2026-06-22). host.contains scopes
+    // the guard back to its original intent.
+    var _ae = (typeof document !== 'undefined') ? document.activeElement : null;
+    if (_ae && _ae.classList && _ae.classList.contains('fsp-input') && host.contains(_ae)) return;
     if (typeof root.buildInterestedSummary !== 'function') {
       host.innerHTML = _renderNoChoiceHtml();
       return;
@@ -170,15 +188,26 @@
       ? root.runMasterSolver(primaryNet, (_ppCap != null ? { postPrimaryTaxRemaining: _ppCap } : undefined)) : null;
     // Honest (recompute-based) supplemental benefit — the actual stacked tax
     // saved, not the master solver's standalone-marginal-rate sum (which
-    // overstates when supps stack). Falls back to the solver total when the
-    // recompute helper isn't available (advisor 2026-06-10).
-    var supplementalBenefit = (solverOut && Number.isFinite(solverOut.totalSupplementalBenefit))
-      ? solverOut.totalSupplementalBenefit
-      : 0;
+    // overstates when several ordinary-deduction supps stack). Falls back to
+    // the solver total when the recompute helper isn't available (advisor
+    // 2026-06-10).
+    var _solverSupp = (solverOut && Number.isFinite(solverOut.totalSupplementalBenefit))
+      ? Number(solverOut.totalSupplementalBenefit)
+      : null;
+    var supplementalBenefit = (_solverSupp != null) ? _solverSupp : 0;
     if (typeof root.__rettHonestSuppBenefitForEntry === 'function') {
       try {
         var _honest = root.__rettHonestSuppBenefitForEntry(entry, solverOut);
-        if (Number.isFinite(_honest)) supplementalBenefit = _honest;
+        if (Number.isFinite(_honest)) {
+          // The honest recompute only sees each supp's ORDINARY offset, so it
+          // correctly TRIMS overstated stacking of ordinary-deduction supps —
+          // but it OVERSTATES a character-conversion supp (Delphi adds LT gain
+          // + qualified dividends it can't see, so it counts the ordinary
+          // savings without the offsetting capital-gain cost). Let it correct
+          // the benefit DOWN only, never above the solver's already-correct
+          // realized total (which DOES net the added gain). (advisor 2026-06-17.)
+          supplementalBenefit = (_solverSupp != null) ? Math.min(_solverSupp, _honest) : _honest;
+        }
       } catch (e) { /* keep solver value */ }
     }
     // For print iteration / per-supp rows: only the FUNDED supps
@@ -190,8 +219,76 @@
           return s.enabled && s.available && s.rivalry && s.rivalry.funded;
         })
       : [];
+    // Brookhaven flat per-strategy SETUP fees (advisor-entered on the Temp
+    // page, persisted in window.__rettSuppSetupFees). Charged ONCE per FUNDED
+    // supplemental strategy (rivalry funded + dollars granted), regardless of
+    // how many investments deploy. Unlike the management fees already netted
+    // into each supp's honest benefit, the setup fee is a NEW cost not yet
+    // reflected anywhere, so: (1) subtract it from each funded supp's own
+    // displayed net benefit — mutate realizedNetBenefit/netBenefit ONCE,
+    // guarded, so every per-supp display site reflects it; (2) subtract the
+    // total from the overall net here; (3) add it to the ROP denominator and
+    // the Fees Baked In total below. Only funded supps (which add net benefit)
+    // are charged, so this only bites when there's a benefit to reduce.
+    var _suppSetupFeeMap = (window.__rettSuppSetupFees && typeof window.__rettSuppSetupFees === 'object')
+      ? window.__rettSuppSetupFees : {};
+    var appliedSetupFees = 0;
+    (solverOut && solverOut.supplementals ? solverOut.supplementals : []).forEach(function (s) {
+      if (!(s.rivalry && s.rivalry.funded && (s.rivalry.granted || 0) > 0)) return;
+      var setup = Math.max(0, Number(_suppSetupFeeMap[s.id]) || 0);
+      if (setup <= 0) return;
+      appliedSetupFees += setup;
+      if (!s._setupFeeApplied) {
+        if (Number.isFinite(Number(s.realizedNetBenefit))) s.realizedNetBenefit = Number(s.realizedNetBenefit) - setup;
+        if (Number.isFinite(Number(s.netBenefit)))         s.netBenefit         = Number(s.netBenefit) - setup;
+        s._setupFeeApplied = true;
+      }
+    });
     var savings = primarySavings + supplementalBenefit;
-    var net = primaryNet + supplementalBenefit;
+    var net = primaryNet + supplementalBenefit - appliedSetupFees;
+    // Supplemental fees the client actually pays on FUNDED supps — Delphi-style
+    // mgmtFeeDollars + the flat Brookhaven setup fee. Computed up here so the
+    // Return on Planning denominator below uses the SAME total the Fees Baked
+    // In section shows. (advisor 2026-06-17: ROP was dividing by Brooklyn +
+    // setup fees only, omitting the supp management fee, so it overstated —
+    // e.g. $340K net / $85K instead of / $140K total fees → 400% vs 243%.)
+    var fundedSuppFees = (solverOut && solverOut.supplementals ? solverOut.supplementals : [])
+      .filter(function (s) { return s.rivalry && s.rivalry.funded && (s.rivalry.granted || 0) > 0; })
+      .map(function (s) {
+        var mgmtFee  = Number(s.result && s.result.mgmtFeeDollars) || 0;
+        var setupFee = Math.max(0, Number(_suppSetupFeeMap[s.id]) || 0);
+        return { id: s.id, fee: mgmtFee + setupFee };
+      })
+      .filter(function (x) { return x.fee > 0; });
+    var suppFeesTotal = fundedSuppFees.reduce(function (sum, s) { return sum + s.fee; }, 0);
+    var totalFeesAll = fees + suppFeesTotal;   // all fees: Brooklyn + Brookhaven + supp mgmt + setup
+
+    // ---- Multi-sale string: layer the future sales onto the summary ----
+    // (advisor 2026-06-22) When the client flagged future sales, the Strategy
+    // Summary reflects ALL their sales: the Net Benefit hero, Return on
+    // Planning, the No/With-Planning walk-aways, and Fees Baked In all become
+    // collective = this sale (engine net, incl. supplementals) + the
+    // future-sales installment estimate. Supplementals stay tied to the
+    // current/granular sale. Single-sale string is untouched (futures = 0).
+    var _summaryMultiSale = false;
+    try { var _fyS = document.getElementById('future-sale-yes-no'); _summaryMultiSale = !!(_fyS && _fyS.value === 'yes'); } catch (e) { _summaryMultiSale = false; }
+    var _fbSummary = (_summaryMultiSale && typeof root.__rettFutureInstallmentBenefit === 'function')
+      ? root.__rettFutureInstallmentBenefit() : null;
+    var futureNet = _fbSummary ? (Number(_fbSummary.net) || 0) : 0;
+    var futureFees = _fbSummary ? (Number(_fbSummary.fees) || 0) : 0;
+    var futureTaxSaved = _fbSummary ? (Number(_fbSummary.taxSaved) || 0) : 0;
+    var isMultiSummary = _summaryMultiSale && (futureNet > 0 || futureFees > 0);
+    var displayNet = net + futureNet;            // collective net when multi, = net otherwise
+    var displayFees = totalFeesAll + futureFees;  // collective fees when multi
+    // GROSS tax saved, defined as net + all fees, so the leave-behind
+    // reconciles PENNY-PERFECT: You Save - Total Fees = Net Benefit exactly.
+    // (A net-of-mgmt savings double-counted each funded supp's management fee —
+    // it's netted into supplementalBenefit AND disclosed in the fee total — and
+    // the honest-supp cap left a small residual on top, so a simple add-back
+    // didn't tie out. Defining savings = net + fees ties out by construction
+    // and is the true gross benefit before fees.) Rounded before summing so the
+    // displayed figures subtract exactly. (advisor 2026-06-23 "make it reconcile".)
+    var displaySavings = Math.round(displayNet) + Math.round(displayFees);
     // Return on Planning expressed as a percentage of NET benefit over
     // fees ("for every $1 of fees, you get back $X of net benefit",
     // rendered as a percentage). Was a multiplier (× back); switched per
@@ -260,34 +357,9 @@
           : (Number(currentCfg.leverage) || 1) * 100);
     var longPct = (currentCfg.tierKey === 'beta0') ? shortPct : 100 + shortPct;
     var leverageLabel = Math.round(longPct) + '/' + Math.round(shortPct);
-    var hasSupps = !!(fundedSupplements.length || (solverOut && solverOut.anyInterested));
-    var selectedStrategyHtml = '<div class="input-section forward-strategy-card">' +
-      '<div class="section-heading">' +
-        '<h2>Selected Strategy</h2>' +
-        '<span class="num">STRATEGY ' + _stratNum(entry.type) + '</span>' +
-      '</div>' +
-      '<div class="section-body forward-strategy-body">' +
-        '<div class="input-row forward-strategy-row">' +
-          '<div class="label">Strategy<span class="sub">' + _strategyDescriptor(entry.type) + '</span></div>' +
-          '<div class="forward-fee-display forward-strategy-name">' +
-            _stratName(entry.type) +
-          '</div>' +
-        '</div>' +
-        '<div class="input-row forward-strategy-row">' +
-          '<div class="label">Asset Manager<span class="sub">long &percnt; / short &percnt;</span></div>' +
-          '<div class="forward-balance forward-strategy-leverage">' + leverageLabel + '</div>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-
-    if (hasSupps) {
-      html += '<div class="forward-top-row">' +
-        selectedStrategyHtml +
-        _renderSupplementalLeftColumn(solverOut) +
-      '</div>';
-    } else {
-      html += selectedStrategyHtml;
-    }
+    // Selected Strategy + Supplementals block moved BELOW the value block
+    // (advisor 2026-06-22) — rendered after the Net Benefit / Return on
+    // Planning hero. See its new location below.
 
     // ============ Return on Planning — left: walk-away + compare; right: ROP square ============
     // The big-picture question for the client: "what do I actually walk
@@ -302,22 +374,27 @@
     // directly would always show the full-investment tax even when the
     // optimizer has dialed Brooklyn back below the absorbable cap,
     // breaking the walkaway↔you-save reconciliation.
-    var withPlanningTax = Math.max(0, (m.doNothing || 0) - primarySavings);
-    // Walk-away = sale proceeds − tax − fees (+ supplemental net, which
-    // is already post-its-own-fees). Subtracting fees on the With-Planning
-    // side makes the walkaway numbers TRULY comparable: the delta between
-    // No Planning and With Planning equals the Net Benefit shown below
-    // (savings − fees + supplementalBenefit). Without fees in the
-    // walkaway, the delta over-stated the take-home benefit by the
-    // fee amount.
-    var walkawayNoPlanning   = salePrice - (m.doNothing || 0);
-    var walkawayWithPlanning = salePrice - withPlanningTax - fees + supplementalBenefit;
+    // Walk-away on the SALE-ONLY basis (advisor 2026-06-12). "No Planning"
+    // = Tab 2's "Cash Kept from Sale" (sale price − tax ON THE SALE) — read
+    // straight from that tile's DOM so it's the EXACT figure the client saw,
+    // exactly as the Projection page (Tab 4) does. Previously this used
+    // salePrice − m.doNothing (TOTAL tax), which wrongly subtracted the
+    // client's recurring W-2 income tax from the sale walk-away and made this
+    // tile ~$94k lower than Tab 2 for the same scenario. "With Planning" =
+    // "No Planning" + Net Benefit, so the delta between the two tiles still
+    // equals the Net Benefit shown below (net = savings − fees + suppBenefit).
+    var _cashKeptEl = (typeof document !== 'undefined') ? document.getElementById('bt-cash-kept') : null;
+    var _cashKeptFromSale = (_cashKeptEl && typeof parseUSD === 'function' && _cashKeptEl.textContent)
+      ? (parseUSD(_cashKeptEl.textContent) || 0)
+      : (salePrice - (m.doNothing || 0));   // fallback if Tab 2 hasn't rendered yet
+    var walkawayNoPlanning   = _cashKeptFromSale;   // collective cash-kept on the multi-sale string (Tab 2 already collective)
+    var walkawayWithPlanning = _cashKeptFromSale + displayNet;
     // Return on Planning rendered as a percentage = (net / fees) × 100.
     // Was a multiplier (× back) earlier; switched to percent per advisor
     // 2026-05-09 so the headline reads as an ROI figure ("828%") rather
     // than the abstract "8.3×". Uses NET benefit over fees (not gross
     // savings) — the numerator matches the hero number above.
-    var ropRatio = (fees > 0 && net > 0) ? (net / fees) : 0;
+    var ropRatio = (displayFees > 0 && displayNet > 0) ? (displayNet / displayFees) : 0;
     var ropPctNum = Math.round(ropRatio * 100);
     var ropDisplay = (ropRatio > 0)
       ? ropPctNum.toLocaleString('en-US') + '<span class="rop-x">%</span>'
@@ -346,20 +423,28 @@
             '<div class="walkaway-side withplan">' +
               '<div class="walkaway-label">With Planning</div>' +
               '<div class="walkaway-amt">' + _fmt(walkawayWithPlanning) + '</div>' +
-              '<div class="walkaway-tagline">what you walk away with</div>' +
+              // When the with-planning walk-away exceeds the sale price, the
+              // planning offset baseline (non-sale) income tax on top of the
+              // sale tax — flag it with a small side note so the figure
+              // doesn't look like a typo. (advisor 2026-06-12.)
+              '<div class="walkaway-tagline">what you walk away with' +
+                (walkawayWithPlanning > salePrice
+                  ? '<span class="walkaway-sidenote"> &mdash; incl. additional baseline offset</span>'
+                  : '') +
+              '</div>' +
             '</div>' +
           '</div>' +
         '</div>' +
         '<div class="forward-net-hero" data-net-hero title="Double-click to see how this benefit breaks down">' +
-          '<div class="net-hero-label">Net Benefit</div>' +
-          '<div class="net-hero-amt"><span class="currency">$</span>' + Math.round(net).toLocaleString('en-US') + '</div>' +
+          '<div class="net-hero-label">' + (isMultiSummary ? 'Net Benefit &mdash; All Sales' : 'Net Benefit') + '</div>' +
+          '<div class="net-hero-amt"><span class="currency">$</span>' + Math.round(displayNet).toLocaleString('en-US') + '</div>' +
           // 3-part breakdown of the net benefit, hidden by default;
           // double-clicking the hero toggles .is-expanded and reveals
           // it. Cash / charity / asset categorization comes from the
           // master-solver supplementals' incomeBucket field (mapped
           // from spec.bucket at registration time). Brooklyn's primary
           // net is always 'cash'.
-          _renderNetBenefitBreakdown(primaryNet, solverOut) +
+          _renderNetBenefitBreakdown(primaryNet, solverOut, futureNet) +
         '</div>' +
       '</div>' +
       '<div class="forward-rop-square">' +
@@ -369,35 +454,40 @@
       '</div>' +
     '</div>';
 
+    // ============ Selected Strategy + Supplemental Strategies ============
+    // Sits BELOW the Net Benefit / Return on Planning value block (advisor
+    // 2026-06-22): the client lands on the value first, then we name the
+    // strategy + supplementals. Asset Manager leverage row removed per the
+    // same spec — just the strategy name, supplementals directly under it.
+    html += '<div class="input-section forward-strategy-block">' +
+      '<div class="section-heading">' +
+        '<h2>Selected Strategy</h2>' +
+        '<span class="num">STRATEGY ' + _stratNum(entry.type) + '</span>' +
+      '</div>' +
+      '<div class="section-body">' +
+        '<div class="forward-strategy-body">' +
+          '<div class="input-row forward-strategy-row">' +
+            '<div class="label">Strategy<span class="sub">' + _strategyDescriptor(entry.type) + '</span></div>' +
+            '<div class="forward-fee-display forward-strategy-name">' +
+              _stratName(entry.type) +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        _renderSupplementalLeftColumn(solverOut) +
+      '</div>' +
+    '</div>';
+
     // ============ Fees Baked In — Asset Manager + Brookhaven breakdown ============
     // This sits BEFORE the Future Sale Option callout per advisor spec.
     // Logic: walk the client through the existing engagement's fees
     // first ("here's what you'd spend on the current sale"), then —
     // if there's a planned future sale — pivot to "if you size up,
     // here's what additional fees buy you." Tied chronologically.
-    // Capital-consuming supps that carry a management fee (Delphi-style
-    // mgmtFeeDollars in their result). Filter on rivalry.funded — not
-    // mere interest — so a supp the rivalry rejected (no actual dollars
-    // deployed) doesn't surface a fee the client never pays. Keeps the
-    // page consistent: a supp shows up either as a real contribution
-    // (with its fee in this section) or as $0 with a reason note in
-    // the Supplemental Strategies row above and the Implementation
-    // panel below.
-    var fundedSuppFees = (solverOut && solverOut.supplementals
-      ? solverOut.supplementals : [])
-      .filter(function (s) {
-        return s.rivalry && s.rivalry.funded && (s.rivalry.granted || 0) > 0;
-      })
-      .map(function (s) {
-        var fee = Number(s.result && s.result.mgmtFeeDollars) || 0;
-        return { id: s.id, fee: fee };
-      })
-      .filter(function (x) { return x.fee > 0; });
-    var suppFeesTotal = fundedSuppFees.reduce(function (sum, s) { return sum + s.fee; }, 0);
+    // fundedSuppFees / suppFeesTotal / totalFeesAll are computed up top (so the
+    // ROP denominator matches). The bullet for the supp fees lives here.
     var suppFeeBullet = suppFeesTotal > 0
-      ? _bullet('Supplemental Strategy Fees<span class="strat-savings-line">Fund management fees on funded supplemental strategies</span>', suppFeesTotal)
+      ? _bullet('Supplemental Strategy Fees', suppFeesTotal)
       : '';
-    var totalFeesAll = fees + suppFeesTotal;
 
     html += '<div class="input-section" id="fee-strategies-section">' +
       '<div class="section-heading">' +
@@ -405,24 +495,25 @@
         '<button type="button" class="num section-review-btn" id="fee-review-btn" aria-expanded="false" title="Toggle side-by-side baseline vs. strategy reconciliation">REVIEW &#9662;</button>' +
       '</div>' +
       '<div class="section-body">' +
-        _bullet('Asset Manager fees<span class="strat-savings-line">Borrow + fund + short-side carry over the position' +
-          (opt && opt.dialBack ? ' &mdash; scaled to ' + _fmt(opt.recommendedInvestment) + ' invested' : '') +
-          '</span>', effectiveBrooklynFees) +
+        _bullet('Asset Manager fees', effectiveBrooklynFees) +
         suppFeeBullet +
-        _bullet('Brookhaven fees<span class="strat-savings-line">Planning engagement + ongoing service (flat schedule)</span>', m.brookhavenFees || 0) +
+        _bullet('Brookhaven fees', m.brookhavenFees || 0) +
+        (isMultiSummary ? _bullet('Future sales fees', futureFees) : '') +
         '<div class="fee-summary-row">' +
           '<div class="fee-summary-label">Total Fees</div>' +
-          '<div class="fee-summary-amt">' + _fmt(totalFeesAll) + '</div>' +
+          '<div class="fee-summary-amt">' + _fmt(displayFees) + '</div>' +
         '</div>' +
         _renderReconciliationPanel(entry, currentCfg, solverOut, fundedSupplements) +
       '</div>' +
     '</div>';
 
-    // ============ Future Sale optimization callout ============
-    // Now AFTER fees-baked-in so it reads as a follow-on: "those were
-    // the fees on the current sale; here's what additional fees would
-    // buy on the future sale." Only renders when futureSale.enabled.
-    html += _renderFutureSaleOption(entry, opt, currentCfg);
+    // ============ Savings by Sale (multi-sale string) ============
+    // Per-sale net benefit across the current sale + each future sale; sums to
+    // the collective Net Benefit hero (advisor 2026-06-22).
+    if (isMultiSummary) {
+      var _curGain = Math.max(0, salePrice - ((currentCfg && Number(currentCfg.costBasis)) || 0));
+      html += _renderPerSaleSavingsTable(_curGain, net, _fbSummary);
+    }
 
     // ============ Grow-your-net-benefit projection ============
     // Sits at the very bottom — below the Future Sale callout when it
@@ -435,20 +526,19 @@
     // when horizon is unknown so the chart still renders sensibly.
     var growthStartYear = (Number(year1) || (new Date()).getFullYear())
       + (Number(horizon) || 5);
-    html += _renderGrowthProjection(net, growthStartYear);
+    html += _renderGrowthProjection(displayNet, growthStartYear);
 
     // Engagement Notes section removed per advisor spec — the
     // information lives in the Implementation panel (audit) and on
     // Page 1 already; no need to repeat it on the client-facing
     // summary.
 
-    // Implementation panel — hidden by default, expand via the small
-    // triangle on the trailing dash. Advisor-only audit view: shows
-    // the dollar allocation across Brooklyn + each enabled supplemental
-    // so the math can be checked (no double-spending sale proceeds),
-    // and the Brooklyn optimizer's recommendation re. dialing back
-    // investment to keep loss carryforward within absorbable gain.
-    html += _renderImplementationPanel(currentCfg, entry.loss || 0, opt);
+    // Implementation panel (advisor-only audit triangle) REMOVED from the
+    // Strategy Summary per advisor 2026-06-12 — the same allocation/audit
+    // detail lives on the Temporary page (CPA view + fees panel), which is
+    // where the advisor goes to verify the math. _renderImplementationPanel
+    // is left defined (unused) in case it's wanted back.
+    // html += _renderImplementationPanel(currentCfg, entry.loss || 0, opt);
 
     // The legacy "Print / Save as PDF" button that previously rendered
     // here (window.print() trigger) was removed per advisor spec. The
@@ -463,17 +553,34 @@
       opt:            opt,
       optScale:       optScale,
       effectiveBkFees: effectiveBrooklynFees,
+      brookhavenFees: m.brookhavenFees || 0,
       fees:           fees,
-      savings:        savings,
-      net:            net,
+      // Collective when multi-sale (= current single-sale): the leave-behind's
+      // You Save + Total fees must be on the SAME (all-sales) basis as its Net
+      // Benefit so the print matches the on-screen summary and ties out
+      // (net = savings - fees). Single-sale: futures are 0, so these are
+      // identical to the prior current-only values (no change). (advisor 2026-06-23)
+      savings:        displaySavings,
+      net:            displayNet,
+      futureFees:     futureFees,
       roi:            roi,
+      // Return on Planning — use the SAME ratio the on-screen ROP square
+      // shows (net / (fees + setup fees)) so the printout and the screen
+      // never disagree. The legacy `roi` (net/fees) is left passed for
+      // back-compat but the print view reads `rop`.
+      rop:            ropRatio,
       horizon:        horizon,
       leverage:       leverage,
+      leverageLabel:  leverageLabel,
       dur:            dur,
       recYr:          recYr,
       year1:          year1,
       supplements:    fundedSupplements,
-      supplementalBenefit: supplementalBenefit
+      supplementalBenefit: supplementalBenefit,
+      // Fee roll-up for the "Fees" block at the bottom of the leave-behind.
+      suppFeesTotal:  suppFeesTotal,
+      totalFeesAll:   displayFees,
+      suppSetupFeeMap: _suppSetupFeeMap
     });
 
     host.innerHTML = html;
@@ -507,11 +614,6 @@
       : 'Structured Installment Sale';
     var stratNum = d.entry.type === 'A' ? '01' : d.entry.type === 'B' ? '02' : '03';
 
-    // Tax comparison row
-    var doNothing = m.doNothing || 0;
-    var taxWith   = m.tax || 0;
-    var saving    = Math.max(0, doNothing - taxWith);
-
     // Email field will eventually pull from the Pre-Meeting
     // Questionnaire. Until that's wired up, we render a muted
     // placeholder so the row still renders proportionally.
@@ -539,11 +641,10 @@
       '</div>' +
       '<div class="print-header-meta">' +
         '<span class="print-client-name">' + (clientName || 'Client Name') + '</span>' +
-        '<span class="print-client-email">' +
-          (clientEmail
-            ? clientEmail
-            : '<span class="print-email-placeholder">email pending</span>') +
-        '</span>' +
+        // Only render the email line when we actually have one — no
+        // "email pending" placeholder on the client leave-behind
+        // (advisor 2026-06-15).
+        (clientEmail ? '<span class="print-client-email">' + clientEmail + '</span>' : '') +
         '<span class="print-date">Prepared ' + dateStr + '</span>' +
       '</div>' +
     '</div>';
@@ -552,127 +653,146 @@
     // Title block
     h += '<div class="print-title-block">' +
       '<h1 class="print-title">Moving Forward With Brookhaven</h1>' +
-      '<div class="print-strategy-tag">Strategy ' + stratNum + ' &mdash; ' + stratLabel +
-        ' &middot; ' + _filingLabel(cfg.filingStatus) + ' &middot; ' + (cfg.state || '') +
-      '</div>' +
+      // Filing status + state live in the "What You Told Us" block below,
+      // so the tag stays lean: just the strategy number + name
+      // (advisor 2026-06-15).
+      '<div class="print-strategy-tag">Strategy ' + stratNum + ' &mdash; ' + stratLabel + '</div>' +
     '</div>';
 
-    // Hero 3-box row
+    // The printout reads as a top-to-bottom narrative (advisor 2026-06-15):
+    //   1. What You Told Us   — the client inputs, summarized (one income
+    //      figure + the sale + its gain), NOT a line-by-line breakdown.
+    //   2. Your Strategy      — the primary strategy + any supplemental
+    //      strategies, each with its return and the fees baked into it.
+    //   3. What We Save You    — You Save / Net Benefit / Return on Planning.
+    //   4. Fees                — the full fee roll-up, at the very bottom.
+    var reportedIncome = Number(cfg.baseOrdinaryIncome) || 0;
+    var salePriceV     = Number(cfg.salePrice) || 0;
+    var costBasisV     = Number(cfg.costBasis) || 0;
+    // The SALE's long-term gain is computed from the property fields, NOT
+    // cfg.baseLongTermGain (that's the separate Section-02 "other capital
+    // gains" input). Mirror inputs-collector's formula exactly:
+    //   ltGain   = max(0, salePrice − costBasis − depreciation − stPropGain)
+    //   recapture = depreciation taken (the part taxed at recapture rates)
+    var accelDepV      = Number(cfg.acceleratedDepreciation) || 0;
+    var stPropGainV    = Number(cfg.shortTermPropertyGain) || 0;
+    var ltGainV        = Math.max(0, salePriceV - costBasisV - accelDepV - stPropGainV);
+    var recaptureV     = Math.max(0, accelDepV);
+    // Return on Planning — combined net benefit (primary + supps) over the
+    // combined fees, mirroring the on-screen ROP square exactly so the
+    // printout and the live page never disagree (advisor 2026-06-15: do
+    // NOT compute a per-supp %, which goes infinite for fee-free supps —
+    // sum the nets, sum the fees, divide once).
+    var ropRatioP    = Number(d.rop) || 0;
+    var ropPct       = Math.round(ropRatioP * 100);
+    var ropPerDollar = (ropRatioP > 0) ? ropRatioP.toFixed(2) : '0.00';
+    var suppSetupMap = d.suppSetupFeeMap || {};
+
+    // ===== 1 + 2 : "What You Told Us"  |  "Your Strategy" (two columns) =====
+    h += '<div class="print-body">';
+
+    // LEFT: client-input summary, simplified to a single income figure.
+    h += '<div class="print-col">';
+    h += '<div class="print-section">' +
+      '<div class="print-section-head">What You Told Us</div>' +
+      '<table class="print-table"><tbody>' +
+        '<tr><td>Reported annual income</td><td class="print-r">' + _fmt(reportedIncome) + '</td></tr>' +
+        '<tr><td>Property sale price</td><td class="print-r">' + _fmt(salePriceV) + '</td></tr>' +
+        '<tr><td>Cost basis</td><td class="print-r">' + _fmt(costBasisV) + '</td></tr>' +
+        '<tr><td>Long-term capital gain</td><td class="print-r">' + _fmt(ltGainV) + '</td></tr>' +
+        (recaptureV > 0
+          ? '<tr><td>Depreciation recapture</td><td class="print-r">' + _fmt(recaptureV) + '</td></tr>'
+          : '') +
+        '<tr><td>Filing &middot; State</td><td class="print-r">' + _filingLabel(cfg.filingStatus) +
+          ' &middot; ' + (cfg.state && cfg.state !== 'NONE' ? cfg.state : '&mdash;') + '</td></tr>' +
+      '</tbody></table>' +
+    '</div>';
+    h += '</div>'; // /print-col left
+
+    // RIGHT: the strategy we selected + supplemental strategies.
+    h += '<div class="print-col">';
+    h += '<div class="print-section">' +
+      '<div class="print-section-head">Your Strategy</div>' +
+      '<table class="print-table"><tbody>' +
+        '<tr><td>Main strategy</td><td class="print-r"><strong>' + stratLabel + '</strong></td></tr>' +
+        (d.leverageLabel
+          ? '<tr><td>Asset Manager (long / short)</td><td class="print-r"><strong>' + d.leverageLabel + '</strong></td></tr>'
+          : '') +
+        '<tr><td>Tax year</td><td class="print-r">' + year1 + '</td></tr>' +
+        (entry.type === 'C'
+          ? '<tr><td>Structured sale term</td><td class="print-r">' + d.dur + ' months</td></tr>'
+          : '') +
+      '</tbody></table>' +
+    '</div>';
+
+    if (d.supplements && d.supplements.length) {
+      var suppRows = '';
+      d.supplements.forEach(function (s) {
+        // Saturation-adjusted realized net (matches the on-screen per-supp
+        // rows and the combined-net hero). Skip supps the shared ordinary
+        // pool fully crowded out (realized $0) — they add nothing.
+        var printNet = Number.isFinite(Number(s.realizedNetBenefit))
+          ? Number(s.realizedNetBenefit)
+          : (Number(s.netBenefit) || 0);
+        if (printNet <= 0) return;
+        // Per advisor 2026-06-15: the supplemental block tells the client
+        // only WHAT they picked and the RETURN — the fees live in the
+        // "Fees" roll-up at the bottom, so no per-supp fee column here.
+        suppRows += '<tr><td>' + s.name + '</td>' +
+          '<td class="print-num print-green">+' + _fmt(printNet) + '</td></tr>';
+      });
+      if (suppRows) {
+        h += '<div class="print-section">' +
+          '<div class="print-section-head">Supplemental Strategies</div>' +
+          '<table class="print-table">' +
+            '<thead><tr><th>Strategy</th><th class="print-num">Return</th></tr></thead>' +
+            '<tbody>' + suppRows + '</tbody>' +
+          '</table>' +
+        '</div>';
+      }
+    }
+    h += '</div>'; // /print-col right
+    h += '</div>'; // /print-body
+
+    // ===== 3 : "What We Save You" (hero) =====
+    h += '<div class="print-section-head print-savings-head">What We Save You</div>';
     h += '<div class="print-hero-row">' +
       '<div class="print-hero-box">' +
         '<div class="print-hero-label">You Save</div>' +
         '<div class="print-hero-value">' + _fmt(savings) + '</div>' +
-        '<div class="print-hero-sub">Total projected tax savings vs. doing nothing</div>' +
-      '</div>' +
-      '<div class="print-hero-box print-hero-fees">' +
-        '<div class="print-hero-label">Total Fees</div>' +
-        '<div class="print-hero-value">' + _fmt(fees) + '</div>' +
-        '<div class="print-hero-sub">Brooklyn position + Brookhaven planning</div>' +
+        '<div class="print-hero-sub">Total projected tax saved vs. doing nothing</div>' +
       '</div>' +
       '<div class="print-hero-box print-hero-net">' +
         '<div class="print-hero-label">Net Benefit</div>' +
         '<div class="print-hero-value">' + _fmt(net) + '</div>' +
-        '<div class="print-hero-sub">' + _fmtMultiplier(roi) + '&times; return on every $1 in fees</div>' +
+        '<div class="print-hero-sub">After all fees shown below</div>' +
+      '</div>' +
+      '<div class="print-hero-box">' +
+        '<div class="print-hero-label">Return on Planning</div>' +
+        '<div class="print-hero-value">' + ropPct.toLocaleString('en-US') + '%</div>' +
+        '<div class="print-hero-sub">$' + ropPerDollar + ' back for every $1 in fees</div>' +
       '</div>' +
     '</div>';
 
-    // Two-column body
-    h += '<div class="print-body">';
+    // "Investment optimized" note removed from the client leave-behind per
+    // advisor 2026-06-15 — the dial-back rationale is internal and isn't
+    // shown to the client.
 
-    // LEFT: Tax comparison + fee breakdown
-    h += '<div class="print-col">';
-
-    h += '<div class="print-section">' +
-      '<div class="print-section-head">Tax Comparison &mdash; ' + d.horizon + '-Year Horizon</div>' +
-      '<table class="print-table">' +
-        '<thead><tr><th>Scenario</th><th class="print-num">Tax Owed</th><th class="print-num">Difference</th></tr></thead>' +
-        '<tbody>' +
-          '<tr><td>Without planning (do nothing)</td><td class="print-num">' + _fmt(doNothing) + '</td><td class="print-num">—</td></tr>' +
-          '<tr><td>With ' + stratLabel + ' strategy</td><td class="print-num">' + _fmt(taxWith) + '</td><td class="print-num print-green">&#x2212;' + _fmt(saving) + '</td></tr>' +
-          (d.supplements.length ? '<tr><td>Supplemental strategies benefit</td><td class="print-num print-green">+' + _fmt(d.supplementalBenefit) + '</td><td class="print-num print-green">+' + _fmt(d.supplementalBenefit) + '</td></tr>' : '') +
-        '</tbody>' +
-      '</table>' +
+    // ===== 4 : "Fees" (the full roll-up, at the very bottom) =====
+    h += '<div class="print-section print-fees-section">' +
+      '<div class="print-section-head">Fees</div>' +
+      '<table class="print-table"><tbody>' +
+        '<tr><td>Asset Manager fees</td><td class="print-num">' + _fmt(d.effectiveBkFees) + '</td></tr>' +
+        (Number(d.suppFeesTotal) > 0
+          ? '<tr><td>Supplemental strategy fees</td><td class="print-num">' + _fmt(d.suppFeesTotal) + '</td></tr>'
+          : '') +
+        '<tr><td>Brookhaven planning &amp; advisory</td><td class="print-num">' + _fmt(d.brookhavenFees || 0) + '</td></tr>' +
+        (Number(d.futureFees) > 0
+          ? '<tr><td>Future sales fees</td><td class="print-num">' + _fmt(d.futureFees) + '</td></tr>'
+          : '') +
+        '<tr class="print-total-row"><td><strong>Total fees</strong></td><td class="print-num"><strong>' + _fmt(d.totalFeesAll) + '</strong></td></tr>' +
+      '</tbody></table>' +
     '</div>';
-
-    h += '<div class="print-section">' +
-      '<div class="print-section-head">Fees Included</div>' +
-      '<table class="print-table">' +
-        '<tbody>' +
-          '<tr><td>Brooklyn position management' +
-            (opt && opt.dialBack ? ' <span class="print-note">(investment scaled to ' + _fmt(opt.recommendedInvestment) + ')</span>' : '') +
-          '</td><td class="print-num">' + _fmt(d.effectiveBkFees) + '</td></tr>' +
-          '<tr><td>Brookhaven planning &amp; advisory</td><td class="print-num">' + _fmt(m.brookhavenFees || 0) + '</td></tr>' +
-          '<tr class="print-total-row"><td><strong>Total fees</strong></td><td class="print-num"><strong>' + _fmt(fees) + '</strong></td></tr>' +
-        '</tbody>' +
-      '</table>' +
-    '</div>';
-
-    if (opt && opt.dialBack) {
-      h += '<div class="print-optimizer-note">' +
-        '<strong>Investment optimized:</strong> At full capital (' + _fmt(opt.availableCapital) + '), Brooklyn would generate ' +
-        _fmt(opt.brooklynLossAtFull) + ' in losses against ' + _fmt(opt.totalAbsorbableGain) + ' of absorbable gain. ' +
-        'Investment scaled to ' + _fmt(opt.recommendedInvestment) + ' — same tax savings, ' + _fmt(opt.excessLossAtFull) + ' less in wasted carryforward.' +
-      '</div>';
-    }
-
-    h += '</div>'; // /print-col left
-
-    // RIGHT: Strategy details
-    h += '<div class="print-col">';
-
-    h += '<div class="print-section">' +
-      '<div class="print-section-head">Selected Strategy</div>' +
-      '<table class="print-table">' +
-        '<tbody>' +
-          '<tr><td>Strategy</td><td class="print-r"><strong>' + stratLabel + '</strong></td></tr>' +
-          '<tr><td>Tax year</td><td class="print-r">' + year1 + '</td></tr>' +
-          '<tr><td>Filing status</td><td class="print-r">' + _filingLabel(cfg.filingStatus) + '</td></tr>' +
-          '<tr><td>State</td><td class="print-r">' + (cfg.state || '—') + '</td></tr>' +
-          '<tr><td>Closing / implementation</td><td class="print-r">' + (cfg.implementationDate || '—') + '</td></tr>' +
-          '<tr><td>Brooklyn horizon</td><td class="print-r">' + d.horizon + ' years</td></tr>' +
-          '<tr><td>Brooklyn leverage</td><td class="print-r">' + d.leverage + '% short</td></tr>' +
-          (entry.type === 'C'
-            ? '<tr><td>Structured sale term</td><td class="print-r">' + d.dur + ' months</td></tr>' +
-              '<tr><td>Gain recognition starts</td><td class="print-r">Year ' + (d.recYr||2) + ' (' + (year1+(d.recYr||2)-1) + ')</td></tr>'
-            : '') +
-        '</tbody>' +
-      '</table>' +
-    '</div>';
-
-    if (d.supplements && d.supplements.length) {
-      h += '<div class="print-section">' +
-        '<div class="print-section-head">Supplemental Strategies</div>' +
-        '<table class="print-table"><tbody>';
-      d.supplements.forEach(function (s) {
-        // Use saturation-adjusted realized net (matches the screen path's
-        // _realized helper at line ~957 and the hero's combined-net total).
-        // Pre-fix this used s.netBenefit (raw, pre-saturation) so printed
-        // per-supp rows could sum to more than the printed hero on heavy
-        // ord-offset stacks. Audit 2026-06-08 finding #7.
-        var printNet = Number.isFinite(Number(s.realizedNetBenefit))
-          ? Number(s.realizedNetBenefit)
-          : (Number(s.netBenefit) || 0);
-        if (printNet <= 0) return;  // skip crowded-out supps
-        h += '<tr><td>' + s.name + '</td><td class="print-num print-green">+' + _fmt(printNet) + '</td></tr>';
-      });
-      h += '</tbody></table></div>';
-    }
-
-    // Print ROI display: percent format matching the screen view
-    // (roi = net / fees). Renders as e.g. "828%" with the sub-line
-    // "For every $1 in fees, $8.28 returned in net benefit".
-    var roiPct = Math.round((roi || 0) * 100);
-    var roiPerDollar = (roi > 0) ? roi.toFixed(2) : '0.00';
-    h += '<div class="print-section">' +
-      '<div class="print-section-head">Return on Planning</div>' +
-      '<div class="print-roi-display">' +
-        '<span class="print-roi-num">' + roiPct.toLocaleString('en-US') + '%</span>' +
-        '<span class="print-roi-label">For every $1 in fees, $' + roiPerDollar + ' returned in net benefit</span>' +
-      '</div>' +
-    '</div>';
-
-    h += '</div>'; // /print-col right
-    h += '</div>'; // /print-body
 
     h += '<div class="print-footer">' +
       '<div class="print-footer-attrib">' +
@@ -680,9 +800,9 @@
         '<span class="print-footer-bh-sub">Integrated Wealth Solutions &middot; A Multi-Family Office</span>' +
       '</div>' +
       '<p class="print-footer-disclaimer">' +
-        'This document was prepared by BrookHaven for discussion purposes only and does not constitute tax or legal advice. ' +
-        'Results are projections based on current tax law and the inputs provided; actual outcomes may vary. ' +
-        '[ Compliance line goes here &mdash; final copy pending ]' +
+        'This document is provided for informational and discussion purposes only and does not constitute tax, legal, accounting, or investment advice. ' +
+        'All figures shown are estimates based on current tax law and the information provided; they are not guarantees, and actual financial results may differ materially from these estimates. ' +
+        'Please consult your own tax, legal, and financial advisors before acting on any strategy described here.' +
       '</p>' +
     '</div>';
 
@@ -904,7 +1024,7 @@
   // (registry maps it from spec.bucket). 'charity' → charity bucket,
   // 'asset' → physical-asset bucket, anything else → cash bucket.
   // Brooklyn's primary net is always cash.
-  function _renderNetBenefitBreakdown(primaryNet, solverOut) {
+  function _renderNetBenefitBreakdown(primaryNet, solverOut, futureNet) {
     var cashNet = Number(primaryNet) || 0;
     var charityNet = 0;
     var assetNet = 0;
@@ -935,10 +1055,11 @@
         }
       });
     }
-    var totalNet = cashNet + charityNet + assetNet;
+    var _futNet = Number(futureNet) || 0;
+    var totalNet = cashNet + charityNet + assetNet + _futNet;
     if (totalNet === 0) return '';
     var rows = [
-      { label: 'Cash savings', value: cashNet, sub: 'Tax-only strategies + Brooklyn position' }
+      { label: _futNet > 0 ? 'This sale' : 'Cash savings', value: cashNet, sub: 'Tax-only strategies + Brooklyn position' }
     ];
     if (charityNet > 0 || charitySpend > 0) {
       rows.push({
@@ -958,6 +1079,10 @@
           : 'Depreciation tax savings on asset purchases'
       });
     }
+    if (_futNet > 0) {
+      rows.push({ label: 'Future sales', value: _futNet,
+        sub: 'Installment offset across your planned sales' });
+    }
     var html = '<div class="net-hero-breakdown" hidden>';
     rows.forEach(function (r) {
       html += '<div class="net-hero-breakdown-row">' +
@@ -969,6 +1094,55 @@
     });
     html += '</div>';
     return html;
+  }
+
+  // Per-sale savings table for the multi-sale string (advisor 2026-06-22):
+  // "here's all your sales, here's how much we saved you per sale." Current
+  // sale = its engine net (incl. supplementals); future sales = the installment
+  // estimate, pro-rated so the rows sum to the collective net the hero shows
+  // (the optimizer pools cross-sale carryforward, so per-sale is an allocation,
+  // not a standalone figure). Falls back to gain-weighting if the independent
+  // per-sale nets are non-positive. Total reconciles to currentNet + fb.net.
+  function _renderPerSaleSavingsTable(currentGain, currentNet, fb) {
+    var perSale = (fb && fb.perSale) || [];
+    if (!perSale.length) return '';
+    var proj = (typeof root.__rettFutureSalesProjected === 'function')
+      ? root.__rettFutureSalesProjected().filter(function (f) { return f.gain > 0; }) : [];
+    var indepTotal = perSale.reduce(function (s, p) { return s + (Number(p.net) || 0); }, 0);
+    var gainTotal = perSale.reduce(function (s, p) { return s + (Number(p.gain) || 0); }, 0);
+    var target = Number(fb.net) || 0;
+    function shareNet(p) {
+      if (indepTotal > 0) return (Number(p.net) || 0) * (target / indepTotal);
+      if (gainTotal > 0) return target * ((Number(p.gain) || 0) / gainTotal);
+      return 0;
+    }
+    function _saleRow(label, amt, cls) {
+      return '<tr class="savings-row' + (cls ? ' ' + cls : '') + '">' +
+        '<td class="savings-sale-label">' + label + '</td>' +
+        '<td class="savings-amt">' + _fmt(amt) + '</td>' +
+      '</tr>';
+    }
+    // Future rows ordered chronologically by sale year (current sale is now,
+    // so it stays first). Pro-rated net carried per row.
+    var futures = perSale.map(function (p, i) {
+      return { saleYear: proj[i] ? proj[i].saleYear : null, net: shareNet(p) };
+    }).sort(function (a, b) { return (a.saleYear || 0) - (b.saleYear || 0); });
+    var body = _saleRow('Current Sale', currentNet);
+    futures.forEach(function (f, i) {
+      var label = 'Future Sale' + (f.saleYear ? ' &middot; ' + f.saleYear : ' ' + (i + 1));
+      body += _saleRow(label, f.net);
+    });
+    var totalSaved = currentNet + target;
+    return '<div class="input-section savings-by-sale-section">' +
+      '<div class="section-heading"><h2>Savings by Sale</h2></div>' +
+      '<div class="section-body">' +
+        '<table class="savings-table">' +
+          '<thead><tr><th>Sale</th><th class="savings-amt-head">We Saved You</th></tr></thead>' +
+          '<tbody>' + body + '</tbody>' +
+          '<tfoot>' + _saleRow('Total Saved', totalSaved, 'savings-total-row') + '</tfoot>' +
+        '</table>' +
+      '</div>' +
+    '</div>';
   }
 
   function _renderSupplementalLeftColumn(solverOut) {
@@ -1027,13 +1201,15 @@
       .concat(inactive.map(function (s) { return _suppRow(s, false); }))
       .join('');
 
+    // Bare sub-section (no standalone card) — nests inside the Selected
+    // Strategy block so the two read as one full-width section. The advisor
+    // flips supps on/off via the switches here (advisor 2026-06-17).
     return '' +
-      '<div class="input-section">' +
-        '<div class="section-heading">' +
-          '<h2>Supplemental Strategies</h2>' +
-          '<span class="num">ADD-ONS</span>' +
+      '<div class="forward-supp-subsection">' +
+        '<div class="forward-supp-subhead">Supplemental Strategies' +
+          '<span class="forward-supp-hint">tap a switch to add or remove</span>' +
         '</div>' +
-        '<div class="section-body">' + rows + '</div>' +
+        rows +
       '</div>';
   }
 
@@ -1310,6 +1486,366 @@
       '<div class="growth-final-sub">' + endLabel + ' &middot; ' + ret + '% annual return</div>';
   }
 
+  // =====================================================================
+  // Future Sales Estimator (advisor 2026-06-17) — a standalone, simple
+  // multi-row table for ballparking the tax on the client's FUTURE property
+  // sales. Each row: planned date, sale price, cost basis → gain (price −
+  // basis) and estimated tax (gain × [23.8% federal LTCG+NIIT + the client's
+  // state top rate]). Purely informational — it does NOT feed the engine,
+  // the optimizer, or the net-benefit hero. Rows + values persist in
+  // window.__rettFutureSalesPlanner + localStorage so they survive re-renders
+  // and reloads. Sits between "Fees Baked In" and "Grow Your Net Benefit".
+  // -----------------------------------------------------------------
+  var FSP_KEY = 'rettFutureSalesPlanner';
+  function _fspState() {
+    if (!Array.isArray(root.__rettFutureSalesPlanner)) {
+      var init = null;
+      try {
+        var s = JSON.parse((root.localStorage && root.localStorage.getItem(FSP_KEY)) || 'null');
+        if (Array.isArray(s)) init = s;
+      } catch (e) { /* ignore */ }
+      root.__rettFutureSalesPlanner = init || [
+        { yearsUntil: 0, salePrice: 0, costBasis: 0, growth: 0 },
+        { yearsUntil: 0, salePrice: 0, costBasis: 0, growth: 0 },
+        { yearsUntil: 0, salePrice: 0, costBasis: 0, growth: 0 }
+      ];
+    }
+    return root.__rettFutureSalesPlanner;
+  }
+  function _fspPersist() {
+    try { root.localStorage.setItem(FSP_KEY, JSON.stringify(_fspState())); } catch (e) { /* ignore */ }
+  }
+  function _fspParse(v) {
+    return Math.max(0, Number(String(v == null ? '' : v).replace(/[^0-9.]/g, '')) || 0);
+  }
+  // Federal LTCG + NIIT for the high-bracket clients this tool targets.
+  var FSP_FED_RATE = 0.238;
+  // Client's effective top state rate on a large LT gain (captures the top
+  // marginal bracket + any state LTCG preferential treatment via the engine's
+  // own computeStateTax). NONE/no-tax states → 0.
+  function _fspCombinedRate() {
+    var state = 'NONE', year = (new Date()).getFullYear(), status = 'mfj';
+    try {
+      var ci = root.collectInputs() || {};
+      state  = ci.state || ci.stateCode || 'NONE';
+      year   = Number(ci.year1) || year;
+      status = ci.filingStatus || 'mfj';
+    } catch (e) { /* defaults */ }
+    var BIG = 10000000, st = 0;
+    if (typeof root.computeStateTax === 'function') {
+      try { st = Number(root.computeStateTax(BIG, year, state, status, { longTermGain: BIG })) || 0; }
+      catch (e) { st = 0; }
+    }
+    var stateRate = BIG > 0 ? (st / BIG) : 0;
+    return { fed: FSP_FED_RATE, state: stateRate, combined: FSP_FED_RATE + stateRate, stateCode: state };
+  }
+  // Exposed so the Tax Implications page (baseline-table.js) taxes future
+  // sales at the SAME 23.8% LTCG+NIIT + state rate the estimator uses.
+  root.__rettFspCombinedRate = _fspCombinedRate;
+  // Cumulative loss-as-fraction-of-capital a combo generates over its first N
+  // years (declining per-year curve in schwab-strategies.js, summed). Beyond
+  // the 10-year curve, reuse the last year's factor.
+  function _fspCumLoss(combo, N) {
+    if (!combo || !Array.isArray(combo.lossByYear) || !(N > 0)) return 0;
+    var lb = combo.lossByYear, last = lb.length - 1, s = 0;
+    for (var i = 0; i < N; i++) s += (i <= last) ? lb[i] : lb[last];
+    return s;
+  }
+  function _fspFeeRate(combo) {
+    if (!combo || typeof root.brooklynFeeRateFor !== 'function') return 0;
+    return Number(root.brooklynFeeRateFor(combo.longPct, combo.shortPct)) || 0;
+  }
+
+  // Collective future-sale benefit under the multi-sale installment model
+  // (advisor 2026-06-22, 50/50 net-of-fees). Each future sale is taken as a
+  // 50/50 two-January §453 installment with proceeds deployed at 200/100.
+  // §453 recognizes half the gain each year; the year-1 loss (59% of that
+  // year's capital) offsets year-1 gain, then the year-1 capital compounds
+  // (cumLoss 108% by yr2) and — with the year-2 payment's own loss — typically
+  // wipes the remaining gain. Net of 200/100 fees (1.31%/yr) on deployed
+  // capital: p1 held 2yr, p2 held 1yr. Worst case (100% gain) ≈ 79% offset.
+  // Pure estimate; does NOT touch the engine/optimizer.
+  // Cross-sale carryforward optimizer (advisor 2026-06-22). The future sales
+  // share ONE chronological loss pool: an early sale's 200/100 capital keeps
+  // generating loss that — because capital losses carry FORWARD only — can
+  // offset LATER sales' gains too. Each sale's 50/50 proceeds become two
+  // capital tranches (sale year + next); each tranche held `hold` years pays
+  // feeRate × cap × hold and contributes lossByYear[age] × cap to the pool each
+  // year it's open. We pick the hold-horizons that maximize Σoffset×rate − fees
+  // via two greedy passes from the max-hold start: (1) trim fee-years where
+  // total offset is preserved, (2) drop coverage where net strictly improves.
+  // Caller floors this at the independent per-sale result, so it can only help.
+  function _optimizeSharedPool(sales, rate, feeRate, lossByYear, year0) {
+    if (!sales || !sales.length) return null;
+    var last = lossByYear.length - 1;
+    function lossAt(age) { return age <= last ? lossByYear[age] : lossByYear[last]; }
+    var tranches = [], recog = {};
+    sales.forEach(function (f) {
+      var Y = (Number(year0) || 0) + (Number(f.years) || 0);
+      tranches.push({ d: Y, cap: f.projectedPrice * 0.5 });
+      tranches.push({ d: Y + 1, cap: f.projectedPrice * 0.5 });
+      recog[Y] = (recog[Y] || 0) + f.gain * 0.5;
+      recog[Y + 1] = (recog[Y + 1] || 0) + f.gain * 0.5;
+    });
+    var recogYears = Object.keys(recog).map(Number);
+    var maxR = Math.max.apply(null, recogYears);
+    var minY = Math.min.apply(null, tranches.map(function (t) { return t.d; }));
+    function simulate(holds) {
+      var pool = 0, offset = 0;
+      for (var y = minY; y <= maxR; y++) {
+        for (var i = 0; i < tranches.length; i++) {
+          var t = tranches[i];
+          if (t.d <= y && y <= holds[i]) pool += t.cap * lossAt(y - t.d);
+        }
+        var g = recog[y] || 0;
+        var o = Math.min(g, pool); pool -= o; offset += o;
+      }
+      var fees = 0;
+      for (var j = 0; j < tranches.length; j++) fees += tranches[j].cap * feeRate * (holds[j] - tranches[j].d + 1);
+      return { offset: offset, fees: fees, net: offset * rate - fees };
+    }
+    var holds = tranches.map(function () { return maxR; });
+    var base = simulate(holds);
+    // Pass 1 — trim fee-years that don't reduce offset.
+    var improved = true, guard = 0;
+    while (improved && guard++ < 4000) {
+      improved = false;
+      for (var k = 0; k < tranches.length; k++) {
+        while (holds[k] > tranches[k].d) {
+          var trial = holds.slice(); trial[k] = holds[k] - 1;
+          var r = simulate(trial);
+          if (r.offset >= base.offset - 1) { holds = trial; base = r; improved = true; }
+          else break;
+        }
+      }
+    }
+    // Pass 2 — drop coverage where shedding the fee beats the lost offset.
+    improved = true; guard = 0;
+    while (improved && guard++ < 4000) {
+      improved = false;
+      for (var k2 = 0; k2 < tranches.length; k2++) {
+        if (holds[k2] > tranches[k2].d) {
+          var trial2 = holds.slice(); trial2[k2] = holds[k2] - 1;
+          var r2 = simulate(trial2);
+          if (r2.net > base.net + 1) { holds = trial2; base = r2; improved = true; }
+        }
+      }
+    }
+    return { offset: base.offset, taxSaved: base.offset * rate, fees: base.fees, net: base.net };
+  }
+
+  function _futureInstallmentBenefit() {
+    var combined = _fspCombinedRate().combined || FSP_FED_RATE;
+    var combo = (typeof root.getSchwabCombo === 'function') ? root.getSchwabCombo('beta1_200_100') : null;
+    var L1 = _fspCumLoss(combo, 1), L2 = _fspCumLoss(combo, 2);
+    var feeRate = _fspFeeRate(combo);
+    var sales = _futureSalesProjected().filter(function (f) { return f.gain > 0; });
+    // ---- Independent per-sale baseline (each sale covers only its own gain) ----
+    var totOffset = 0, totTaxSaved = 0, totFees = 0, perSale = [];
+    sales.forEach(function (f) {
+      var price = f.projectedPrice, G = f.gain;
+      var p1 = price * 0.5, p2 = price * 0.5;   // 50/50 proceeds = deployed capital
+      var g1 = G * 0.5, g2 = G * 0.5;           // §453 gain recognized per year
+      var pool1 = p1 * L1;
+      var used1 = Math.min(g1, pool1);
+      var carry = pool1 - used1;                // unused year-1 loss carries forward
+      var pool2 = carry + (p1 * (L2 - L1) + p2 * L1);
+      var used2 = Math.min(g2, pool2);
+      var offset = Math.min(G, used1 + used2);
+      var fees = p1 * feeRate * 2 + p2 * feeRate * 1;
+      var taxSaved = offset * combined;
+      totOffset += offset; totTaxSaved += taxSaved; totFees += fees;
+      perSale.push({ price: price, gain: G, offset: offset,
+        offsetPct: G > 0 ? offset / G : 0, taxSaved: taxSaved, fees: fees,
+        net: taxSaved - fees });
+    });
+    var indepNet = totTaxSaved - totFees;
+    // ---- Cross-sale optimizer, floored at the independent baseline ----
+    var year0;
+    try { year0 = Number((root.collectInputs() || {}).year1) || (new Date()).getFullYear(); }
+    catch (e) { year0 = (new Date()).getFullYear(); }
+    var opt = (combo && Array.isArray(combo.lossByYear))
+      ? _optimizeSharedPool(sales, combined, feeRate, combo.lossByYear, year0) : null;
+    var useOpt = !!(opt && opt.net > indepNet + 1);
+    var chosen = useOpt
+      ? { offset: opt.offset, taxSaved: opt.taxSaved, fees: opt.fees, net: opt.net }
+      : { offset: totOffset, taxSaved: totTaxSaved, fees: totFees, net: indepNet };
+    return { combined: combined, L1: L1, L2: L2, feeRate: feeRate,
+      offset: chosen.offset, taxSaved: chosen.taxSaved, fees: chosen.fees, net: chosen.net,
+      perSale: perSale, independentNet: indepNet, optimizedNet: opt ? opt.net : null,
+      usedOptimizer: useOpt };
+  }
+  root.__rettFutureInstallmentBenefit = _futureInstallmentBenefit;
+  function _fspRerender() {
+    // Re-paint the Page-1 (Section 04) input table after rows are added/removed.
+    try { renderFutureSaleInputs(); } catch (e) { /* */ }
+  }
+
+  // ---- Page-1 (Section 04) future-sale INPUT table -------------------
+  // Mirrors the estimator's data model — shares __rettFutureSalesPlanner and
+  // the fsp-* classes + data-fsp-* attrs, so the same delegated input/change/
+  // add/del listeners persist edits — but shows ONLY the inputs the client
+  // fills in: planned sale date, fair market value, cost basis. No gain / tax
+  // / coverage here; that math lives downstream (advisor 2026-06-22). The host
+  // is filled only when the Section-04 yes/no is "yes" (cleared otherwise).
+  function _renderFutureSaleInputsTable() {
+    var rows = _fspState();
+    var body = rows.map(function (r, i) {
+      var sp = _fspParse(r.salePrice), cb = _fspParse(r.costBasis), g = _fspParse(r.growth), yu = _fspParse(r.yearsUntil);
+      return '<tr class="fsp-row" data-fsp-row="' + i + '">' +
+        '<td><input type="text" inputmode="numeric" class="fsp-input fsp-years" data-fsp-field="yearsUntil" data-fsp-idx="' + i + '" value="' + (yu > 0 ? yu : '') + '" placeholder="0" autocomplete="off"></td>' +
+        '<td><input type="text" inputmode="numeric" class="fsp-input fsp-usd" data-fsp-field="salePrice" data-fsp-idx="' + i + '" value="' + (sp > 0 ? _fmt(sp) : '') + '" placeholder="$0"></td>' +
+        '<td><input type="text" inputmode="numeric" class="fsp-input fsp-usd" data-fsp-field="costBasis" data-fsp-idx="' + i + '" value="' + (cb > 0 ? _fmt(cb) : '') + '" placeholder="$0"></td>' +
+        '<td><input type="text" inputmode="decimal" class="fsp-input fsp-pct" data-fsp-field="growth" data-fsp-idx="' + i + '" value="' + (g > 0 ? g : '') + '" placeholder="0"></td>' +
+        '<td class="fsp-del-cell">' + (rows.length > 1 ? '<button type="button" class="fsp-del" data-fsp-del="' + i + '" title="Remove this sale" aria-label="Remove this sale">&times;</button>' : '') + '</td>' +
+      '</tr>';
+    }).join('');
+    return '<table class="fsp-table fsp-input-table">' +
+      '<thead><tr>' +
+        '<th>Years until sale</th><th>Fair market value</th><th>What you paid (cost basis)</th><th>Growth rate (%/yr)</th><th aria-hidden="true"></th>' +
+      '</tr></thead>' +
+      '<tbody>' + body + '</tbody>' +
+    '</table>' +
+    '<button type="button" class="fsp-add" data-fsp-add="1">+ Add another sale</button>';
+  }
+  function renderFutureSaleInputs() {
+    var host = (typeof document !== 'undefined') ? document.getElementById('future-sale-inputs-host') : null;
+    if (!host) return;
+    var yes = false;
+    try {
+      var el = document.getElementById('future-sale-yes-no');
+      yes = !!(el && el.value === 'yes');
+    } catch (e) { yes = false; }
+    host.innerHTML = yes ? _renderFutureSaleInputsTable() : '';
+  }
+  root.renderFutureSaleInputs = renderFutureSaleInputs;
+
+  // Canonical projected future-sale data (advisor 2026-06-22). Each row's fair
+  // market value is grown by its year-over-year growth rate over the years
+  // from the tax year to the planned sale date, yielding the projected sale
+  // price + gain that downstream pages (Tax Implications, etc.) consume — one
+  // source of truth so every surface agrees. Future-sale gain is taxed at
+  // FSP_FED_RATE (23.8% LTCG+NIIT) + the client's state rate, baseline LT gain
+  // only (no recapture detail for these). years = 0 when no date → no growth.
+  function _futureSalesProjected() {
+    var rows = _fspState();
+    var year0;
+    try { year0 = Number((root.collectInputs() || {}).year1) || (new Date()).getFullYear(); }
+    catch (e) { year0 = (new Date()).getFullYear(); }
+    return rows.map(function (r) {
+      var fmv = _fspParse(r.salePrice), cb = _fspParse(r.costBasis), g = _fspParse(r.growth);
+      // "Years until sale" is the canonical input now (advisor 2026-06-22) —
+      // clients think in "X years away", not a calendar date. Legacy rows that
+      // still carry a `date` fall back to deriving years from it.
+      var yu = _fspParse(r.yearsUntil);
+      var years;
+      if (yu > 0) {
+        years = Math.round(yu);
+      } else if (r.date) {
+        var sy = Number(String(r.date).slice(0, 4));
+        years = (sy > year0) ? (sy - year0) : 0;
+      } else {
+        years = 0;
+      }
+      var saleYear = year0 + years;
+      var projectedPrice = fmv * Math.pow(1 + g / 100, years);
+      return {
+        yearsUntil: years, fmv: fmv, costBasis: cb, growth: g, years: years, saleYear: saleYear,
+        projectedPrice: projectedPrice, gain: Math.max(0, projectedPrice - cb)
+      };
+    });
+  }
+  root.__rettFutureSalesProjected = _futureSalesProjected;
+  if (typeof root !== 'undefined' && root.document && !root.__rettFspListenerWired) {
+    root.__rettFspListenerWired = true;
+    root.document.addEventListener('input', function (e) {
+      var el = e.target;
+      if (!el || !el.classList || !el.classList.contains('fsp-input')) return;
+      var idx = Number(el.getAttribute('data-fsp-idx')), field = el.getAttribute('data-fsp-field');
+      if (!Number.isFinite(idx) || !field) return;
+      var rows = _fspState(); if (!rows[idx]) return;
+      rows[idx][field] = (field === 'date') ? el.value : _fspParse(el.value);
+      _fspPersist();   // downstream renders fire on blur (change) / add / remove
+    });
+    root.document.addEventListener('change', function (e) {
+      var el = e.target;
+      // Section-04 yes/no toggles the Page-1 input table on/off.
+      if (el && el.id === 'future-sale-yes-no') {
+        renderFutureSaleInputs();
+        if (el.value === 'yes') {
+          // Multi-sale string: the installment sale (B) is THE strategy we
+          // show, so mark it interested (and only it) — the Projection
+          // collective net benefit renders off the interested strategy
+          // (advisor 2026-06-22). Switching back to "no" leaves the original
+          // single-sale flow untouched; we don't undo here so a deliberate
+          // pick isn't wiped.
+          try {
+            root.__rettStrategyInterest = { A: null, B: true, C: null };
+            root.__rettChosenStrategy = 'B';
+            if (root.localStorage) {
+              root.localStorage.setItem('_strategyInterest', JSON.stringify(root.__rettStrategyInterest));
+              root.localStorage.setItem('_chosenStrategy', 'B');
+            }
+          } catch (e) { /* */ }
+        }
+        // Refresh in BOTH directions so the multi-sale presentation (Page-3
+        // featuring, Projection collective tile, the B card's future-sales
+        // receipt schedule + suppressed lockup) appears on Yes and fully
+        // reverts on No. renderInterestedSnapshot drives the B card; the
+        // dashboard drives the collective KPI tile — both must re-run.
+        // _refreshCard3Visibility owns the Page-3 multi-sale layout (all three
+        // cards shown, default-risk hidden, grid .is-multi-sale) — it MUST run
+        // here or toggling Yes leaves Page 3 in its stale single-sale layout.
+        // renderBaselineTable (Tab 2) MUST run before renderInterestedSnapshot:
+        // the projection card's walk-away reads bt-cash-kept from Tab 2's DOM,
+        // so Tab 2 has to hold the fresh COLLECTIVE cash-kept first or the card
+        // captures a stale value (advisor 2026-06-22).
+        ['_refreshCard3Visibility', '_refreshStrategyPickCards', 'renderBaselineTable',
+         'renderInterestedSnapshot', 'renderSupplementalPage', 'renderProjectionDashboard',
+         'renderStrategySummary'].forEach(function (fn) {
+          if (typeof root[fn] === 'function') { try { root[fn](); } catch (e) { /* */ } }
+        });
+        return;
+      }
+      if (!el || !el.classList || !el.classList.contains('fsp-input')) return;
+      if (el.classList.contains('fsp-usd')) {
+        var v = _fspParse(el.value);
+        el.value = v > 0 ? _fmt(v) : '';
+      }
+      // A future-sale edit changes Tab 2's collective figures, the Projection
+      // collective net benefit, the installment card's receipt schedule AND the
+      // Strategy Summary collective hero / Savings-by-Sale table. renderBaseline
+      // first so the card's walk-away reads a fresh collective bt-cash-kept
+      // (advisor 2026-06-22).
+      ['renderBaselineTable', 'renderProjectionDashboard', 'renderInterestedSnapshot',
+       'renderStrategySummary'].forEach(function (fn) {
+        if (typeof root[fn] === 'function') { try { root[fn](); } catch (e2) { /* */ } }
+      });
+    });
+    // Initial paint (the inputs page is already in the DOM at script load).
+    try { renderFutureSaleInputs(); } catch (e) { /* */ }
+    root.document.addEventListener('click', function (e) {
+      var add = e.target && e.target.closest && e.target.closest('[data-fsp-add]');
+      var del = e.target && e.target.closest && e.target.closest('[data-fsp-del]');
+      if (add) {
+        _fspState().push({ yearsUntil: 0, salePrice: 0, costBasis: 0, growth: 0 });
+        _fspPersist(); _fspRerender();
+      } else if (del) {
+        var i = Number(del.getAttribute('data-fsp-del')), rows = _fspState();
+        if (rows.length > 1 && rows[i] != null) { rows.splice(i, 1); _fspPersist(); _fspRerender(); }
+      } else {
+        return;
+      }
+      // Adding/removing a sale changes Tab 2, the Projection collective net
+      // benefit, the receipt schedule AND the Strategy Summary. Tab 2 first
+      // (walk-away reads its bt-cash-kept).
+      ['renderBaselineTable', 'renderProjectionDashboard', 'renderInterestedSnapshot',
+       'renderStrategySummary'].forEach(function (fn) {
+        if (typeof root[fn] === 'function') { try { root[fn](); } catch (e2) { /* */ } }
+      });
+    });
+  }
+
   if (typeof root !== 'undefined' && root.document && !root.__rettGrowthListenerWired) {
     root.__rettGrowthListenerWired = true;
     root.document.addEventListener('input', function (e) {
@@ -1384,235 +1920,6 @@
     });
   }
 
-  function _renderFutureSaleOption(entry, opt, cfg) {
-    // Per advisor spec: only render the section when there's REAL
-    // future-sale coverage to discuss. Three early-out cases:
-    //   1) No future sale configured at all (Section 07 = No)
-    //   2) Future sale configured but futureLT = 0 (no gain to cover)
-    //   3) coverageFraction === 0 (gated below — Brooklyn loss can't
-    //      reach the future-sale gain)
-    // The earlier "Another Sale Coming Up?" hint was removed; the
-    // advisor opens Section 07 directly when there's a future sale.
-    if (!cfg || !cfg.futureSale || !cfg.futureSale.enabled) return '';
-
-    var futureLT = Math.max(0, Number(cfg.futureSale.estimatedGain) || 0);
-    if (futureLT <= 0) return '';
-
-    var availCap = Math.max(0, Number(cfg.availableCapital) || 0);
-    var lossAtFull = (entry && entry.metrics && entry.metrics._lossAtFull) || 0;
-    var feesAtFull = (entry && entry.metrics && entry.metrics._brooklynFeesAtFull) || 0;
-    if (availCap <= 0 || lossAtFull <= 0) return '';
-
-    var lossPerDollar = lossAtFull / availCap;
-    var feePerDollar  = feesAtFull / availCap;
-    if (lossPerDollar <= 0) return '';
-
-    // Q2: subtract ST-held property gain.
-    var currentLT = Math.max(0,
-      (Number(cfg.salePrice) || 0) - (Number(cfg.costBasis) || 0)
-      - (Number(cfg.acceleratedDepreciation) || 0)
-      - (Number(cfg.shortTermPropertyGain) || 0));
-    // Recapture is also Brooklyn-loss-absorbable per IRC §1(h)
-    // (ST losses → recapture → LT gain → ordinary cap order). Treat
-    // currentLT + currentRecap as the current-sale absorbable load
-    // so investToCoverCurrent doesn't under-count and the additional-
-    // investment row stays consistent with the optimizer's view.
-    var currentRecap = Math.max(0,
-      Number(cfg.acceleratedDepreciation) || 0);
-    var currentAbsorb = currentLT + currentRecap;
-
-    // Investment levels:
-    //   investToCoverCurrent — Brooklyn level needed to absorb the
-    //     current sale's LT gain + recapture (capped at availCap).
-    //   investToCoverBoth    — Brooklyn level needed to absorb both
-    //     current and future absorbable gain (capped at availCap).
-    //   additionalInvestment — the gap. If availCap is binding, this
-    //     may not be enough to fully cover futureLT.
-    var investToCoverCurrent = Math.min(availCap, currentAbsorb / lossPerDollar);
-    var investToCoverBoth    = Math.min(availCap, (currentAbsorb + futureLT) / lossPerDollar);
-    var additionalInvestment = Math.max(0, investToCoverBoth - investToCoverCurrent);
-    var additionalFees       = additionalInvestment * feePerDollar;
-
-    // Coverage of the FUTURE sale. The total Brooklyn loss at the
-    // both-coverage investment level absorbs the current sale's LT +
-    // recapture first; anything left over absorbs future LT. If
-    // availableCapital is the binding constraint, that leftover may
-    // be less than futureLT — in which case the future-sale tax
-    // savings prorate to the actual coverage.
-    var totalLossAtBoth = investToCoverBoth * lossPerDollar;
-    var futureLTAbsorbed = Math.max(0, Math.min(futureLT, totalLossAtBoth - currentAbsorb));
-    var coverageFraction = (futureLT > 0) ? (futureLTAbsorbed / futureLT) : 0;
-
-    // Compute the FULL tax that would be owed on the future LT gain
-    // if no carryforward existed — federal + state + NIIT. Then prorate
-    // by the coverage fraction so the displayed savings reflect what
-    // the additional investment ACTUALLY buys (not aspirational full
-    // absorption).
-    var saleYear;
-    if (cfg.futureSale.saleDate) {
-      var d = new Date(cfg.futureSale.saleDate);
-      saleYear = isNaN(d.getTime()) ? ((cfg.year1 || 2026) + 3) : d.getFullYear();
-    } else {
-      saleYear = (cfg.year1 || 2026) + 3;
-    }
-    var status = cfg.filingStatus || 'mfj';
-    var state  = cfg.state || 'NONE';
-    var fedSavings = 0, stateSavings = 0;
-    try {
-      if (typeof root.computeFederalTax === 'function') {
-        fedSavings = root.computeFederalTax(0, saleYear, status, {
-          longTermGain: futureLT,
-          investmentIncome: futureLT,
-          wages: 0
-        }) || 0;
-      }
-      if (typeof root.computeStateTax === 'function') {
-        stateSavings = root.computeStateTax(futureLT, saleYear, state, status, {
-          longTermGain: futureLT
-        }) || 0;
-      }
-    } catch (e) { /* fall through to zero */ }
-    var fullFutureTax = Math.max(0, fedSavings + stateSavings);
-    // Prorate by coverage. If the additional investment fully covers
-    // futureLT, this equals fullFutureTax. If it covers half, it's
-    // half the savings.
-    var futureSaleTaxSavings = fullFutureTax * coverageFraction;
-    var netAdditionalBenefit = futureSaleTaxSavings - additionalFees;
-    // Return on the ADDITIONAL fees specifically — the multiplier the
-    // advisor uses to frame "every $1 in fees buys $X in future-sale
-    // savings." Different from the page's main ROP (which is for the
-    // current sale).
-    var feeReturnRatio = (additionalFees > 0)
-      ? (futureSaleTaxSavings / additionalFees) : 0;
-
-    var benefitClass = netAdditionalBenefit > 0 ? 'fs-benefit-positive'
-                     : (netAdditionalBenefit < 0 ? 'fs-benefit-negative' : '');
-
-    // When the optimizer is already pushed to full Available Capital
-    // for the current sale, there's no headroom to size Brooklyn UP
-    // for the future sale — additionalInvestment and additionalFees
-    // both come out to zero. Hiding those rows in that case so the
-    // advisor doesn't see a confusing "$0 / $0 / X savings" row set.
-    // What we DO show is the future-sale tax savings (the loss
-    // carryforward already in flight will absorb it for free) and
-    // a clear note about the cost/no-cost framing.
-    var hasHeadroom = (additionalInvestment > 0) || (additionalFees > 0);
-
-    // Coverage messaging branches. Three meaningful cases:
-    //
-    //   coverageFraction === 0 — Brooklyn (at any investment level the
-    //     advisor can fund) can't generate carryforward beyond what
-    //     the current sale needs. No future-sale absorption available.
-    //     Surface a "Available Capital is the bottleneck" framing so
-    //     the advisor knows to suggest funding more.
-    //
-    //   coverageFraction > 0 && !hasHeadroom — the optimizer is already
-    //     at availableCapital for the current sale, and the leftover
-    //     loss naturally carries forward to absorb some/all of future.
-    //     "Bonus" framing — at no additional cost.
-    //
-    //   coverageFraction > 0 && hasHeadroom — there's room to scale
-    //     Brooklyn up. Could be full (100%) or partial coverage; the
-    //     prorated-savings line shows the effective benefit either way.
-    var fullCoverage   = (coverageFraction >= 0.999);
-    var noCoverage     = (coverageFraction <= 0);
-    var coveragePctLabel = Math.round(coverageFraction * 100) + '%';
-    var absorbingNow   = !!root.__rettAbsorbFutureSale;
-
-    // Per advisor: if there is NO coverage (Brooklyn can't even
-    // partially absorb the future-sale gain), suppress the callout
-    // entirely — surfacing it would only confuse the client. Only
-    // show the block when there's some real benefit (or full coverage
-    // potential) to discuss.
-    if (noCoverage) return '';
-
-    var headerTitle;
-    var headerCopy;
-    if (absorbingNow) {
-      headerTitle = 'Future Sale Offset Active';
-      headerCopy  = 'Asset Manager is sized to absorb <strong>' + coveragePctLabel + '</strong> of your planned <strong>' + _fmt(futureLT) + '</strong> long-term gain in ' + saleYear + '. The Net additional benefit below shows what the future-sale offset adds on top of the current-sale Net Benefit.';
-    } else if (!hasHeadroom) {
-      headerTitle = 'Bonus: Your Future Sale Is Already Covered';
-      headerCopy  = 'Asset Manager is already fully deployed for your current sale. The leftover loss carries forward and absorbs <strong>' + coveragePctLabel + '</strong> of your planned <strong>' + _fmt(futureLT) + '</strong> long-term gain in ' + saleYear + ' at no additional cost.';
-    } else if (fullCoverage) {
-      headerTitle = 'Another Option: Offset Your Future Sale';
-      headerCopy  = 'Increase Asset Manager investment so the loss carryforward also fully absorbs your planned <strong>' + _fmt(futureLT) + '</strong> long-term gain in ' + saleYear + '. Same strategy, same horizon &mdash; just sized up. The fees you pay now buy the future-sale offset shown below.';
-    } else {
-      headerTitle = 'Another Option: Offset Your Future Sale';
-      headerCopy  = 'Available Capital limits how much Asset Manager can grow. The additional investment below covers <strong>' + coveragePctLabel + '</strong> of your <strong>' + _fmt(futureLT) + '</strong> long-term gain in ' + saleYear + '; the future-sale tax savings are prorated to that coverage.';
-    }
-
-    var headerHtml = '<div class="fs-head">' +
-      '<h2>' + headerTitle + '</h2>' +
-      '<p class="fs-desc">' + headerCopy + '</p>' +
-    '</div>';
-
-    var rowsHtml = '';
-    if (hasHeadroom) {
-      // Cost-of-offset framing: the additional Brooklyn fees ARE the
-      // price paid to also offset the future-sale gain. Surface that
-      // explicitly so the advisor can say "for $X in fees you save
-      // $Y on the next sale."
-      rowsHtml += '<div class="fs-row">' +
-        '<div class="fs-label">Additional Asset Manager investment<span class="fs-sub">on top of the optimizer&rsquo;s pick for the current sale</span></div>' +
-        '<div class="fs-amt">' + _fmt(additionalInvestment) + '</div>' +
-      '</div>';
-      rowsHtml += '<div class="fs-row">' +
-        '<div class="fs-label">Cost to offset the future sale<span class="fs-sub">additional Asset Manager fees you pay now over the projection horizon</span></div>' +
-        '<div class="fs-amt fs-cost">' + _fmt(additionalFees) + '</div>' +
-      '</div>';
-    }
-    rowsHtml += '<div class="fs-row">' +
-      '<div class="fs-label">Future-sale tax savings<span class="fs-sub">' + (fullCoverage
-            ? 'federal LT + state + NIIT on ' + _fmt(futureLT)
-            : coveragePctLabel + ' coverage of ' + _fmt(futureLT) + ' &mdash; ' + _fmt(fullFutureTax) + ' full tax prorated') + '</span></div>' +
-      '<div class="fs-amt fs-save">' + _fmt(futureSaleTaxSavings) + '</div>' +
-    '</div>';
-    if (hasHeadroom && additionalFees > 0 && feeReturnRatio > 0) {
-      // Fee-return multiplier — frames the additional spend as ROI on
-      // the future sale ("every $1 of fees you pay now buys $X in
-      // future-sale savings"). Distinct from the page's main ROP.
-      rowsHtml += '<div class="fs-row">' +
-        '<div class="fs-label">Return on additional fees<span class="fs-sub">future-sale savings &divide; additional Asset Manager fees</span></div>' +
-        '<div class="fs-amt fs-save">' + _fmtMultiplier(feeReturnRatio) + '&times;</div>' +
-      '</div>';
-    }
-    rowsHtml += '<div class="fs-row fs-total">' +
-      '<div class="fs-label">Net additional benefit</div>' +
-      '<div class="fs-amt ' + benefitClass + '">' + _fmt(netAdditionalBenefit) + '</div>' +
-    '</div>';
-
-    // Apply / Undo button. Only renders when there's something to
-    // act on:
-    //   - absorbingNow → Undo (revert to current-sale-only Brooklyn)
-    //   - !absorbingNow + hasHeadroom + positive net additional benefit →
-    //       Apply (grow Brooklyn to absorb both). Hidden when net is
-    //       non-positive per the positive-net hard rule (advisor 2026-05-06).
-    var btnHtml = '';
-    if (absorbingNow) {
-      btnHtml = '<div class="fs-apply-row">' +
-        '<button type="button" class="fs-apply-btn fs-apply-undo" data-fs-apply="undo">Undo: Stop Absorbing Future Sale</button>' +
-      '</div>';
-    } else if (hasHeadroom && netAdditionalBenefit > 0) {
-      btnHtml = '<div class="fs-apply-row">' +
-        '<button type="button" class="fs-apply-btn" data-fs-apply="apply">Apply: Offset Future Sale</button>' +
-      '</div>';
-    }
-
-    // Tag the wrapper so the print stylesheet can hide the callout
-    // when there's no real future-sale benefit to print: noCoverage
-    // ("can't even cover current sale, can't help future") just adds
-    // visual noise on the printout per advisor spec. The on-screen
-    // version still shows it so the advisor sees the bottleneck.
-    var wrapperClasses = 'future-sale-option';
-    if (noCoverage) wrapperClasses += ' fs-no-coverage no-print';
-    if (absorbingNow) wrapperClasses += ' fs-absorbing';
-    return '<div class="' + wrapperClasses + '">' +
-      headerHtml +
-      '<div class="fs-grid">' + rowsHtml + '</div>' +
-      btnHtml +
-    '</div>';
-  }
 
   root.renderStrategySummary = renderStrategySummary;
 })(window);

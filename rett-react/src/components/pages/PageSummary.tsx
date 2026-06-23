@@ -1,7 +1,12 @@
 // Strategy Summary. js/04-ui/strategy-summary-render.js populates
 // #strategy-fee-summary-host. The Print / Save-as-PDF button is wired by
-// js/04-ui/controls.js (window.print() with body.print-mode toggling) and
-// the Agreement Letter is a static .docx download served from /assets/.
+// js/04-ui/controls.js (window.print() with body.print-mode toggling).
+//
+// The Agreement Letter button was removed 2026-06-15 (upstream index.html)
+// — the engagement agreement is handled outside this tool now. The single
+// Print / Save-as-PDF control renders the one-page client leave-behind.
+// key-points-export.js also self-injects an admin-only "Export Key Points"
+// button into this .print-cta-row when admin mode is unlocked.
 export default function PageSummary() {
   return (
     <section id="page-allocator" className="page" role="tabpanel" aria-labelledby="nav-allocator">
@@ -31,14 +36,6 @@ export default function PageSummary() {
         <button type="button" className="cta-btn" id="print-summary-btn">
           &#128424; Print / Save as PDF
         </button>
-        <a
-          href="/assets/BrookHaven_Engagement_Agreement.docx"
-          className="cta-btn cta-btn-secondary"
-          id="agreement-letter-btn"
-          download="BrookHaven Engagement Agreement.docx"
-        >
-          &#128221; Agreement Letter
-        </a>
       </div>
     </section>
   );

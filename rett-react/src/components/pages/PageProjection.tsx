@@ -12,10 +12,13 @@ export default function PageProjection() {
           headline + the Additional Funds toggle live side-by-side. When
           ON, the Additional Funds contribution from Tab 1 Section 03
           becomes additional available capital for Brooklyn / strategies.
-          UI-only for now — engine wiring TBD. */}
+
+          Toggle HIDDEN as of 2026-06-22 (upstream commit 2fe5c20) alongside
+          the Tab 1 Additional Funds section. Kept in the DOM (collector reads
+          it) but never shown. Remove `hidden` to restore. */}
       <div className="page-projection-head">
         <h2>Projection</h2>
-        <label className="proj-addfunds-toggle" htmlFor="additional-funds-toggle" title="Include the Additional Funds contribution from Client Inputs as extra available capital">
+        <label className="proj-addfunds-toggle" htmlFor="additional-funds-toggle" title="Include the Additional Funds contribution from Client Inputs as extra available capital" hidden>
           <input type="checkbox" id="additional-funds-toggle" />
           <span>Include additional funds</span>
         </label>

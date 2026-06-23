@@ -225,11 +225,32 @@
     var brookhavenTile = brookhavenFees > 0
       ? _kpiTile('Brookhaven Fees', _fmt(brookhavenFees), 'Setup + quarterly retainer', '')
       : '';
+
+    // Multi-sale string: the headline Net Benefit becomes the COLLECTIVE across
+    // all the client's sales = this sale's net PLUS the future sales' estimated
+    // installment net (50/50 two-year §453 at 200/100, net of fees — advisor
+    // 2026-06-22). Display-only; the engine net is untouched. The single-sale
+    // figure read as too low next to the >$1M collective tax liability.
+    var _multiKpi = false, _futKpi = 0;
+    try {
+      var _fyKpi = document.getElementById('future-sale-yes-no');
+      _multiKpi = !!(_fyKpi && _fyKpi.value === 'yes');
+      if (_multiKpi && typeof window.__rettFutureInstallmentBenefit === 'function') {
+        _futKpi = Number(window.__rettFutureInstallmentBenefit().net) || 0;
+      }
+    } catch (e) { _multiKpi = false; }
+    var _netShown = (_multiKpi && _futKpi > 0) ? (net + _futKpi) : net;
+    var _netLabel = (_multiKpi && _futKpi > 0) ? 'Net Benefit — All Sales' : 'Net Benefit';
+    var _netSub = (_multiKpi && _futKpi > 0)
+      ? ('This sale ' + _fmt(net) + ' + future ' + _fmt(_futKpi))
+      : 'Savings minus all fees';
+    var _netShownKind = _netShown > 0 ? 'positive' : (_netShown < 0 ? 'negative' : '');
+
     return '<div class="rett-kpi-row">' +
       _kpiTile('Total Tax Saved', _fmt(totalSave), pctReduce + ' over ' + years.length + ' yrs', savedKind) +
       _kpiTile('Brooklyn Fees', _fmt(cumFees), 'Strategy fees (mgmt + financing)', '') +
       brookhavenTile +
-      _kpiTile('Net Benefit', _fmt(net), 'Savings minus all fees', netKind) +
+      _kpiTile(_netLabel, _fmt(_netShown), _netSub, _netShownKind) +
       _kpiTile('Return on Planning', roiTxt, 'Net benefit / fees', roiKind) +
       '</div>';
   }
@@ -1269,6 +1290,58 @@
     return out;
   }
 
+  // Down-payment optimizer (perf + accuracy redesign 2026-06-22). Drives the
+  // evaluations of the Y0 down-payment D in [0, dMax] for Strategy B/C:
+  //   1) a coarse grid (cheap structure scan),
+  //   2) explicit BOUNDARY spikes — net(D) jumps where the Y0 deposit pool
+  //      (D + recap) reaches a Schwab combo minimum, i.e. at D = comboMin AND
+  //      D = comboMin − recap. The old pass only probed comboMin, so on
+  //      recapture sales it missed the real spike by up to ~$4k.
+  //   3) GOLDEN-SECTION refine around the top few candidates — converges on
+  //      the smooth peaks to within ~$1k, far more precisely (and with fewer
+  //      calls) than the old fixed 2%/0.5% fine+ultra grid.
+  // evalAt(D) does the constraint checks (floor, first-deposit legality),
+  // records the candidate, and updates the caller's `best`; it returns the
+  // metrics object (with .net) or null for an illegal D. This function is pure
+  // control-flow — it just chooses which D's to evaluate.
+  function _sweepDownPayment(dMax, floor, boundaries, evalAt) {
+    if (!(dMax > 0)) { evalAt(0); return; }
+    var GR = (Math.sqrt(5) - 1) / 2;
+    var cache = {};
+    function E(D) {
+      D = Math.round(D);
+      if (D < 0 || D > dMax) return -Infinity;
+      if (cache[D] !== undefined) return cache[D];
+      var m = evalAt(D);
+      return (cache[D] = (m && isFinite(m.net) ? m.net : -Infinity));
+    }
+    var N = 8;
+    var seeds = [];
+    for (var k = 0; k <= N; k++) { var Dg = Math.round(dMax * k / N); seeds.push({ D: Dg, net: E(Dg) }); }
+    if (floor > 0) seeds.push({ D: Math.round(floor), net: E(Math.round(floor)) });
+    (boundaries || []).forEach(function (Db) {
+      Db = Math.round(Db);
+      if (Db >= 0 && Db <= dMax) seeds.push({ D: Db, net: E(Db) });
+    });
+    seeds.sort(function (a, b) { return b.net - a.net; });
+    var step = Math.max(1, Math.round(dMax / N));
+    var used = {}, refined = 0;
+    for (var i = 0; i < seeds.length && refined < 2; i++) {
+      var s = seeds[i];
+      if (!(s.net > -Infinity)) continue;
+      var bkt = Math.round(s.D / (step / 2));
+      if (used[bkt]) continue;
+      used[bkt] = 1; refined++;
+      // Golden-section maximize within one coarse cell either side of the seed.
+      var a = Math.max(0, s.D - step), b = Math.min(dMax, s.D + step);
+      var c = a + (1 - GR) * (b - a), d = a + GR * (b - a), fc = E(c), fd = E(d);
+      for (var it = 0; it < 10 && (b - a) > 5000; it++) {
+        if (fc >= fd) { b = d; d = c; fd = fc; c = a + (1 - GR) * (b - a); fc = E(c); }
+        else { a = c; c = d; fc = fd; d = a + GR * (b - a); fd = E(d); }
+      }
+    }
+  }
+
   // Find the (horizon, shortPct, comboId, bestRec for C) tuple that
   // maximizes net for this scenario type. Used both when a section is
   // first checked AND when the user clicks Revert on a section.
@@ -1284,11 +1357,6 @@
     //   • horizon=3 — Strategy B (N=2 yearly payments)
     //   • horizon=4 — Strategy B (N=3) + Strategy C (36mo, Y1-Y3 recog)
     var horizons = [1, 2, 3, 4];
-    function _durationsForHorizon(hor) {
-      // Only 36mo offered. Returns [] when horizon can't fit it so
-      // auto-picker naturally skips Strategy C in those configs.
-      return (hor >= 4) ? [36] : [];
-    }
     var userDurationFallback = baseCfg.structuredSaleDurationMonths || 36;
     var best = null;
 
@@ -1411,87 +1479,26 @@
             return m;
           };
 
-          // Always evaluate the supp floor itself so a feasible D that
-          // funds the supplementals stays in the running even if the
-          // coarse grid steps over it.
-          if (_floorC > 0) _evalD(_floorC);
-          // Coarse pass at 0%, 10%, 20%, ..., 100% of D_max.
-          var coarseBest = null;
-          for (var ci = 0; ci <= 10; ci++) {
-            var D = Math.round(_dMax * (ci / 10));
-            if (D < _floorC - 0.5) continue;
-            if (!_firstDepositLegalC(D)) continue;
-            var mc = _evalD(D);
-            if (mc && (!coarseBest || mc.net > coarseBest.net)) {
-              coarseBest = { D: D, net: mc.net };
-            }
-          }
-          // BOUNDARY-VALUE PASS (advisor 2026-06-01): the net(D) curve has
-          // SPIKES at the Schwab combo minimums ($1M for 145/45, $3M for
-          // 200/100). At D = combo_min, the Y0 deposit opens that combo
-          // exactly at the floor, generating the maximum age-0 loss
-          // density. Collect ALL near-winning candidates (within 5% of
-          // the coarse leader) so the fine refinement runs around each —
-          // not just the single coarse leader. Audit R2 #6 caught the
-          // pre-fix gap: a combo-min D that was the SECOND-best coarse
-          // candidate never got refined, missing peaks just above the
-          // tranche floor.
-          var refineSeeds = coarseBest ? [coarseBest] : [];
+          // Boundary D's where the Y0 deposit pool (D + recap) opens a Schwab
+          // combo: D = comboMin AND D = comboMin − recap (the recap-shifted
+          // spike the old pass missed). _sweepDownPayment probes these + a
+          // coarse grid + golden-section refine; _evalD enforces floor +
+          // first-deposit legality and updates `best`/_recordCombo.
+          var _boundsC = [];
           if (typeof root.listSchwabCombosForStrategy === 'function') {
             try {
               var _stratKeyC = (cfgSection.tierKey || cfgSection.strategyKey || 'beta1');
-              var _allCombos = root.listSchwabCombosForStrategy(_stratKeyC) || [];
               var _userCapC = Number(cfgSection.leverageCap != null ? cfgSection.leverageCap
                               : (cfgSection.leverage != null ? cfgSection.leverage : 1));
-              _allCombos.forEach(function (c) {
+              (root.listSchwabCombosForStrategy(_stratKeyC) || []).forEach(function (c) {
                 if (!c || !Number.isFinite(c.minInvestment) || c.minInvestment <= 0) return;
                 if (Number(c.leverage) > _userCapC + 1e-6) return;
-                var Dbound = Math.round(c.minInvestment);
-                if (Dbound > _dMax) return;
-                if (!_firstDepositLegalC(Dbound)) return;
-                var mb = _evalD(Dbound);
-                if (!mb) return;
-                if (!coarseBest || mb.net > coarseBest.net) {
-                  coarseBest = { D: Dbound, net: mb.net };
-                }
-                // Collect this boundary as a refine seed if it's within
-                // 5% of the (running) best net — protects against the
-                // case where the optimum sits just above a tranche floor
-                // that wasn't itself the absolute coarse winner.
-                refineSeeds.push({ D: Dbound, net: mb.net });
+                _boundsC.push(c.minInvestment);
+                _boundsC.push(c.minInvestment - _recapC);
               });
-            } catch (e) { /* keep coarse winner */ }
+            } catch (e) { /* coarse grid still covers it */ }
           }
-          // Refine around each seed within 5% of the current best net.
-          // Fine pass ±10% of D_max in 2% steps; ultra ±2% in 0.5% steps.
-          var fineBest = coarseBest;
-          var bestNetSoFar = coarseBest ? coarseBest.net : -Infinity;
-          var threshold = bestNetSoFar * 0.95;
-          refineSeeds.forEach(function (seed) {
-            if (!seed || seed.net < threshold) return;
-            for (var fstep = 1; fstep <= 5; fstep++) {
-              [-1, 1].forEach(function (sign) {
-                var D = Math.round(seed.D + sign * fstep * 0.02 * _dMax);
-                if (D < 0 || D > _dMax) return;
-                if (!_firstDepositLegalC(D)) return;
-                var mf = _evalD(D);
-                if (mf && (!fineBest || mf.net > fineBest.net)) {
-                  fineBest = { D: D, net: mf.net };
-                }
-              });
-            }
-          });
-          // Ultra-fine ±2% in 0.5% steps around the fine leader.
-          if (fineBest) {
-            for (var ustep = 1; ustep <= 4; ustep++) {
-              [-1, 1].forEach(function (sign) {
-                var D = Math.round(fineBest.D + sign * ustep * 0.005 * _dMax);
-                if (D < 0 || D > _dMax) return;
-                if (!_firstDepositLegalC(D)) return;
-                _evalD(D);
-              });
-            }
-          }
+          _sweepDownPayment(_dMax, _floorC, _boundsC, _evalD);
         } else if (type === 'B') {
           // For B (§453 installment), each horizon iteration tries
           // exactly one N value (N = hor - 1, so Y0 + N payment years).
@@ -1627,41 +1634,43 @@
                 _allCombosB.forEach(function (c) {
                   if (!c || !Number.isFinite(c.minInvestment) || c.minInvestment <= 0) return;
                   if (Number(c.leverage) > _userCapB + 1e-6) return;
-                  var Dbound = Math.round(c.minInvestment);
-                  if (Dbound > _bDMax) return;
-                  if (!_firstDepositLegalB(lockedWeights, Dbound)) return;
-                  var mb = _evalB(lockedWeights, Dbound);
-                  if (mb && (!coarseBest || mb.metrics.net > coarseBest.metrics.net)) coarseBest = mb;
-                  _maybeUpdateBest(mb);
+                  // Probe BOTH D = comboMin and D = comboMin − recap: the Y0
+                  // deposit pool is D + recap, so the combo opens (and the
+                  // net spikes) at D = comboMin − recap on recapture sales.
+                  [Math.round(c.minInvestment), Math.round(c.minInvestment - _bRecap)].forEach(function (Dbound) {
+                    if (Dbound < 0 || Dbound > _bDMax) return;
+                    if (Dbound < _floorB - 0.5) return;
+                    if (!_firstDepositLegalB(lockedWeights, Dbound)) return;
+                    var mb = _evalB(lockedWeights, Dbound);
+                    if (mb && (!coarseBest || mb.metrics.net > coarseBest.metrics.net)) coarseBest = mb;
+                    _maybeUpdateBest(mb);
+                  });
                 });
               } catch (e) { /* keep coarse winner */ }
             }
             return coarseBest;
           }
-          // Fine (±10% @ 2%) + ultra (±2% @ 0.5%) refinement around a
-          // coarse winner, for a fixed weight set.
+          // Golden-section refine of the down-payment around the coarse winner
+          // (replaces the old fixed 2%/0.5% grid — converges on the smooth peak
+          // to within ~$1k with fewer calls; the recap-aware boundaries already
+          // pin the spikes). Respects the floor + first-deposit gate.
           function _sweepBDRefine(lockedWeights, coarseBest) {
-            if (!coarseBest) return;
-            var fineBest = coarseBest;
-            for (var f = 1; f <= 5; f++) {
-              [-1, 1].forEach(function (sign) {
-                var D = Math.round(coarseBest.D + sign * f * 0.02 * _bDMax);
-                if (D < 0 || D > _bDMax) return;
-                if (!_firstDepositLegalB(lockedWeights, D)) return;
-                var m = _evalB(lockedWeights, D);
-                if (m && (!fineBest || m.metrics.net > fineBest.metrics.net)) fineBest = m;
-                _maybeUpdateBest(m);
-              });
+            if (!coarseBest || !(_bDMax > 0)) return;
+            var GR = (Math.sqrt(5) - 1) / 2, cache = {};
+            function E(D) {
+              D = Math.round(D);
+              if (D < 0 || D > _bDMax) return -Infinity;
+              if (cache[D] !== undefined) return cache[D];
+              if (D < _floorB - 0.5 || !_firstDepositLegalB(lockedWeights, D)) return (cache[D] = -Infinity);
+              var m = _evalB(lockedWeights, D); _maybeUpdateBest(m);
+              return (cache[D] = (m ? m.metrics.net : -Infinity));
             }
-            if (fineBest) {
-              for (var u = 1; u <= 4; u++) {
-                [-1, 1].forEach(function (sign) {
-                  var D = Math.round(fineBest.D + sign * u * 0.005 * _bDMax);
-                  if (D < 0 || D > _bDMax) return;
-                  if (!_firstDepositLegalB(lockedWeights, D)) return;
-                  _maybeUpdateBest(_evalB(lockedWeights, D));
-                });
-              }
+            var step = Math.max(1, Math.round(_bDMax / 8));
+            var a = Math.max(0, coarseBest.D - step), b = Math.min(_bDMax, coarseBest.D + step);
+            var c = a + (1 - GR) * (b - a), d = a + GR * (b - a), fc = E(c), fd = E(d);
+            for (var it = 0; it < 12 && (b - a) > 5000; it++) {
+              if (fc >= fd) { b = d; d = c; fd = fc; c = a + (1 - GR) * (b - a); fc = E(c); }
+              else { a = c; c = d; fc = fd; d = a + GR * (b - a); fd = E(d); }
             }
           }
           function _sweepBD(lockedWeights) {
@@ -2663,10 +2672,6 @@
     return sum;
   }
 
-  function _interestedDetailRow(label, value, indent) {
-    var pad = indent ? 'style="padding-left:18px;color:var(--ink-soft)"' : '';
-    return '<li ' + pad + '><span>' + label + '</span><strong>' + _fmt(value) + '</strong></li>';
-  }
 
   // Format a YYYY-MM-DD string as "Mon DD, YYYY". Falls back to Jan 1 of
   // a known year, then to a literal en-dash.
@@ -2682,63 +2687,44 @@
   }
 
   // Build the cash-flow table the seller cares about: when does the
-  // structured-sale buyer actually deliver money? At closing they pay
-  // the basis cash up front; gain installments hit in the recognition
-  // year(s) the engine resolved (typically Year +recIdx+1 under the
-  // 18-month MEP window). Reads the recognitionSchedule directly so
-  // multi-year recognition (rec=3, rec=4) renders correctly without
-  // re-deriving the calendar math here.
+  // structured-sale (Strategy C) buyer actually deliver money? Built from
+  // the canonical _describeInstallmentSchedule(cfg) so the displayed cash
+  // matches the engine AND the one-line "Recommended terms" summary:
+  //   • Basis flows PROPORTIONALLY inside each installment (each payment is
+  //     gain + basis per the §453 GP ratio). The pre-2026-05-27 "basis lump
+  //     at closing" model was retired (it treated basis as deployable Y0
+  //     cash); rendering it that way overstated Y0 cash and understated each
+  //     installment. Each installment cash = its weighted share of the
+  //     contract (sale − recap).
+  //   • A closing row appears ONLY when the seller takes real Y0 cash —
+  //     down payment + forced debt/personal-use payoff + recapture proceeds.
+  //   • Dating is anchored to the SALE year (cfg.year1): closing in year1,
+  //     installments on Jan 1 of year1+1, +2, … . This is why we don't date
+  //     off cfg.implementationDate: C repurposes implementationDate to
+  //     year1+1 (Brooklyn-deploy timing) when there's no Y0 tranche, which
+  //     previously mislabeled the closing row and produced two same-date
+  //     rows. (advisor 2026-06-12 — payment-schedule date-labeling audit.)
   function _buildPaymentScheduleHtml(cfg, comp, durationMonths) {
-    if (!cfg || !comp) return '';
-    var year1 = cfg.year1 || (new Date()).getFullYear();
-    // Closing-day cash = basis recovery + accelerated-depreciation
-    // proceeds. In a structured sale only the LTCG is parked inside
-    // the insurance product; the basis cash AND the depr-equivalent
-    // cash (representing the buyer's payment that corresponds to
-    // recaptured depreciation) both flow to the seller at closing.
-    // Recapture is recognized as Y1 ordinary income in the tax engine,
-    // but the cash itself is delivered up front — so the seller's
-    // closing-day check is basis + accel-depr, not basis alone.
-    var basisCash = Math.max(0, Number(cfg.costBasis) || 0);
-    var accelDeprCash = Math.max(0, Number(cfg.acceleratedDepreciation) || 0);
-    var closingCash = basisCash + accelDeprCash;
-    var sched = (comp.recognitionSchedule && comp.recognitionSchedule.length)
-      ? comp.recognitionSchedule.slice()
-      : [];
-    if (!sched.length) return '';
-
-    // Build a year -> {gain, isClosing} map so we can merge the closing
-    // basis-cash line into Y1 instead of showing two rows for the same
-    // year (cleaner for sellers — one cash deposit, one date).
-    var byYear = {};
-    sched.forEach(function (r) {
-      var y = r.year || year1;
-      if (!byYear[y]) byYear[y] = { year: y, gain: 0, isClosing: false };
-      byYear[y].gain += (r.gainRecognized || 0);
-    });
-    if (!byYear[year1]) byYear[year1] = { year: year1, gain: 0, isClosing: false };
-    byYear[year1].isClosing = true;
-
-    var years = Object.keys(byYear).map(function (k) { return byYear[k]; })
-      .sort(function (a, b) { return a.year - b.year; });
-
-    // Total gain in the structured product = sum of all recognized
-    // installments. Used to express each gain row as a % so the advisor
-    // can confirm the schedule against MetLife's canonical caps
-    // (3-yr: 40/40/20; 4-yr+: 50/30/10/10).
-    var totalGainInstallments = years.reduce(function (s, y) { return s + (y.gain || 0); }, 0);
-
+    if (!cfg) return '';
+    var s = _describeInstallmentSchedule(cfg);
+    if (!s || !s.rows.length) return '';
+    // Use the entered sale/closing date for the closing row only when it
+    // actually falls in the closing year; otherwise label by that year.
+    var saleYr = null;
+    try {
+      if (typeof root.parseLocalDate === 'function' && cfg.implementationDate) {
+        var _d = root.parseLocalDate(cfg.implementationDate);
+        if (_d && !isNaN(_d.getTime())) saleYr = _d.getFullYear();
+      }
+    } catch (e) { /* fall back to year label */ }
     var rows = '';
     var totalCash = 0;
-    years.forEach(function (yr) {
-      var cash = (yr.isClosing ? closingCash : 0) + yr.gain;
-      // Suppress zero-cash rows so the table only shows years where the
-      // seller actually receives money. Zero rows are honest engine
-      // output (the recognitionSchedule pads to horizon) but they add
-      // noise to a table built specifically to answer "when does cash
-      // arrive?".
-      if (cash <= 0) return;
-      var dateLabel = yr.isClosing ? _fmtClosingDate(cfg.implementationDate, yr.year) : ('Jan 1, ' + yr.year);
+    s.rows.forEach(function (r) {
+      var cash = Math.max(0, Number(r.cash) || 0);
+      if (cash <= 0) return;   // skip $0 rows (e.g. recap-only Y0 with no recap)
+      var dateLabel = r.atClosing
+        ? ((saleYr === r.year) ? _fmtClosingDate(cfg.implementationDate, r.year) : ('Jan 1, ' + r.year))
+        : ('Jan 1, ' + r.year);
       totalCash += cash;
       rows += '<tr>' +
         '<td>' + dateLabel + '</td>' +
@@ -2827,6 +2813,55 @@
       '<h4>Payment Schedule</h4>' +
       '<table class="rett-payments-table">' +
         '<thead><tr><th>Date</th><th>Cash Received</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>';
+  }
+
+  // Multi-sale string: the installment payment-schedule drop-down shows the
+  // cash the seller RECEIVES each year across ALL their future sales — each
+  // modeled as a 50/50 two-year §453 installment (50% in the sale year, 50%
+  // the next), using the growth-adjusted projected price. Replaces the single
+  // current-sale §453 schedule on this string (advisor 2026-06-22). Empty
+  // string when there are no dated/priced future sales.
+  function _buildFutureSalesReceiptScheduleHtml(cfg) {
+    var byYear = {};
+    // The ORIGINAL sale (modeled first) — its §453 installment receipts by
+    // year, from the same canonical schedule the single-sale view uses, so
+    // "All Sales" really means all of them, current sale included
+    // (advisor 2026-06-22).
+    try {
+      var cs = cfg ? _describeInstallmentSchedule(cfg) : null;
+      if (cs && cs.rows) cs.rows.forEach(function (r) {
+        var cash = Math.max(0, Number(r.cash) || 0);
+        if (cash > 0) byYear[r.year] = (byYear[r.year] || 0) + cash;
+      });
+    } catch (e) { /* */ }
+    // Future sales — 50/50 across each sale's year and the next.
+    if (typeof root.__rettFutureSalesProjected === 'function') {
+      var year0;
+      try { year0 = Number((root.collectInputs() || {}).year1) || (new Date()).getFullYear(); }
+      catch (e) { year0 = (new Date()).getFullYear(); }
+      (root.__rettFutureSalesProjected() || []).filter(function (f) { return f.projectedPrice > 0; }).forEach(function (f) {
+        var saleYear = year0 + (Number(f.years) || 0);
+        var half = f.projectedPrice * 0.5;
+        byYear[saleYear] = (byYear[saleYear] || 0) + half;
+        byYear[saleYear + 1] = (byYear[saleYear + 1] || 0) + half;
+      });
+    }
+    var yrs = Object.keys(byYear).map(Number).sort(function (a, b) { return a - b; });
+    if (!yrs.length) return '';
+    var rows = '', total = 0;
+    yrs.forEach(function (y) {
+      var cash = byYear[y];
+      total += cash;
+      rows += '<tr><td>' + y + '</td><td>' + _fmt(cash) + '</td></tr>';
+    });
+    rows += '<tr class="rett-payments-total"><td>Total received</td><td>' + _fmt(total) + '</td></tr>';
+    return '<div class="rett-interested-payments">' +
+      '<h4>Cash Received &mdash; All Sales</h4>' +
+      '<table class="rett-payments-table">' +
+        '<thead><tr><th>Year</th><th>Cash Received</th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
     '</div>';
@@ -3047,6 +3082,18 @@
   }
 
   function _interestedCard(typeLabel, num, name, picked, metrics, lossSum, isRecommended, durationMonths, paymentScheduleHtml, visuals, currentCfg) {
+    var _multiSaleCard = false;
+    try { var _fyC = document.getElementById('future-sale-yes-no'); _multiSaleCard = !!(_fyC && _fyC.value === 'yes'); } catch (e) { _multiSaleCard = false; }
+    // On the multi-sale string the installment card's headline Net Benefit is
+    // the COLLECTIVE across all the client's sales (this sale's engine net +
+    // the future sales' installment net), not just the current sale — the
+    // single-sale figure read as too low next to the collective tax liability
+    // (advisor 2026-06-22).
+    var _futureNetCard = 0;
+    if (_multiSaleCard && typeLabel === 'B' && typeof root.__rettFutureInstallmentBenefit === 'function') {
+      try { _futureNetCard = Number(root.__rettFutureInstallmentBenefit().net) || 0; } catch (e) { _futureNetCard = 0; }
+    }
+    var _showCollectiveNet = (_multiSaleCard && typeLabel === 'B' && _futureNetCard > 0);
     // Lockup line replaces the old "Time horizon · Leverage" auto-pick
     // summary. Strategy choice is now described by how long the seller's
     // proceeds are tied up:
@@ -3098,13 +3145,17 @@
     var _cashKeptEl = (typeof document !== 'undefined') ? document.getElementById('bt-cash-kept') : null;
     var _cashKept = (_cashKeptEl && typeof parseUSD === 'function')
       ? (parseUSD(_cashKeptEl.textContent) || 0) : 0;
-    var _netBen = Number(metrics.net) || 0;
+    // On the multi-sale string both halves are collective: bt-cash-kept is
+    // already the all-sales cash kept (Tab 2 collective view), so the net
+    // benefit added here must also be collective (this sale + future sales),
+    // not just the current sale (advisor 2026-06-22).
+    var _netBen = _showCollectiveNet ? (Number(metrics.net) + _futureNetCard) : (Number(metrics.net) || 0);
     var _newWalkAway = _cashKept + _netBen;
     var walkAwayHtml =
       '<div class="rett-interested-walkaway">' +
-        '<div class="rett-walkaway-label">New cash from sale</div>' +
+        '<div class="rett-walkaway-label">' + (_showCollectiveNet ? 'New cash from all sales' : 'New cash from sale') + '</div>' +
         '<div class="rett-walkaway-value">' + _fmt(_newWalkAway) + '</div>' +
-        '<div class="rett-walkaway-sub">Cash kept from sale ' + _fmt(_cashKept) +
+        '<div class="rett-walkaway-sub">Cash kept ' + _fmt(_cashKept) +
           ' + net benefit ' + _fmt(_netBen) + '</div>' +
       '</div>';
     // Payment schedule (B + C - per advisor 2026-05-26 B now has a
@@ -3124,12 +3175,20 @@
         '<span class="rett-interested-num">STRATEGY <span class="rett-interested-num-big">' + num + '</span></span>' +
       '</div>' +
       '<div class="rett-interested-name">' + name + '</div>' +
-      '<div class="rett-interested-net-label">Net Benefit</div>' +
-      '<div class="rett-interested-net-value">' + _fmt(metrics.net) + '</div>' +
-      '<div class="rett-interested-lockup">' +
-        '<span class="rett-interested-lockup-label">Payment Period</span>' +
-        '<span class="rett-interested-lockup-value">' + lockupValue + '</span>' +
-      '</div>' +
+      '<div class="rett-interested-net-label">' + (_showCollectiveNet ? 'Net Benefit &mdash; All Sales' : 'Net Benefit') + '</div>' +
+      '<div class="rett-interested-net-value">' + _fmt(_showCollectiveNet ? (Number(metrics.net) + _futureNetCard) : metrics.net) + '</div>' +
+      (_showCollectiveNet
+        ? '<div class="rett-interested-net-sub">This sale ' + _fmt(Number(metrics.net)) + ' &middot; future sales ' + _fmt(_futureNetCard) + '</div>'
+        : '') +
+      // The single-sale "Payment Period · N months" lockup is about the one
+      // current sale, so it's suppressed on the multi-sale string — the
+      // payment cadence there lives in the future-sales receipt drop-down
+      // below (advisor 2026-06-22).
+      ((_multiSaleCard && typeLabel === 'B') ? '' :
+        '<div class="rett-interested-lockup">' +
+          '<span class="rett-interested-lockup-label">Payment Period</span>' +
+          '<span class="rett-interested-lockup-value">' + lockupValue + '</span>' +
+        '</div>') +
       '<details class="rett-interested-details">' +
         '<summary>Show details</summary>' +
         walkAwayHtml +
@@ -3481,18 +3540,24 @@
         // the best size up to the cap. If the cap is below the supp's
         // minimum increment (tiny sale), drop it to $0.
         var ceiling = Math.round(_saleForCap * s.capPct);
-        if (ceiling < s.minInc) { s.spec[s.knob] = 0; return; }
-        // Manual override (advisor 2026-06-10): if the advisor explicitly
-        // typed an amount in the supp's Details panel (_userOverride — set
-        // only by the render input handler, NOT by this sweep), respect it
-        // — clamp it at the per-supp cap and skip auto-sizing. A 0/blank
-        // override falls through to auto-size so clearing the box returns
-        // the supp to engine sizing.
+        // Manual override (advisor 2026-06-17): if the advisor explicitly typed
+        // an amount in the supp's Details panel (_userOverride — set only by the
+        // render input handler, NOT by this sweep), HONOR it even ABOVE the
+        // auto-size ceiling. That 5%/50%-of-sale ceiling governs only the
+        // optimizer's own sweep below; a deliberate typed amount is the
+        // advisor's call and must stick (previously it was clamped back to the
+        // ceiling, so e.g. $500K reverted to the $300K 5% cap). Clamp only to
+        // the sale price as an absolute sanity bound. A 0/blank override falls
+        // through to auto-size so clearing the box returns the supp to engine
+        // sizing. Checked BEFORE the sub-minimum zeroing so an override also
+        // survives on a small sale.
         if (s.spec._userOverride && s.spec._userOverride[s.knob]
             && (Number(s.spec[s.knob]) || 0) > 0) {
-          s.spec[s.knob] = Math.min(Math.max(0, Number(s.spec[s.knob]) || 0), ceiling);
+          var _ovCap = Math.max(0, Number(_saleForCap) || 0) || Infinity;
+          s.spec[s.knob] = Math.min(Math.max(0, Number(s.spec[s.knob]) || 0), _ovCap);
           return;
         }
+        if (ceiling < s.minInc) { s.spec[s.knob] = 0; return; }
         // Candidate sizes: 0, 25%, 50%, 75%, 100% of the cap. Always
         // include both endpoints so the optimizer can drop to zero or
         // deploy the full cap.
@@ -3598,7 +3663,14 @@
     var mB = (!_skipB && pickedB) ? _scenarioMetrics(pickedB.cfg) : null;
     var lossB = mB ? _scenarioLossSum(pickedB.cfg) : 0;
     var visualsB = mB ? _buildVisuals('B', mB, pickedB.cfg, null) : null;
-    var paymentsB = (mB && pickedB) ? _buildBPaymentScheduleHtml(pickedB.cfg) : '';
+    // Multi-sale string: the installment card's drop-down shows the future
+    // sales' year-by-year cash receipts (50/50 §453) instead of the single
+    // current-sale §453 schedule (advisor 2026-06-22).
+    var _multiSaleB = false;
+    try { var _fyB = document.getElementById('future-sale-yes-no'); _multiSaleB = !!(_fyB && _fyB.value === 'yes'); } catch (e) { _multiSaleB = false; }
+    var paymentsB = (mB && pickedB)
+      ? (_multiSaleB ? _buildFutureSalesReceiptScheduleHtml(pickedB.cfg) : _buildBPaymentScheduleHtml(pickedB.cfg))
+      : '';
 
     var pickedC = _skipC ? null : _bestPickedCfgLocal('C');
     var mC = (!_skipC && pickedC) ? _scenarioMetrics(pickedC.cfg) : null;
@@ -4288,4 +4360,10 @@
   }
 
   root.renderInterestedSnapshot = renderInterestedSnapshot;
+  // Expose the cfg-derived §453 payment schedule (down payment + recap at
+  // closing, then installments) so the admin Key Points export can show the
+  // SAME proceeds schedule the cards/Tab 7 display — no re-derivation drift.
+  // Returns { gpRatio, totalLT, downPayment, debtPayoff, payments, rows:[{
+  // year, cash, ltGain, recap, atClosing }] } or null for immediate (A).
+  root.__rettDescribeInstallmentSchedule = _describeInstallmentSchedule;
 })(window);

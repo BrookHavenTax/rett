@@ -14,11 +14,11 @@ npm run sync:upstream
 
 | Field | Value |
 | --- | --- |
-| Upstream SHA | `bad47264cf5a31618a7fa476eae68733679efc5f` |
-| Upstream short SHA | `bad4726` |
-| Upstream message | fix(temp-page): Add'l Medicare label reflects actual filing-status threshold |
-| Upstream committed | 2026-06-12 |
-| Synced to React on | 2026-06-12 |
+| Upstream SHA | `43ee067c35d50e949f55ea761d58beb3acbadd39` |
+| Upstream short SHA | `43ee067` |
+| Upstream message | Tax Implications donut: show whole sale (return of basis + gain kept + tax) |
+| Upstream committed | 2026-06-23 |
+| Synced to React on | 2026-06-23 |
 | Upstream commits URL | <https://github.com/jacobchandler111-svg/RETT/commits/main/> |
 
 To verify the sync state at any time:
@@ -34,7 +34,7 @@ the next `npm run sync:upstream` will absorb), run:
 ```bash
 git -C ../_original-source fetch --quiet origin
 git -C ../_original-source --no-pager log --oneline \
-  bad47264cf5a31618a7fa476eae68733679efc5f..origin/main
+  43ee067c35d50e949f55ea761d58beb3acbadd39..origin/main
 ```
 
 If that prints nothing, you're up to date. If it prints commits, those are
@@ -153,7 +153,44 @@ that one element until you re-point the override.
 
 ## Sync history
 
-### 2026-06-12 — `bad4726` (current)
+### 2026-06-23 — `43ee067` (current)
+
+**73 upstream commits** absorbed (`bad4726..43ee067`): 16 legacy JS files
+changed (+1 new file `key-points-export.js`), `css/styles.css` +339 lines,
+`index.html` structural diff (44 ins / 23 del). Heavy Strategy Summary +
+Projection + future-sales work, plus an admin "Export Key Points" PDF.
+
+**Loader (`useLegacyEngine.ts`):** added `04-ui/key-points-export.js` right
+after `admin-math-panel.js` (matches upstream script order). It self-injects a
+hidden "Export Key Points" button into `#page-allocator .print-cta-row` and a
+generated row on `#page-temp`, shown only when admin mode is unlocked — no new
+React host needed (the modal is built dynamically with inline styles).
+
+**React component ports:**
+
+| Page | What changed |
+| --- | --- |
+| `PageInputs.tsx` | **Additional Funds (Section 03) hidden** (upstream `2fe5c20`) — added `hidden` to the `.input-section`; inputs stay mounted so `collectInputs()` is undisturbed (collector `_AF_ENABLED` flag keeps it inert). **New `#future-sale-inputs-host`** (upstream `2b60d64`) added in Section 04 before `#future-sale-fields-group`; `renderFutureSaleInputs()` (strategy-summary-render.js) fills it with the `.fsp-table` (years-until / FMV / cost-basis / growth-rate) when the Future Sale yes/no is "Yes". |
+| `PageBaseline.tsx` | Pie label **"Breakdown of Gain" → "Breakdown of Sale"** — the donut now shows the whole sale (return of basis + gain kept + tax, 3 segments) per upstream `43ee067`. |
+| `PageProjection.tsx` | **Additional Funds toggle hidden** (`2fe5c20`) — added `hidden` to the `label.proj-addfunds-toggle`; checkbox stays in the DOM (collector reads it). |
+| `PageSummary.tsx` | **Agreement Letter button removed** (upstream index.html, advisor 2026-06-15) — engagement agreement handled outside the tool now. Only the Print / Save-as-PDF button remains (plus the admin-only Export Key Points button injected by key-points-export.js). |
+
+**Theme note:** upstream `styles.css` grew +339 lines (future-sale planner
+`.fsp-*` table, recolored donut segments to brand navy/cyan, print-leave-behind
+rework). `brand-theme.css` overrides ride on top unchanged — smoke pass clean.
+
+**Smoke verification (browser, prod build on :8787):** engine reaches
+`__rettEngineReady`; zero console errors; Additional Funds section + projection
+toggle confirmed `hidden`; `#future-sale-inputs-host` renders the `.fsp-table`
+(12 inputs) on "Yes"; baseline pie reads "Breakdown of Sale" with 3 segments
+(Return of Basis $800k / Gain Kept $869,050 / Gain Lost $330,950 on the $2M
+test sale); `bt-delta=$330,950`, `bt-cash-kept=$1,669,050`; Strategy Summary
+renders with content; print-cta-row has `kp-export-btn` (hidden) +
+`print-summary-btn`, no `agreement-letter-btn`; `window.exportKeyPoints` +
+`window.__rettRefreshKeyPointsButtons` exposed (proves key-points-export.js
+loaded).
+
+### 2026-06-12 — `bad4726`
 
 **83 upstream commits** absorbed (`cd22150f..bad4726`): 17 legacy JS files
 changed, ~3,500 insertions. Pure engine/UI-renderer sync — upstream

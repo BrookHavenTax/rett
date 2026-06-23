@@ -412,7 +412,7 @@
       detailsBlock =
         '<button type="button" class="supp-details-arrow' + detailsOpenCls + '" data-supx-details-target="' + spec.id + '" aria-expanded="' + (st.detailsOpen ? 'true' : 'false') + '" title="' + (st.detailsOpen ? 'Hide details' : 'Show details') + '">' +
           '<span class="supp-details-arrow-chev" aria-hidden="true">&#9662;</span>' +
-          '<span class="supp-details-arrow-label">Details</span>' +
+          '<span class="supp-details-arrow-label">Input Details</span>' +
         '</button>' +
         '<div class="supp-details-panel"' + (st.detailsOpen ? '' : ' hidden') + '>' +
           detailRows +
@@ -423,13 +423,10 @@
     // and as the oilGas / delphi "Value Added" arrow on the
     // existing supplemental cards. Replaces the prior heavy
     // .supx-see-value-btn pill button per advisor spec.
-    var valueArrow =
-      '<button type="button" class="supp-details-arrow supx-value-arrow' + valueOpenCls + '"' +
-        disAttrVal +
-        ' data-supx-value-target="' + spec.id + '" aria-expanded="' + (st.valueOpen ? 'true' : 'false') + '" title="' + (st.valueOpen ? 'Hide value' : 'See value') + '">' +
-        '<span class="supp-details-arrow-chev" aria-hidden="true">&#9662;</span>' +
-        '<span class="supp-details-arrow-label">' + (st.valueOpen ? 'Hide value' : 'See value') + '</span>' +
-      '</button>';
+    // Value Added arrow removed from the Tab-5 supp cards (advisor 2026-06-12);
+    // value is shown only on the Strategy Summary. _renderResultRow self-gates on
+    // st.valueOpen, so with no arrow to toggle it open it never renders either.
+    var valueArrow = '';
 
     // Inline amount box REMOVED (advisor 2026-06-10). Like Oil & Gas, the
     // investment / equipment cost / daily-FMV figure is no longer shown on

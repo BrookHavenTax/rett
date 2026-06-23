@@ -31,7 +31,7 @@
   var YEAR_HARD_CAP = 7;
 
   var DEFAULTS = {
-    oilGas: { maxInvestment: 250000, depreciationPct: 0.95 },
+    oilGas: { maxInvestment: 250000, depreciationPct: 0.90 },
     delphi: { classKey: 'classB', investment: 1000000 }
   };
 
@@ -83,6 +83,15 @@
     }
     if (!Number.isFinite(s.oilGas.maxInvestment))   s.oilGas.maxInvestment   = DEFAULTS.oilGas.maxInvestment;
     if (!Number.isFinite(s.oilGas.depreciationPct)) s.oilGas.depreciationPct = DEFAULTS.oilGas.depreciationPct;
+    // One-time migration (advisor 2026-06-17): the O&G IDC default dropped from
+    // 95% to 90%. A persisted value of EXACTLY the old default (0.95) is the
+    // stale default, not a deliberate choice (the % input never recorded a
+    // user-touch flag), so bump it to the new default once. The guard flag
+    // makes this run only once, so a later manual 95% set by the advisor sticks.
+    if (!s.oilGas._idcDefaultV2) {
+      if (s.oilGas.depreciationPct === 0.95) s.oilGas.depreciationPct = DEFAULTS.oilGas.depreciationPct;
+      s.oilGas._idcDefaultV2 = true;
+    }
     if (typeof s.oilGas.detailsOpen === 'undefined') s.oilGas.detailsOpen = false;
     if (typeof s.oilGas.valueOpen === 'undefined')   s.oilGas.valueOpen   = false;
 
@@ -141,6 +150,10 @@
   }
 
   function _renderValueArrow(key, st) {
+    // Value Added is hidden on the Tab-5 supp cards (advisor 2026-06-12);
+    // value is shown only on the Strategy Summary. Returning '' removes the
+    // arrow without touching the card template or the (now-inert) toggle handler.
+    return '';
     var openCls = st.valueOpen ? ' is-open' : '';
     return '' +
       '<button type="button" class="supp-details-arrow supp-value-arrow' + openCls + '" ' +
@@ -153,6 +166,7 @@
   }
 
   function _renderValuePanel(key, st) {
+    return '';   // Value Added hidden on supp cards (advisor 2026-06-12) — see _renderValueArrow
     var benefit = _netBenefitForKey(key);
     var display = (benefit !== null) ? _fmtUSD(benefit) : '—';
     var label   = (benefit !== null && benefit >= 0) ? 'Tax Savings Added' : 'Net Impact';
@@ -280,7 +294,7 @@
         '</div>' +
         '<button type="button" class="supp-details-arrow' + detailsOpenCls + '" data-supp-details-target="oilGas" aria-expanded="' + (st.detailsOpen ? 'true' : 'false') + '" aria-controls="supp-details-oilGas" title="' + (st.detailsOpen ? 'Hide details' : 'Show details') + '">' +
           '<span class="supp-details-arrow-chev" aria-hidden="true">&#9662;</span>' +
-          '<span class="supp-details-arrow-label">Details</span>' +
+          '<span class="supp-details-arrow-label">Input Details</span>' +
         '</button>' +
         '<div class="supp-details-panel" id="supp-details-oilGas"' + (st.detailsOpen ? '' : ' hidden') + '>' +
           '<div class="supp-details-row">' +
@@ -361,7 +375,7 @@
         '</div>' +
         '<button type="button" class="supp-details-arrow' + detailsOpenCls + '" data-supp-details-target="delphi" aria-expanded="' + (st.detailsOpen ? 'true' : 'false') + '" aria-controls="supp-details-delphi" title="' + (st.detailsOpen ? 'Hide details' : 'Show details') + '">' +
           '<span class="supp-details-arrow-chev" aria-hidden="true">&#9662;</span>' +
-          '<span class="supp-details-arrow-label">Details</span>' +
+          '<span class="supp-details-arrow-label">Input Details</span>' +
         '</button>' +
         '<div class="supp-details-panel" id="supp-details-delphi"' + (st.detailsOpen ? '' : ' hidden') + '>' +
           '<div class="supp-details-row">' +
@@ -744,9 +758,9 @@
 
   // New Client reset: clear interest, zero max-investment (and
   // delphi.investment), but KEEP rate defaults — oil & gas
-  // depreciationPct stays at 0.95, delphi classKey stays at the
+  // depreciationPct stays at 0.90, delphi classKey stays at the
   // default class. Mirrors the advisor's instruction that dollar
-  // inputs blank but the depreciation percent (95% O&G, etc.)
+  // inputs blank but the depreciation percent (90% O&G, etc.)
   // survives.
   function _resetState() {
     root[STATE_KEY] = {

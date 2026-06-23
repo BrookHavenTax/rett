@@ -64,6 +64,33 @@
       ? window.__rettShortTermPropertyGain()
       : 0;
 
+    // ---- Future sales (multi-sale mode) ------------------------------
+    // When the client flagged future sales (Page 1 Section 04 = Yes), this
+    // page shows the COLLECTIVE picture: the current granular sale PLUS each
+    // future sale at baseline LT treatment — gain taxed at 23.8% LTCG+NIIT +
+    // state, no recapture detail (advisor 2026-06-22). The engine still runs
+    // for the current sale exactly as before; we only ADD the future figures
+    // on top for THIS page's proceeds bar + tiles + pie. Future gains use the
+    // projected (growth-adjusted) price from __rettFutureSalesProjected().
+    var _futureSaleYes = false;
+    try {
+      var _fyn = document.getElementById('future-sale-yes-no');
+      _futureSaleYes = !!(_fyn && _fyn.value === 'yes');
+    } catch (e) { _futureSaleYes = false; }
+    var futProj = 0, futBasis = 0, futGain = 0, futTax = 0;
+    if (_futureSaleYes && typeof window.__rettFutureSalesProjected === 'function') {
+      var _fCombined = (typeof window.__rettFspCombinedRate === 'function')
+        ? (Number(window.__rettFspCombinedRate().combined) || 0.238) : 0.238;
+      (window.__rettFutureSalesProjected() || []).forEach(function (f) {
+        if (!f || !(f.fmv > 0)) return;
+        futProj  += f.projectedPrice;
+        futBasis += f.costBasis;
+        futGain  += f.gain;
+      });
+      futTax = futGain * _fCombined;
+    }
+    var isMulti = _futureSaleYes && futProj > 0;
+
     var ordTotal, stGain, ltGain, qualDiv, wages, seInc, nIIT_base, recap;
     if (snap) {
       // Use the engine snapshot. Pulls in §86 taxable SS (already in
@@ -89,8 +116,12 @@
       ordTotal = 0;
       ordSourcesPos.forEach(function (id)    { ordTotal += Math.max(0, _num(id)); });
       ordSourcesSigned.forEach(function (id) { ordTotal += _num(id); });
-      stGain = Math.max(0, _num('short-term-gain')) + stPropGain;
-      var ltGainIncome = Math.max(0, _num('long-term-gain'));
+      // Signed (NOT clamped): a Section-02 ST/LT capital LOSS nets against
+      // gains and feeds §1211(b) inside computeFederalTaxBreakdown — mirror
+      // the no-sale baseline below, which already passes signed values.
+      // Clamping silently dropped legitimate losses. (advisor 2026-06-12.)
+      stGain = _num('short-term-gain') + stPropGain;
+      var ltGainIncome = _num('long-term-gain');
       ltGain = (sale - basis - depr - stPropGain) + ltGainIncome;
       qualDiv = Math.max(0, _num('qualified-dividends'));
       wages = Math.max(0, _num('w2-wages'));
@@ -100,7 +131,7 @@
       seInc = (biType === 'se' || biType === 'k1-partnership-gp')
         ? Math.max(0, _num('business-income-amount')) : 0;
       recap = depr;
-      nIIT_base = Math.max(0, ltGain) + stGain + recap + qualDiv
+      nIIT_base = ltGain + stGain + recap + qualDiv
                 + Math.max(0, _num('rental-income'))
                 + Math.max(0, _num('dividend-income'))
                 + Math.max(0, _num('interest-income'));
@@ -128,7 +159,7 @@
     var _hasSplit = (_snap1245 + _snap1250) > 0;
     var recap1245 = _snap1245;
     var recap1250 = _hasSplit ? _snap1250 : recap;
-    var nIIT_base_split = Math.max(0, ltGain) + stGain + recap1250 + qualDiv
+    var nIIT_base_split = ltGain + stGain + recap1250 + qualDiv
                   + Math.max(0, _num('rental-income'))
                   + Math.max(0, _num('dividend-income'))
                   + Math.max(0, _num('interest-income'));
@@ -168,9 +199,16 @@
     // base because most states do NOT honor the federal §1250 25%
     // cap — they tax recapture at full state rates. The federal split
     // happens inside computeFederalTaxBreakdown.
+    // State base mirrors federal AGI: use the breakdown's POST-§1211 netting
+    // gains (>=0) minus only the CAPPED loss offset — not the raw signed loss
+    // (folding a -$100K loss here would deduct the full $100K from state
+    // income instead of the $3K/$1.5K cap). Post-netting values come straight
+    // from computeFederalTaxBreakdown. Mirrors the no-sale path below.
+    var _netLt = fedB ? (Number(fedB.netLongTermGain)  || 0) : Math.max(0, ltGain);
+    var _netSt = fedB ? (Number(fedB.netShortTermGain) || 0) : Math.max(0, stGain);
     var stateTax = (typeof computeStateTax === 'function')
-      ? (computeStateTax(ord + recap + Math.max(0, ltGain) + stGain, year, state, status,
-            { longTermGain: Math.max(0, ltGain), shortTermGain: stGain }) || 0)
+      ? (computeStateTax(ord + recap + _netSt + _netLt - lossOff, year, state, status,
+            { longTermGain: _netLt, shortTermGain: _netSt }) || 0)
       : 0;
 
     var total = fedTotal + niit + addmed + seTax + stateTax;
@@ -216,13 +254,19 @@
     //                  recap1245 + recap1250).
     // Hidden when there's no sale, sale ≤ adjusted basis, or basis = 0
     // (loss on sale — bar makes no visual sense in that case).
+    // In multi-sale mode the bar spans the collective picture: future
+    // projected prices add to the sale total and future cost bases add to
+    // the return-of-basis bracket; recap stays current-sale-only (futures
+    // are baseline), so the identity routes each future gain into the
+    // Long-Term Gain segment automatically.
     _renderProceedsBar({
-      sale:       sale,
-      basis:      basis,
+      sale:       isMulti ? (sale + futProj) : sale,
+      basis:      isMulti ? (basis + futBasis) : basis,
       depr:       depr,
       recap1245:  recap1245,
       recap1250:  recap1250,
-      ltGain:     ltGain
+      ltGain:     ltGain,
+      collective: isMulti
     });
 
     // -----------------------------------------------------------------
@@ -303,11 +347,22 @@
     var delta_amt      = amt - amt_nosale;
     var delta_fedOrd   = fedOrd - fedOrd_nosale;        // §1211 offset can shift this
 
+    // Collective tax due = the engine's current-sale delta PLUS the future
+    // sales' baseline tax (futGain × 23.8%+state). Only the displayed tiles
+    // + pie go collective; the hidden bt-without / bt-total spans stay
+    // current-sale engine values.
+    var taxDueDisplay = isMulti ? (delta_total + futTax) : delta_total;
+
     // Three-tile display.
     _set('bt-without',  _fmt(total_nosale));
-    _set('bt-delta',    _fmt(delta_total));
+    _set('bt-delta',    _fmt(taxDueDisplay));
     _set('bt-total',    _fmt(total));
     _set('baseline-year-sub', 'Year ' + year);
+    // Tile labels reflect the collective scope in multi-sale mode.
+    var _labDelta = document.querySelector('.baseline-tile--hero .baseline-tile-label');
+    if (_labDelta) _labDelta.textContent = isMulti ? 'Tax Due from All Sales' : 'Tax Due from the Sale';
+    var _labCash = document.querySelector('.baseline-tile--cash-kept .baseline-tile-label');
+    if (_labCash) _labCash.textContent = isMulti ? 'Cash Kept from All Sales' : 'Cash Kept from Sale';
 
     // Without-sale subline: federal + state.
     _set('bt-without-sub',
@@ -323,16 +378,19 @@
     if (Math.abs(delta_state)    > 0.5) deltaParts.push('State ' + _fmt(delta_state));
     if (Math.abs(delta_amt)      > 0.5) deltaParts.push('AMT ' + _fmt(delta_amt));
     if (Math.abs(delta_fedOrd)   > 0.5) deltaParts.push('Ord ' + _fmt(delta_fedOrd));
+    if (isMulti && futTax > 0.5)        deltaParts.push('Future sales ' + _fmt(futTax));
     _set('bt-delta-sub', deltaParts.length ? deltaParts.join(' · ') : 'No sale entered');
 
     // 2026-05-27: middle "Cash Kept from Sale" tile = salePrice − tax.
     // Donut denominator switched from salePrice to GAIN (sale − basis)
     // so the % LOST in the donut center answers "how much of your
     // economic gain is going to tax?"
-    var cashKept = Math.max(0, sale - delta_total);
+    var collectiveSale = isMulti ? (sale + futProj) : sale;
+    var collectiveBasis = isMulti ? (basis + futBasis) : basis;
+    var cashKept = Math.max(0, collectiveSale - taxDueDisplay);
     _set('bt-cash-kept', _fmt(cashKept));
-    var gainEconomic = Math.max(0, sale - basis);
-    _renderPieChart(gainEconomic, delta_total);
+    var gainEconomic = Math.max(0, collectiveSale - collectiveBasis);
+    _renderPieChart(gainEconomic, taxDueDisplay, collectiveBasis);
 
     // -----------------------------------------------------------------
     // Q3: Per-property tax breakdown (double-click middle tile reveals).
@@ -374,7 +432,7 @@
           var basisX = Math.max(0, basis - pBasis);
           var deprX  = Math.max(0, depr  - pDepr);
           var stPropX = Math.max(0, stPropGain - (pIsST ? pGain : 0));
-          var stGainX = Math.max(0, _num('short-term-gain')) + stPropX;
+          var stGainX = _num('short-term-gain') + stPropX;   // signed (capital loss allowed)
           // Q7: ltGainIncome (non-property LT income) is recurring annual
           // income — it persists whether or not THIS property exists, so
           // add it to the LT bucket in the "without property N" scenario.
@@ -411,9 +469,12 @@
             ? (Number(fedX.ordinaryTax) || 0) + (Number(fedX.recapTax) || 0)
               + (Number(fedX.ltTax) || 0) + (Number(fedX.amtTopUp) || 0)
             : 0;
+          var _xNetLt   = fedX ? (Number(fedX.netLongTermGain)  || 0) : Math.max(0, ltGainX);
+          var _xNetSt   = fedX ? (Number(fedX.netShortTermGain) || 0) : Math.max(0, stGainX);
+          var _xLossOff = fedX ? (Number(fedX.lossOrdOffsetApplied) || 0) : 0;
           var stateX = (typeof computeStateTax === 'function')
-            ? (computeStateTax(ord + deprX + ltGainX + stGainX, year, state, status,
-                  { longTermGain: ltGainX, shortTermGain: stGainX }) || 0)
+            ? (computeStateTax(ord + deprX + _xNetSt + _xNetLt - _xLossOff, year, state, status,
+                  { longTermGain: _xNetLt, shortTermGain: _xNetSt }) || 0)
             : 0;
           var niitX = fedX ? Number(fedX.niit) || 0 : 0;
           var addmedX = fedX ? Number(fedX.addlMedicare) || 0 : 0;
@@ -560,18 +621,20 @@
     }, 0);
     var topEl    = document.getElementById('baseline-bracket-top');
     var bottomEl = document.getElementById('baseline-bracket-bottom');
+    var topLabel    = d.collective ? 'Fair Market Value of Properties' : 'Sale Price';
+    var bottomLabel = d.collective ? 'Total Cost Basis' : 'Original Purchase Price';
     if (topEl) {
       topEl.innerHTML =
         '<div class="bk" style="left:0;width:100%"></div>' +
         '<div class="bk-label" style="left:0;width:100%">' +
-          'Sale Price · ' + _fmt(sale) +
+          topLabel + ' · ' + _fmt(sale) +
         '</div>';
     }
     if (bottomEl) {
       bottomEl.innerHTML =
         '<div class="bk" style="left:0;width:' + basisPct.toFixed(3) + '%"></div>' +
         '<div class="bk-label" style="left:0;width:' + basisPct.toFixed(3) + '%">' +
-          'Original Purchase Price · ' + _fmt(basisTotal) +
+          bottomLabel + ' · ' + _fmt(basisTotal) +
         '</div>';
     }
 
@@ -630,7 +693,7 @@
   // Center text = % LOST in red. When tax > gain (recap-heavy
   // scenarios) the slice clips at 100% red and the leader carries the
   // true uncapped dollar + percent.
-  function _renderPieChart(gain, taxDueFromSale) {
+  function _renderPieChart(gain, taxDueFromSale, basis) {
     var slicesEl = document.getElementById('bt-pie-slices');
     var leadersEl = document.getElementById('bt-pie-leaders');
     if (!slicesEl) return;
@@ -638,11 +701,17 @@
     var tax = Math.max(0, Number(taxDueFromSale) || 0);
     var taxBounded = Math.min(tax, g);
     var keep = Math.max(0, g - taxBounded);
-    var keepPct = g > 0 ? (keep / g) : 0;
-    var taxPct  = g > 0 ? (taxBounded / g) : 0;
-    // Real (uncapped) percents for the labels — what the advisor wants
-    // to see even when tax > gain.
-    var keepPctReal = g > 0 ? (keep / g) : 0;
+    // Show the WHOLE sale proportionally: return of basis (your capital back)
+    // + gain kept + tax. Denominator = sale price so the tax slice reads in
+    // proportion to the full transaction, not just the gain (advisor 2026-06-23).
+    var basisAmt = Math.max(0, Number(basis) || 0);
+    var sale = basisAmt + g;
+    var denom = sale > 0 ? sale : 1;
+    var basisPct = basisAmt / denom;
+    var keepPct  = keep / denom;
+    var taxPct   = taxBounded / denom;
+    // Center stat stays "% of the GAIN going to tax" — the advisor's chosen
+    // headline metric — even though the ring is now denominated by the sale.
     var lostPctReal = g > 0 ? (tax / g) : 0;
 
     // viewBox: -160 -10 520 240. Donut center (110, 110).
@@ -673,11 +742,13 @@
     }
 
     var start = -Math.PI / 2;
-    var keepSweep = keepPct * Math.PI * 2;
-    var taxSweep  = taxPct * Math.PI * 2;
+    var basisSweep = basisPct * Math.PI * 2;
+    var keepSweep  = keepPct * Math.PI * 2;
+    var taxSweep   = taxPct * Math.PI * 2;
     var svg = '';
-    svg += _arc(start, keepSweep, '#2563eb');             // blue (kept)
-    svg += _arc(start + keepSweep, taxSweep, '#dc2626');  // red (lost)
+    svg += _arc(start, basisSweep, '#c2ccd9');                         // slate (return of basis)
+    svg += _arc(start + basisSweep, keepSweep, '#5ba9ff');             // cyan (gain kept)
+    svg += _arc(start + basisSweep + keepSweep, taxSweep, '#dc2626');  // red (tax)
     slicesEl.innerHTML = svg;
 
     // Leader lines + labels (SVG). Title on top line, dollar amount
@@ -706,13 +777,17 @@
                dollarStr + '</text>';
     }
     var leaders = '';
-    if (g > 0) {
+    if (sale > 0) {
+      if (basisSweep > 0.10) {
+        var basisMid = start + basisSweep / 2;
+        leaders += _leader(basisMid, '#7c8aa0', 'Return of Basis', _fmt(basisAmt));
+      }
       if (keepSweep > 0.10) {
-        var keepMid = start + keepSweep / 2;
-        leaders += _leader(keepMid, '#2563eb', 'Gain Kept', _fmt(keep));
+        var keepMid = start + basisSweep + keepSweep / 2;
+        leaders += _leader(keepMid, '#2e7bb6', 'Gain Kept', _fmt(keep));
       }
       if (taxSweep > 0.10) {
-        var lostMid = start + keepSweep + taxSweep / 2;
+        var lostMid = start + basisSweep + keepSweep + taxSweep / 2;
         leaders += _leader(lostMid, '#b91c1c', 'Gain Lost', _fmt(tax));
       }
     }

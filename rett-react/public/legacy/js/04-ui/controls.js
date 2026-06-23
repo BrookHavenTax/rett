@@ -158,6 +158,39 @@ function _bindCaseControls() {
   document.addEventListener('input',  debouncedAutoSave, true);
   document.addEventListener('change', debouncedAutoSave, true);
 
+  // Live-render the active COMPUTED page on any input/change. Baseline (Tab 2)
+  // already self-refreshes via its own document listener, but Strategy Summary
+  // (Tab 6) and Projection (Tab 4) previously only re-rendered on navigation —
+  // so editing a fundamental (e.g. state) while one of those pages was active
+  // left the numbers stale (advisor 2026-06-22: "I switched CA -> GA and the
+  // numbers didn't change"). Debounced; renders are idempotent + focus-guarded.
+  var debouncedLiveRender = _debounce(function () {
+    if (window.__rettSuppressAutoSave || window.__rettApplyingState) return;
+    var activeId = (document.querySelector('section.page.active') || {}).id;
+    try {
+      if (activeId === 'page-allocator') {
+        if (typeof runFullPipeline === 'function') runFullPipeline();
+        if (typeof renderStrategySummary === 'function') renderStrategySummary();
+      } else if (activeId === 'page-projection') {
+        if (typeof runFullPipeline === 'function') runFullPipeline();
+        if (typeof renderInterestedSnapshot === 'function') renderInterestedSnapshot();
+        if (typeof renderProjectionDashboard === 'function') renderProjectionDashboard();
+      }
+      // This live rebuild just refreshed the active computed tab for the
+      // current inputs, so record its signature: the showPage heavy-render
+      // gate compares against this, letting a later nav away + back skip the
+      // redundant rebuild. Only the tab we actually rebuilt is recorded;
+      // other tabs' stored signatures are now stale (inputs changed) and will
+      // correctly rebuild on their next visit.
+      if ((activeId === 'page-allocator' || activeId === 'page-projection')
+          && typeof _computeStateSignature === 'function') {
+        try { _rettLastSigByTab[activeId] = _computeStateSignature(); } catch (e) { /* */ }
+      }
+    } catch (e) { /* */ }
+  }, 250);
+  document.addEventListener('input',  debouncedLiveRender, true);
+  document.addEventListener('change', debouncedLiveRender, true);
+
   setTimeout(function () {
     window.__rettSuppressAutoSave = false;
     // Belt-and-suspenders re-render of the active page after boot
@@ -329,6 +362,12 @@ function _bindCaseControls() {
     window.__rettSuppressAutoSave = true;
     store.startNewCase();
     resetAllInputs(true, true);   // clear form but stay on the current tab
+    // Reset the strategy / supplemental selections HERE (advisor 2026-06-12):
+    // New Client is now the only place selections clear (input-change no
+    // longer does). startNewCase only clears storage, so do it explicitly.
+    if (typeof window.__rettResetStrategySelection === 'function') {
+      try { window.__rettResetStrategySelection(); } catch (e) { /* */ }
+    }
     _refreshCaseDropdown('');
     if (nameInput) {
       nameInput.value = '';
@@ -528,6 +567,13 @@ function _refreshStrategyPickCards() {
     if (!card) return;
     card.classList.toggle('is-interested', interest[key] === true);
     card.classList.toggle('is-not-interested', interest[key] === false);
+    // Multi-sale string: feature (lit border, NOT clicked) the installment
+    // card B as the one we plan to show — unless the user actually picked it.
+    if (key === 'B') {
+      var _fy = document.getElementById('future-sale-yes-no');
+      var _multi = !!(_fy && _fy.value === 'yes');
+      card.classList.toggle('is-featured', _multi && interest[key] !== true);
+    }
     // Mark the active button.
     card.querySelectorAll('.strategy-pick-btn').forEach(function (btn) {
       var action = btn.getAttribute('data-pick-action');
@@ -654,6 +700,20 @@ function _refreshCard3Visibility() {
   // wrapper the advisor explicitly elects via the toggle.
   var card3Visible = defaultRiskYes;
 
+  // Multi-sale string (future-sale = Yes): show ALL three cards regardless
+  // of the per-strategy net math, so the advisor can walk the client through
+  // every option (installment is featured via is-featured in
+  // _refreshStrategyPickCards). Overrides the negative-net / B>A hide rules.
+  var _fyCard = document.getElementById('future-sale-yes-no');
+  var _multiSale = !!(_fyCard && _fyCard.value === 'yes');
+  if (_multiSale) {
+    card1Visible = true;
+    card2Visible = true;
+    card3Visible = true;
+  }
+  // Hide the default-risk question on the multi-sale string (see styles.css).
+  grid.classList.toggle('is-multi-sale', _multiSale);
+
   if (c1) c1.hidden = !card1Visible;
   c2.hidden = !card2Visible;
   c3.hidden = !card3Visible;
@@ -727,6 +787,61 @@ function _debounce(fn, ms) {
   };
 }
 
+// --- Heavy-render gate (advisor 2026-06-23) ----------------------------
+// The ~600ms buildInterestedSummary pipeline only feeds the computed tabs
+// (Projection / Strategy Summary / Strategies / Temp). Navigating BETWEEN
+// tabs used to re-run it on every entry even when nothing the build depends
+// on had changed (measured: ~8k engine calls / ~550ms per redundant
+// Projection re-entry; ~27k / ~2.1s for Strategies). This gate skips the
+// rebuild on a no-change re-entry and reuses the DOM already on screen.
+//
+// _computeStateSignature() captures everything the build consumes:
+//   1. collectInputs()  — canonical engine view (sale/basis/income/state/
+//      filing/leverage/tier/combo/horizon/custodian/futureSale/...).
+//   2. a sweep of user-input form controls — catches inputs NOT folded into
+//      collectInputs (default-risk, future-sale estimator fields, supp
+//      amounts). Excludes #page-projection (auto-pick writes pills there).
+//   3. the non-form state globals (strategy/supp interest, chosen strategy,
+//      Brooklyn override, PMQ, future-sale absorb).
+// Validated live 2026-06-23: every result-affecting input flips this
+// signature, and running the full pipeline mutates none of it (no
+// oscillation across 92 user-surface controls). Keyed PER TAB because each
+// computed tab renders a distinct view — a shared key would skip a tab's
+// very first render. The live-edit path (debouncedLiveRender) is separate
+// and always renders fresh while you are editing a computed tab.
+var _rettLastSigByTab = {};
+function _computeStateSignature() {
+  try {
+    var parts = [];
+    parts.push(JSON.stringify(collectInputs()));
+    var sel = '#page-pmq input, #page-pmq select, '
+            + '#page-inputs input, #page-inputs select, #page-inputs textarea, '
+            + '#page-strategies input, #page-strategies select, '
+            + '#page-supplemental input, #page-supplemental select, #page-supplemental textarea';
+    var ctrls = document.querySelectorAll(sel), cs = [];
+    for (var i = 0; i < ctrls.length; i++) {
+      var el = ctrls[i], k = el.id || el.name;
+      if (!k) continue;
+      cs.push(k + '' + (el.type === 'checkbox' || el.type === 'radio' ? (el.checked ? 1 : 0) : el.value));
+    }
+    parts.push(cs.join(''));
+    var bk = window.__rettBrooklynInvestmentOverride;
+    parts.push(JSON.stringify({
+      interest:  window.__rettStrategyInterest || null,
+      chosen:    window.__rettChosenStrategy || null,
+      supp:      window.__rettSupplementalInterest || null,
+      suppX:     window.__rettSupplementalExtraInterest || null,
+      suppExtra: window.__rettSupplementalExtra || null,
+      bkOver:    (typeof bk === 'number' && isFinite(bk)) ? bk : 'none',
+      pmq:       window.__rettPMQAnswers || null,
+      absorbFut: window.__rettAbsorbFutureSale || null
+    }));
+    return parts.join('');
+  } catch (e) {
+    return null;  // signature error => caller forces a rebuild (fail safe, never stale)
+  }
+}
+
 function showPage(id) {
   // Persist the active page id so a refresh lands the user back
   // where they were instead of bouncing to PMQ. Only writes for
@@ -750,7 +865,29 @@ function showPage(id) {
       tab.setAttribute('aria-selected', p === id ? 'true' : 'false');
     }
   });
-  if (id === 'page-allocator') {
+
+  // Heavy-render gate: skip the rebuild when navigating back to a computed
+  // tab whose build inputs are unchanged since IT last rendered (the DOM on
+  // screen is still correct). Forced fresh on first visit to a tab, on any
+  // real input change, on a signature error, or while a state-restore is in
+  // flight. Light tabs (Inputs / Tax Implications) are cheap and stay ungated.
+  var _recompute = true;
+  var _HEAVY_TABS = { 'page-projection': 1, 'page-allocator': 1, 'page-strategies': 1, 'page-temp': 1 };
+  if (_HEAVY_TABS[id]) {
+    if (window.__rettApplyingState || window.__rettSuppressAutoSave) {
+      _recompute = true;                       // never trust the signature mid-restore / mid-boot
+    } else {
+      var _sig = _computeStateSignature();
+      if (_sig !== null && _rettLastSigByTab[id] === _sig) {
+        _recompute = false;                    // nothing the build depends on changed since this tab rendered
+      } else {
+        _rettLastSigByTab[id] = _sig;          // null on error stays !== next sig => recomputes next time too
+        _recompute = true;
+      }
+    }
+  }
+
+  if (_recompute && id === 'page-allocator') {
     try {
       // Run the full engine pipeline FIRST so renderStrategySummary
       // reads fresh entry.metrics / sout.totalSupplementalBenefit.
@@ -765,7 +902,7 @@ function showPage(id) {
       if (typeof renderStrategySummary === 'function') renderStrategySummary();
     } catch(e) { (window.reportFailure || console.warn)('Strategy Summary render failed', e); }
   }
-  if (id === 'page-temp') {
+  if (_recompute && id === 'page-temp') {
     try {
       if (typeof window.renderTempPage === 'function') window.renderTempPage();
     } catch(e) { (window.reportFailure || console.warn)('Temporary page render failed', e); }
@@ -788,7 +925,7 @@ function showPage(id) {
     } catch (e) { (window.reportFailure || console.warn)('Baseline render failed', e); }
   }
 
-  if (id === 'page-strategies') {
+  if (_recompute && id === 'page-strategies') {
     // Run the recommendation pipeline silently so the recommended-card
     // border and any future per-card preview numbers are populated by
     // the time the page paints. Same engine that drives Page-Projection;
@@ -809,7 +946,7 @@ function showPage(id) {
     }
   }
 
-  if (id === 'page-projection') {
+  if (_recompute && id === 'page-projection') {
     try {
       // Auto-pick the (leverage, horizon, recognition) combination that
       // maximizes net savings on first entry, then build the visual pill
@@ -842,6 +979,13 @@ function showPage(id) {
     if (typeof window.renderAdminMath === 'function') window.renderAdminMath(id);
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('Admin math panel render failed:', e);
+  }
+
+  // Keep the admin-only "Export Key Points" buttons (Tab 6 + Tab 7) wired up
+  // and visibility-synced on every navigation (Tab 7's row is created lazily
+  // here since its content is rendered dynamically).
+  if (typeof window.__rettRefreshKeyPointsButtons === 'function') {
+    try { window.__rettRefreshKeyPointsButtons(); } catch (e) { /* */ }
   }
 }
 
@@ -2017,15 +2161,17 @@ function bindControls() {
   //
   // Simplified shape (2026-05-15): single #future-estimated-gain field
   // — no more sale-basis-depr breakdown, no auto-compute listener.
-  var futureYesNoEl   = document.getElementById('future-sale-yes-no');
   var futureGroupEl   = document.getElementById('future-sale-fields-group');
-  if (futureYesNoEl && futureGroupEl) {
-    var syncFutureGroup = function () {
-      futureGroupEl.hidden = (futureYesNoEl.value !== 'yes');
-    };
-    futureYesNoEl.addEventListener('change', syncFutureGroup);
-    futureYesNoEl.addEventListener('input',  syncFutureGroup);
-    syncFutureGroup();
+  // Detail (gain/date) now lives on the Strategy Summary's Future Sales
+  // Estimator (gated on the yes/no); keep this Page-1 group hidden always.
+  // The yes/no itself needs no handler here — the estimator reads it on
+  // render (advisor 2026-06-17).
+  if (futureGroupEl) futureGroupEl.hidden = true;
+  // The Page-1 future-sale INPUT table (Section 04) appears only when the
+  // yes/no is "Yes". Repaint it here so init + saved-case restore (which set
+  // the select without firing a change event) show the right state.
+  if (typeof window.renderFutureSaleInputs === 'function') {
+    try { window.renderFutureSaleInputs(); } catch (e) { /* */ }
   }
 
   // Strategy-selection page (between Inputs and Projection): three
@@ -2253,70 +2399,6 @@ function bindControls() {
   // and state engines on it. That's the conservative-high floor — for
   // structured-sale paths the actual tax is less, but front-loading
   // the carve-out keeps the client liquid for the April due date.
-  function _estimatedSaleTax() {
-    // Multi-property aggregation (Q1) — tax estimate must reflect the
-    // total sale across all properties, not just Property 1.
-    var _sumProp = (typeof window.__rettSumPropertyField === 'function')
-      ? window.__rettSumPropertyField
-      : function (id) { return parseUSD((document.getElementById(id) || {}).value) || 0; };
-    var saleVal  = _sumProp('sale-price');
-    var basisVal = _sumProp('cost-basis');
-    var deprVal  = _sumProp('accelerated-depreciation');
-    // STG is independent income now; not subtracted from property LT gain.
-    var stShort  = parseUSD((document.getElementById('short-term-gain') || {}).value) || 0;
-    // Q2: ST-held property gain flows to ST bucket (ordinary rate), not LT.
-    // Q7: non-property LT income (stocks/crypto >1yr) adds to LT bucket.
-    var _stPropGain = (typeof window.__rettShortTermPropertyGain === 'function')
-      ? window.__rettShortTermPropertyGain() : 0;
-    var _ltIncome   = parseUSD((document.getElementById('long-term-gain') || {}).value) || 0;
-    var ltGain   = Math.max(0, saleVal - basisVal - deprVal - _stPropGain) + Math.max(0, _ltIncome);
-    var stGainForTax = Math.max(0, stShort) + _stPropGain;
-    if (ltGain <= 0 && stGainForTax <= 0 && deprVal <= 0) return 0;
-    var year   = parseInt((document.getElementById('year1') || {}).value, 10) || (new Date()).getFullYear();
-    var status = (document.getElementById('filing-status') || {}).value || 'mfj';
-    var state  = (document.getElementById('state-code') || {}).value || 'NONE';
-    var ord    = (parseUSD((document.getElementById('w2-wages') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('se-income') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('biz-revenue') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('rental-income') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('dividend-income') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('retirement-distributions') || {}).value) || 0);
-    var wages  = (parseUSD((document.getElementById('w2-wages') || {}).value) || 0) +
-                 (parseUSD((document.getElementById('se-income') || {}).value) || 0);
-    // Pull §1245/§1250 split from form, mirror the same fallback used by
-    // baseline-table.js: if either explicit field is > 0, trust the user's
-    // split; otherwise default the whole recap to §1250 (legacy behavior).
-    // Audit R2 finding #1: previously this caller passed investmentIncome
-    // omitting the §1250 portion, so NIIT was understated by 3.8% × recap
-    // on the Available-Capital tile (over-sizing every downstream strategy
-    // by ~$19K per $500K of recap).
-    var _recap1245Form = parseUSD((document.getElementById('accelerated-depreciation-1245') || {}).value) || 0;
-    var _recap1250Form = parseUSD((document.getElementById('accelerated-depreciation-1250') || {}).value) || 0;
-    var _hasRecapSplit = (_recap1245Form + _recap1250Form) > 0;
-    var recap1245 = _hasRecapSplit ? Math.max(0, _recap1245Form) : 0;
-    var recap1250 = _hasRecapSplit ? Math.max(0, _recap1250Form) : Math.max(0, deprVal);
-    var fed = 0, st = 0;
-    try {
-      if (typeof computeFederalTax === 'function') {
-        fed = computeFederalTax(ord + stGainForTax, year, status, {
-          longTermGain: ltGain,
-          depreciationRecapture:      deprVal,
-          depreciationRecapture1245:  recap1245,
-          depreciationRecapture1250:  recap1250,
-          // §1250 IS in the NIIT base (§1411); §1245 is NOT (active trade
-          // or business carve-out per the engine's documented design).
-          investmentIncome: ltGain + stGainForTax + recap1250,
-          wages: wages
-        }) || 0;
-      }
-      if (typeof computeStateTax === 'function') {
-        st = computeStateTax(ord + stGainForTax + ltGain + deprVal, year, state, status, {
-          longTermGain: ltGain
-        }) || 0;
-      }
-    } catch (e) { /* fall through to 0 */ }
-    return Math.round(Math.max(0, fed + st));
-  }
 
   function _recomputeAvailableCapital() {
     const saleEl     = document.getElementById('sale-price');
@@ -2545,14 +2627,15 @@ function bindControls() {
     if (!el) return;
     const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
     el.addEventListener(evt, _recomputeAvailableCapital);
-    // Reset the user's strategy pick on any change — but suppress during
-    // case-load / programmatic restore (__rettApplyingState) so loading
-    // a saved client doesn't wipe their persisted strategy choice.
-    el.addEventListener(evt, function () {
-      if (window.__rettApplyingState) return;
-      _resetStrategySelection();
-    });
+    // NOTE (advisor 2026-06-12): input changes NO LONGER reset the user's
+    // strategy / supplemental selections. Selections now persist across input
+    // edits (downstream numbers still recompute from the live inputs); they
+    // reset ONLY when the user clicks "New Client" — which calls
+    // window.__rettResetStrategySelection (exposed below).
   });
+  // Expose the reset so the New Client button (wired in a different scope) can
+  // clear selections explicitly, now that input-change no longer does.
+  window.__rettResetStrategySelection = _resetStrategySelection;
   // Initial call so the available-capital is set on first paint when a
   // case-load restored sale-price.
   _recomputeAvailableCapital();

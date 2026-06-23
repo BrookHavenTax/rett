@@ -83,6 +83,12 @@ const LEGACY_SCRIPTS: ReadonlyArray<string> = [
   // is the host + lock/unlock + storage; the 7 admin-math-page-*.js
   // modules each render one tab's reveal panel.
   '04-ui/admin-math-panel.js',
+  // Admin-only "Export Key Points" PDF (preview modal + per-tab button).
+  // Self-injects a hidden button into #page-allocator .print-cta-row and a
+  // generated row on #page-temp; shown only when admin mode is unlocked.
+  // Must load after admin-math-panel.js (which calls back into
+  // __rettRefreshKeyPointsButtons on unlock), matching upstream order.
+  '04-ui/key-points-export.js',
   '04-ui/admin-math-page-inputs.js',
   '04-ui/admin-math-page-baseline.js',
   '04-ui/admin-math-page-strategies.js',

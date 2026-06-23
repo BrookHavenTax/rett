@@ -4167,6 +4167,21 @@ body { font-size: 16px; }
     border-color: var(--rett-amber);
     box-shadow: 0 0 0 2px rgba(224,123,42,0.20), var(--shadow);
 }
+.strategy-pick-card.is-featured:not(.is-interested):not(.is-recommended) {
+    /* Multi-sale string (future-sale = Yes): the installment card is the
+       one we plan to show, so its border is "lit up" — BrookHaven blue with
+       a soft glow — to draw the eye WITHOUT marking it Interested (no click
+       is implied; the advisor still walks all three). */
+    border-color: var(--bh-blue-deep);
+    box-shadow: 0 0 0 3px rgba(43,108,176,0.14), 0 0 16px 2px rgba(43,108,176,0.40), var(--shadow);
+}
+/* Multi-sale string: the default-risk question is moot (we already show all
+   three strategies), so hide it on Page 3. visibility:hidden (not display)
+   keeps the row's height so the three cards stay aligned with the A/C
+   spacer rows. (advisor 2026-06-22.) */
+#strategy-pick-list.is-multi-sale .strategy-default-risk-row {
+    visibility: hidden;
+}
 .strategy-pick-card.is-not-interested {
     opacity: 0.6;
     background: var(--rett-blue-light);
@@ -4725,6 +4740,61 @@ body { font-size: 16px; }
     text-align: center;
     letter-spacing: -0.01em;
     margin-bottom: 14px;
+}
+/* Savings by Sale table (Strategy Summary, multi-sale string). Big, bold,
+   green amounts so the per-sale savings have real pop. */
+.savings-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.savings-table thead th {
+    font-family: var(--font-mono);
+    font-size: 0.72em;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    text-align: left;
+    padding: 0 6px 10px;
+}
+.savings-table thead th.savings-amt-head { text-align: right; }
+.savings-table td {
+    padding: 16px 6px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: middle;
+}
+.savings-sale-label {
+    font-size: 1.15em;
+    font-weight: 600;
+    color: var(--ink);
+}
+.savings-amt {
+    text-align: right;
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 1.5em;            /* match the Oil & Gas supplemental amount */
+    color: var(--green);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+}
+.savings-total-row td {
+    border-top: 2px solid var(--ink);
+    border-bottom: none;
+    padding-top: 18px;
+}
+.savings-total-row .savings-sale-label { font-size: 1.25em; }
+.savings-total-row .savings-amt { font-size: 1.85em; }
+
+/* Multi-sale string: small breakdown under the collective Net Benefit
+   ("This sale $X · future sales $Y"). */
+.rett-interested-net-sub {
+    margin-top: -8px;
+    margin-bottom: 14px;
+    text-align: center;
+    font-size: 0.82em;
+    color: var(--muted);
 }
 
 /* Additional Funds — proportional realized-gain breakdown + suggested
@@ -5287,6 +5357,48 @@ body { font-size: 16px; }
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
 }
+/* Selected Strategy as ONE full-width block (was a 2-col card row), with
+   the supplemental on/off toggles nested in the same block below the
+   strategy rows. Width + spacing now match Fees Baked In / Future Sales. */
+.forward-strategy-block {
+    margin: 36px 0 32px;
+}
+.forward-strategy-block .forward-strategy-body {
+    /* No tall-card centering now that it's a normal-height section. */
+    min-height: 0;
+    justify-content: flex-start;
+}
+.forward-supp-subsection {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+}
+.forward-supp-subhead {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted, #6B7A99);
+    font-weight: 700;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.forward-supp-hint {
+    font-family: inherit;
+    font-size: 9px;
+    letter-spacing: 0.03em;
+    text-transform: none;
+    color: var(--muted, #6B7A99);
+    font-weight: 400;
+    opacity: 0.85;
+}
+/* Breathing room between Fees Baked In and the Future Sales Estimator. */
+.fsp-section {
+    margin-top: 28px;
+}
 .forward-top-row > .input-section .section-heading {
     margin-bottom: 16px;
 }
@@ -5449,6 +5561,107 @@ body { font-size: 16px; }
 }
 
 /* Grow Your Net Benefit — projection card at the very bottom of Page 5 */
+/* ============ Future Sales Estimator (standalone tax ballpark) ============ */
+.fsp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+.fsp-table thead th {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    text-align: left;
+    padding: 0 10px 9px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+}
+.fsp-table thead th:nth-child(4),
+.fsp-table thead th:nth-child(5) { text-align: right; }
+.fsp-table tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: middle;
+}
+.fsp-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 9px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--ink);
+    background: var(--paper-cool, #fff);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    min-width: 110px;
+}
+.fsp-input:focus {
+    outline: none;
+    border-color: var(--rett-blue, #1F6FEB);
+    box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.15);
+}
+.fsp-amt {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--ink);
+}
+.fsp-tax { font-weight: 600; color: var(--rett-danger, #C0392B); }
+.fsp-covered { font-weight: 500; color: var(--ink); }
+.fsp-covered-full { color: var(--rett-success, #1F8A4C); font-weight: 600; }
+.fsp-saving { font-weight: 600; color: var(--rett-success, #1F8A4C); }
+.fsp-table thead th:nth-child(6),
+.fsp-table thead th:nth-child(7) { text-align: right; }
+.fsp-del-cell { width: 28px; text-align: center; }
+.fsp-del {
+    border: none;
+    background: none;
+    color: var(--muted, #6B7A99);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.fsp-del:hover { color: var(--rett-danger, #C0392B); background: rgba(192, 57, 43, 0.08); }
+.fsp-total-row td {
+    padding: 10px 10px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 700;
+    border-top: 2px solid var(--rule);
+}
+.fsp-total-row .fsp-amt { font-size: 14px; }
+.fsp-total-row .fsp-total-tax { color: var(--rett-danger, #C0392B); }
+.fsp-total-row .fsp-total-saving { color: var(--rett-success, #1F8A4C); }
+.fsp-total-row .fsp-total-covered { color: var(--ink); }
+.fsp-add {
+    margin-top: 14px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--rett-blue, #1F6FEB);
+    background: var(--paper-cool, #fff);
+    border: 1px dashed var(--rett-blue, #1F6FEB);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.fsp-add:hover { background: rgba(31, 111, 235, 0.08); }
+@media (max-width: 760px) {
+    .fsp-table, .fsp-table thead, .fsp-table tbody, .fsp-table tfoot,
+    .fsp-table tr, .fsp-table td, .fsp-table th { display: block; }
+    .fsp-table thead { display: none; }
+    .fsp-table tbody td { border-bottom: none; padding: 4px 0; }
+    .fsp-row { border-bottom: 1px solid var(--rule); padding: 8px 0; margin-bottom: 6px; }
+    .fsp-amt { text-align: left; }
+}
+
 .growth-projection {
     margin: 56px 0 28px;
     padding: 22px 24px 26px;
@@ -6553,7 +6766,16 @@ body { font-size: 16px; }
     main { padding: 0 !important; margin: 0 !important; }
     main > section:not(#page-allocator) { display: none !important; }
     #page-allocator { display: block !important; padding: 0 !important; margin: 0 !important; }
-    #page-allocator > *:not(.print-view) { display: none !important; }
+    /* The .print-view is rendered INSIDE #strategy-fee-summary-host (the
+       same host that holds the on-screen summary), so we must keep the
+       host displayed and walk INTO it — hiding the host with
+       display:none would collapse the print-view inside it and print a
+       blank page (advisor 2026-06-15). Hide page-allocator's other
+       direct children (legacy #print-header, the print button row), keep
+       the host, then within the host show only the print-view. */
+    #page-allocator > *:not(#strategy-fee-summary-host) { display: none !important; }
+    #strategy-fee-summary-host { display: block !important; padding: 0 !important; margin: 0 !important; }
+    #strategy-fee-summary-host > *:not(.print-view) { display: none !important; }
     .print-view {
         display: block !important;
         position: static !important;
@@ -6566,20 +6788,23 @@ body { font-size: 16px; }
     }
 
     /* ---------- Print layout ---------- */
+    /* Sized up modestly (advisor 2026-06-15) so the leaner page —
+       supplemental fees and the optimizer note removed — fills more of
+       the sheet rather than sitting at ~3/4. Measured against real print
+       typography (extracted @media print rules) to stay on one page. */
     .print-view {
         font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
-        font-size: 9.5pt;
+        font-size: 10pt;
         color: #111;
         background: #fff;
         line-height: 1.5;
     }
     /* Bordered "leave-behind" frame so the printed sheet reads as a
-       single professional document rather than a loose page. Tight
-       padding so the frame + content fit one Letter page. */
+       single professional document rather than a loose page. */
     .print-doc-frame {
         border: 1.5pt solid #0a1d3d;
         border-radius: 6pt;
-        padding: 12pt 14pt 10pt;
+        padding: 16pt 20pt 14pt;
         background: #fff;
         page-break-inside: avoid;
     }
@@ -6665,34 +6890,42 @@ body { font-size: 16px; }
         border-radius: 1pt;
     }
     .print-title-block {
-        margin-bottom: 8pt;
+        margin-bottom: 12pt;
     }
     .print-title {
         font-family: 'Fraunces', Georgia, serif;
-        font-size: 17pt;
+        font-size: 18pt;
         font-weight: 500;
         font-style: italic;
         color: #0a1d3d;
         margin: 0 0 2pt;
     }
     .print-strategy-tag {
-        font-size: 8pt;
+        font-size: 8.5pt;
         color: #555;
         letter-spacing: 0.06em;
         text-transform: uppercase;
     }
 
+    /* "What We Save You" heading sits directly above the hero row as a
+       full-width section head (not inside a .print-section column). */
+    .print-savings-head {
+        margin-top: 6pt;
+        margin-bottom: 7pt;
+    }
+    .print-fees-section { margin-top: 8pt; }
+
     /* Hero boxes */
     .print-hero-row {
         display: flex;
-        gap: 7pt;
-        margin-bottom: 10pt;
+        gap: 9pt;
+        margin-bottom: 13pt;
     }
     .print-hero-box {
         flex: 1;
         border: 1px solid #c8d4e0;
         border-radius: 4pt;
-        padding: 6pt 8pt;
+        padding: 10pt 11pt;
         background: #f8fafc;
     }
     /* Net Benefit hero: highlight with the brand amber so it draws
@@ -6708,20 +6941,20 @@ body { font-size: 16px; }
         border-color: #c0cee0;
     }
     .print-hero-label {
-        font-size: 7pt;
+        font-size: 8pt;
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: #555;
-        margin-bottom: 2pt;
+        margin-bottom: 3pt;
     }
     .print-hero-value {
-        font-size: 14pt;
+        font-size: 16pt;
         font-weight: 700;
         color: #111;
         line-height: 1.1;
     }
     .print-hero-sub {
-        font-size: 7pt;
+        font-size: 7.5pt;
         color: #666;
         margin-top: 2pt;
     }
@@ -6729,7 +6962,7 @@ body { font-size: 16px; }
     /* Body columns */
     .print-body {
         display: flex;
-        gap: 14pt;
+        gap: 16pt;
     }
     .print-col {
         flex: 1;
@@ -6738,10 +6971,10 @@ body { font-size: 16px; }
 
     /* Sections */
     .print-section {
-        margin-bottom: 7pt;
+        margin-bottom: 11pt;
     }
     .print-section-head {
-        font-size: 7pt;
+        font-size: 8pt;
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: #0a1d3d;
@@ -6755,18 +6988,18 @@ body { font-size: 16px; }
     .print-table {
         width: 100%;
         border-collapse: collapse;
-        font-size: 8.5pt;
+        font-size: 9.5pt;
     }
     .print-table th {
         text-align: left;
         font-weight: 600;
-        padding: 2pt 4pt;
+        padding: 2.5pt 5pt;
         border-bottom: 1px solid #c8d4e0;
-        font-size: 7.5pt;
+        font-size: 8pt;
         color: #333;
     }
     .print-table td {
-        padding: 2.5pt 4pt;
+        padding: 4.5pt 5pt;
         color: #111;
         vertical-align: top;
         border-bottom: 1px solid #e8eef4;
@@ -7054,8 +7287,9 @@ body { font-size: 16px; }
 .supp-details-arrow.is-open .supp-details-arrow-chev {
     transform: rotate(0deg); /* points down when open */
 }
-.supp-details-arrow-label { display: none; }
-.supp-details-arrow.is-open .supp-details-arrow-label { display: inline; }
+/* Always show the "Input Details" label (not just when open) so the
+   user knows what the chevron opens before clicking (advisor 2026-06-15). */
+.supp-details-arrow-label { display: inline; }
 
 /* "See Value" button — appears beneath the Details arrow on each
    placeholder card. Disabled until the user marks Interested so the
@@ -8637,7 +8871,10 @@ body { font-size: 16px; }
     font-size: clamp(2.2rem, 4.2vw, 3.4rem);
     font-weight: 600;
     line-height: 1.05;
-    color: #1d4ed8;
+    /* BrookHaven brand navy (advisor 2026-06-12) — was the off-brand royal
+       blue #1d4ed8; now matches the brand navy used on the LT-gain segment
+       of the proceeds breakdown bar so Tab 2 reads cohesively. */
+    color: var(--rett-cyan);
     overflow: visible;
     white-space: nowrap;
 }
@@ -8732,7 +8969,7 @@ body { font-size: 16px; }
     border-radius: 3px;
     display: inline-block;
 }
-.baseline-pie-swatch--keep { background: #2563eb; }
+.baseline-pie-swatch--keep { background: var(--rett-cyan); }
 .baseline-pie-swatch--tax  { background: #dc2626; }
 .baseline-pie-legend-label {
     font-size: 0.95rem;
@@ -9055,3 +9292,53 @@ body { font-size: 16px; }
   border-radius: var(--radius-soft) !important;
 }
 /* === end Bubbly polish v1 === */
+
+/* === Supplemental Strategy Setup Fees (Temp page footer, advisor input) === */
+.temp-supp-fee-section {
+  max-width: 1280px;
+  margin: 24px auto 28px;
+  padding: 22px 28px 18px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.temp-supp-fee-head {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--rett-navy);
+  margin: 0 0 4px;
+}
+.temp-supp-fee-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0 0 14px;
+  line-height: 1.45;
+}
+.temp-supp-fee-table { width: 100%; border-collapse: collapse; }
+.temp-supp-fee-table td { padding: 8px 0; border-bottom: 1px solid var(--rule-soft); }
+.temp-supp-fee-table tr:last-child td { border-bottom: none; }
+.supp-fee-name { font-size: 14px; color: var(--ink); font-weight: 500; }
+.supp-fee-input-cell { text-align: right; width: 180px; }
+.supp-setup-fee-input {
+  width: 150px;
+  padding: 8px 12px;
+  font-size: 15px;
+  text-align: right;
+  border: 1.5px solid var(--rule);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.supp-setup-fee-input:focus { outline: none; border-color: var(--rett-navy); }
+.supp-setup-fee-input::placeholder { color: #aab2c0; }
+
+/* "With Planning" walk-away side note (shown when walk-away > sale price) */
+.walkaway-sidenote {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
+  white-space: nowrap;
+}

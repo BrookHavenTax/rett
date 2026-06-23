@@ -291,8 +291,14 @@ export default function PageInputs() {
               optimizer (window.rettSuggestAdditionalFunds) when the
               additional-funds-ui module is wired. The Projection-tab
               toggle controls whether the contribution actually moves
-              the projection. */}
-          <div className="input-section">
+              the projection.
+
+              HIDDEN as of 2026-06-22 (upstream commit 2fe5c20): the feature
+              drove an ~8-build candidate sweep (~6s). Inputs stay mounted so
+              collectInputs() wiring is undisturbed; the collector's
+              _AF_ENABLED flag keeps it inert. Remove `hidden` + flip
+              _AF_ENABLED to restore. */}
+          <div className="input-section" hidden>
             <div className="section-heading">
               <h2>Additional Funds</h2>
               <span className="num">SECTION 03</span>
@@ -368,6 +374,18 @@ export default function PageInputs() {
                   <option value="yes">Yes</option>
                 </select>
               </div>
+              {/* Future-sale INPUT table (upstream 2026-06-22, commit 2b60d64).
+                  Appears only when the yes/no above is "Yes". Client enters
+                  planned sale date / FMV / cost basis (+ growth-rate / years)
+                  per future sale. No tax or coverage shown here — that math is
+                  downstream. Shares the __rettFutureSalesPlanner store with the
+                  Strategy Summary estimator. Rendered by renderFutureSaleInputs()
+                  in controls.js into this host. */}
+              <div id="future-sale-inputs-host" className="future-sale-inputs"></div>
+              {/* Detail inputs kept hidden so downstream collectInputs() wiring
+                  is undisturbed (engine hardcodes futureGain=0). The live
+                  specifics live in the future-sale-inputs-host table above and
+                  the Strategy Summary's Future Sales Estimator. */}
               <div id="future-sale-fields-group" hidden>
                 <div className="input-row">
                   <div className="label">How much gain?</div>

@@ -593,6 +593,14 @@
     var _off1245  = Math.max(0, Math.round(Number(_split.r1245) || 0));
     var _off1250  = Math.max(0, Math.round(Number(_split.r1250) || 0));
     var _offTotal = _offOrd + _off1245 + _off1250;
+    // Capital-conversion side of the supp (Delphi): the long-term gain it ADDS,
+    // the qualified dividends it adds, and the short-term loss it generates.
+    // These make the "with strategy" result honest — without them the column
+    // showed Delphi's ordinary offset (a benefit) while hiding the gain it
+    // creates (a cost), so "tax saved" was overstated (advisor 2026-06-17).
+    var _ltAdd  = Math.max(0, Math.round(Number(_split.ltGainAdd) || 0));
+    var _stLoss = Math.max(0, Math.round(Number(_split.stLoss)    || 0));
+    var _qdAdd  = Math.max(0, Math.round(Number(_split.qdivAdd)   || 0));
     // Income RECOGNIZED under the strategy this year — show the income
     // that ACTUALLY hits the tax engine after EVERY activity item this
     // year has been applied. Two sources of reduction stack:
@@ -620,10 +628,13 @@
     var _incomes = null;
     if (baseline && baseline._incomes) {
       _incomes = baseline._incomes;
-      if (_offTotal > 0 || _btLt > 0 || _btOrd > 0 || _bt1250 > 0 || _btSt > 0) {
+      if (_offTotal > 0 || _btLt > 0 || _btOrd > 0 || _bt1250 > 0 || _btSt > 0 || _ltAdd > 0 || _qdAdd > 0) {
         _incomes = Object.assign({}, _incomes, {
           ordinary:       Math.max(0, Number(_incomes.ordinary       || 0) - _offOrd  - _btOrd),
-          longTermGain:   Math.max(0, Number(_incomes.longTermGain   || 0) - _btLt),
+          // Delphi adds _ltAdd of LT gain; its _stLoss short-term loss nets
+          // against that gain (capital losses offset capital gains, and the
+          // recompute floors shortTermGain at 0, so net it into LT here).
+          longTermGain:   Math.max(0, Number(_incomes.longTermGain   || 0) - _btLt + _ltAdd - _stLoss),
           shortTermGain:  Math.max(0, Number(_incomes.shortTermGain  || 0) - _btSt),
           recapture1245:  Math.max(0, Number(_incomes.recapture1245  || 0) - _off1245),
           recapture1250:  Math.max(0, Number(_incomes.recapture1250  || 0) - _off1250 - _bt1250),
@@ -647,7 +658,9 @@
         _status    = _ci.filingStatus || 'mfj';
         _stateCode = _ci.state || _ci.stateCode || _stateCode;
         _struct = {
-          qualifiedDividend: _ci.qualifiedDividend,
+          // Add Delphi's qualified dividends to the client's own — they're
+          // taxed at LT rates and are part of the gain Delphi creates.
+          qualifiedDividend: (Number(_ci.qualifiedDividend) || 0) + _qdAdd,
           wages:             _ci.wages,
           seIncome:          _ci.seIncome,
           itemized:          _ci.itemizedDeductions || _ci.itemized,
@@ -1268,6 +1281,14 @@
     // double-counts when supps have rivalry-capping or interlocking
     // effects (Delphi LT-add absorbed by Brooklyn, etc.).
     var suppBenefit = 0;
+    var _solverSupp = null;   // master-solver realized total (correct for capital-conversion supps)
+    // Brookhaven flat per-strategy setup fees (advisor-entered on this page).
+    // Summed over the FUNDED supps so the panel net + the reconciliation
+    // check stay consistent with the Strategy Summary, which subtracts the
+    // same amount. (advisor 2026-06-12.)
+    var appliedSetupFees = 0;
+    var _suppSetupMap = (root.__rettSuppSetupFees && typeof root.__rettSuppSetupFees === 'object')
+      ? root.__rettSuppSetupFees : {};
     if (typeof root.runMasterSolver === 'function') {
       try {
         // Same post-primary residual cap as _resolveChosen / the hero —
@@ -1279,20 +1300,34 @@
         var sOut = root.runMasterSolver(Number(m.net) || 0, (_ppCapFP != null ? { postPrimaryTaxRemaining: _ppCapFP } : undefined));
         if (sOut && Number.isFinite(Number(sOut.totalSupplementalBenefit))) {
           suppBenefit = Math.round(Number(sOut.totalSupplementalBenefit));
+          _solverSupp = suppBenefit;
         }
+        (sOut && sOut.supplementals ? sOut.supplementals : []).forEach(function (s) {
+          if (s.rivalry && s.rivalry.funded && (s.rivalry.granted || 0) > 0) {
+            appliedSetupFees += Math.max(0, Number(_suppSetupMap[s.id]) || 0);
+          }
+        });
       } catch (e) { /* */ }
     }
-    // Override with the HONEST recompute-based benefit (the actual stacked
-    // tax saved) so the bottom total = Σ per-year card "tax saved" and the
-    // net ties to the Strategy Summary, which now also uses the honest value
-    // (advisor 2026-06-10). Falls back to the solver total above if anything
-    // is missing.
+    // Reconcile against the HONEST recompute-based benefit (the actual stacked
+    // tax saved) so the bottom total = Σ per-year card "tax saved" and the net
+    // ties to the Strategy Summary, which uses the same rule (advisor
+    // 2026-06-10). The recompute only sees each supp's ORDINARY offset, so it
+    // correctly TRIMS overstated stacking of ordinary-deduction supps — but it
+    // OVERSTATES a character-conversion supp (Delphi adds LT gain + qualified
+    // dividends it can't see). So let it correct the benefit DOWN only, never
+    // above the solver's already-correct realized total (which DOES net the
+    // added gain). Falls back to the recompute if the solver value is missing.
+    // (advisor 2026-06-17.)
     if (typeof root.__rettHonestSuppBenefit === 'function' &&
         comp && Array.isArray(ctx.fundedSupps) && ctx.fundedSupps.length) {
       try {
         var _hsb = root.__rettHonestSuppBenefit(comp, ctx.fundedSupps,
           { chosen: ctx.chosen, cfg: ctx.entry && ctx.entry.cfg });
-        if (Number.isFinite(_hsb)) suppBenefit = Math.round(_hsb);
+        if (Number.isFinite(_hsb)) {
+          var _h = Math.round(_hsb);
+          suppBenefit = (_solverSupp != null) ? Math.min(_solverSupp, _h) : _h;
+        }
       } catch (e) { /* keep solver value */ }
     }
     // Carryover-loss offset credit (A/B/C) — the value of the free
@@ -1307,18 +1342,34 @@
     // but the panel otherwise wouldn't see.
     var carryoverCredit = Math.round(Number(m._carryoverOffsetCredit || 0) || 0);
     var addlFundsTax    = Math.round(Number(m._additionalFundsTriggeredTax || 0) || 0);
-    var totalGross = brooklynGross + suppBenefit + carryoverCredit;
+    // Surface each funded supp's FUND/MANAGEMENT fee (e.g. Delphi 2% =
+    // mgmtFeeDollars) as its own line instead of leaving it baked inside the
+    // supp's net benefit. We display the supp's GROSS tax saved (net + fee) in
+    // "total tax saved" and subtract the fee below, so the panel reads
+    // gross − all fees = net. Because the same fee is both added (into gross)
+    // and subtracted (as a fee line), the net is identical to before — only the
+    // presentation changes (advisor 2026-06-17).
+    var suppFundFees = 0;
+    (ctx.fundedSupps || []).forEach(function (fs) {
+      var es = (root.__rettSupplementalExtra && root.__rettSupplementalExtra[fs.id]) || null;
+      var cs = (root.__rettSupplemental      && root.__rettSupplemental[fs.id])      || null;
+      var lr = (es && es.lastResult) || (cs && cs.lastResult) || (fs && fs.result) || null;
+      if (lr) suppFundFees += Math.max(0, Number(lr.mgmtFeeDollars) || 0);
+    });
+    suppFundFees = Math.round(suppFundFees);
+    var suppGross = suppBenefit + suppFundFees;   // gross tax saved before the fund fee
+    var totalGross = brooklynGross + suppGross + carryoverCredit;
     var brooklynFees   = Math.round(Number(m.brooklynFees   || 0) || 0);
     var brookhavenFees = Math.round(Number(m.brookhavenFees || 0) || 0);
     var totalFees      = brooklynFees + brookhavenFees;
-    var net = totalGross - totalFees - addlFundsTax;
+    var net = totalGross - totalFees - suppFundFees - addlFundsTax - appliedSetupFees;
     // Strategy Summary's displayed net = primary net (Brooklyn savings
     // − fees + carryover credit − additional-funds tax) + supplementalBenefit.
     // entry.metrics.net is the primary piece only; adding suppBenefit gives
     // the user-facing total. With the credit + tax now folded into `net`
     // above, the two sides reconcile to the dollar.
     var primaryNet = Math.round(Number(m.net || 0) || 0);
-    var ssDisplayedNet = primaryNet + suppBenefit;
+    var ssDisplayedNet = primaryNet + suppBenefit - appliedSetupFees;
     var checkOk = Math.abs(net - ssDisplayedNet) <= 5;
 
     // The lower-bracket benefit is now baked INTO Y0's per-year card
@@ -1339,22 +1390,98 @@
     var addlFundsTaxRow = (addlFundsTax > 5)
       ? '<tr><td>Additional-funds liquidation tax (one-time)</td><td class="temp-amt">&minus;' + _fmt(addlFundsTax) + '</td></tr>'
       : '';
+    var suppSetupFeeRow = (appliedSetupFees > 5)
+      ? '<tr><td>Less: Supplemental strategy setup fees (Brookhaven, flat)</td><td class="temp-amt">&minus;' + _fmt(appliedSetupFees) + '</td></tr>'
+      : '';
+    var suppFundFeeRow = (suppFundFees > 5)
+      ? '<tr><td>Less: Supplemental fund fees (e.g. Delphi management, 2%)</td><td class="temp-amt">&minus;' + _fmt(suppFundFees) + '</td></tr>'
+      : '';
 
     return '' +
       '<div class="temp-fees-panel">' +
         '<div class="temp-fees-head">Total Tax Saved &rarr; Net Benefit</div>' +
         '<table class="temp-fees-table"><tbody>' +
-          '<tr class="temp-fees-foot"><td colspan="2" class="temp-fees-foot"><em>Sum of each year’s &ldquo;tax saved vs baseline&rdquo; above:</em></td></tr>' +
+          '<tr class="temp-fees-foot"><td colspan="2" class="temp-fees-foot"><em>Gross tax benefit across all years, then fees &rarr; net:</em></td></tr>' +
           brooklynRows +
-          '<tr><td>Supplemental tax savings (vetted total)</td><td class="temp-amt">' + _fmt(suppBenefit) + '</td></tr>' +
+          '<tr><td>Supplemental tax savings (gross, before fund fee)</td><td class="temp-amt">' + _fmt(suppGross) + '</td></tr>' +
           carryoverRow +
           '<tr class="temp-fees-subtotal"><td><strong>Total tax saved (vs doing nothing)</strong></td><td class="temp-amt temp-fees-gross"><strong>' + _fmt(totalGross) + '</strong></td></tr>' +
           '<tr><td>Less: Asset Manager fee (across all years)</td><td class="temp-amt">&minus;' + _fmt(brooklynFees) + '</td></tr>' +
           '<tr><td>Less: Brookhaven fee (across all years)</td><td class="temp-amt">&minus;' + _fmt(brookhavenFees) + '</td></tr>' +
+          suppFundFeeRow +
+          suppSetupFeeRow +
           addlFundsTaxRow +
           '<tr class="temp-fees-total"><td><strong>Net benefit (tax saved − fees)</strong></td><td class="temp-amt"><strong>' + _fmt(net) + '</strong></td></tr>' +
           '<tr class="temp-fees-check' + (checkOk ? ' is-ok' : ' is-mismatch') + '"><td>Strategy Summary net benefit ' + (checkOk ? '✓ matches' : '⚠ mismatch') + '</td><td class="temp-amt">' + _fmt(ssDisplayedNet) + '</td></tr>' +
         '</tbody></table>' +
+      '</div>';
+  }
+
+  // ── Supplemental strategy SETUP fees (advisor input) ──────────────────
+  // Flat one-time Brookhaven fee per supplemental strategy, entered here on
+  // the Temp page (a footer below the reconciliation panel, above admin).
+  // Stored in window.__rettSuppSetupFees and persisted to localStorage so the
+  // advisor's fee schedule survives reloads + this page's dynamic re-renders.
+  // The fee is applied (subtracted from net + ROP + the supp's own benefit)
+  // only when the strategy is FUNDED — see the Strategy Summary and the fees
+  // panel above. (advisor 2026-06-12.)
+  var _SUPP_FEE_STRATS = [
+    { id: 'oilGas', name: 'Oil &amp; Gas Working Interest' },
+    { id: 'delphi', name: 'Delphi Fund' },
+    { id: 'ptet',   name: 'PTET &mdash; Pass-Through Entity SALT' },
+    { id: 'slot07', name: 'Equipment Leasing Fund' },
+    { id: 'slot08', name: 'Augusta Rule &mdash; &sect;280A(g)' },
+    { id: 'slot12', name: 'Farm / Business Equipment' }
+  ];
+  function _suppSetupFeesObj() {
+    if (!root.__rettSuppSetupFees || typeof root.__rettSuppSetupFees !== 'object') {
+      var init = {};
+      try {
+        var saved = JSON.parse((root.localStorage && root.localStorage.getItem('rettSuppSetupFees')) || '{}');
+        if (saved && typeof saved === 'object') init = saved;
+      } catch (e) { /* ignore */ }
+      root.__rettSuppSetupFees = init;
+    }
+    return root.__rettSuppSetupFees;
+  }
+  function _wireSuppFeeInputs() {
+    if (root.__rettSuppFeeListenerWired) return;
+    root.__rettSuppFeeListenerWired = true;
+    // 'input' keeps the model live (no re-render → no focus loss while typing).
+    document.addEventListener('input', function (e) {
+      var el = e.target;
+      if (!el || !el.classList || !el.classList.contains('supp-setup-fee-input')) return;
+      var id = el.getAttribute('data-supp-fee-id'); if (!id) return;
+      var v = (typeof parseUSD === 'function') ? parseUSD(el.value) : Number(el.value);
+      _suppSetupFeesObj()[id] = Math.max(0, Number(v) || 0);
+    });
+    // 'change' (blur / Enter) persists + recomputes so the net updates.
+    document.addEventListener('change', function (e) {
+      var el = e.target;
+      if (!el || !el.classList || !el.classList.contains('supp-setup-fee-input')) return;
+      var id = el.getAttribute('data-supp-fee-id'); if (!id) return;
+      var fees = _suppSetupFeesObj();
+      fees[id] = Math.max(0, (typeof parseUSD === 'function') ? (parseUSD(el.value) || 0) : (Number(el.value) || 0));
+      try { root.localStorage.setItem('rettSuppSetupFees', JSON.stringify(fees)); } catch (e2) { /* ignore */ }
+      if (typeof root.runFullPipeline === 'function') { try { root.runFullPipeline(); } catch (e3) { /* */ } }
+    });
+  }
+  function _renderSuppFeeInputs() {
+    _wireSuppFeeInputs();
+    var fees = _suppSetupFeesObj();
+    var rows = _SUPP_FEE_STRATS.map(function (s) {
+      var v = Math.max(0, Number(fees[s.id]) || 0);
+      var disp = v > 0 ? ('$' + Math.round(v).toLocaleString('en-US')) : '';
+      return '<tr>' +
+        '<td class="supp-fee-name">' + s.name + '</td>' +
+        '<td class="supp-fee-input-cell"><input type="text" inputmode="numeric" class="supp-setup-fee-input" data-supp-fee-id="' + s.id + '" placeholder="$0" value="' + disp + '" aria-label="' + s.name + ' setup fee" /></td>' +
+      '</tr>';
+    }).join('');
+    return '' +
+      '<div class="temp-supp-fee-section" id="temp-supp-fee-section">' +
+        '<h3 class="temp-supp-fee-head">Supplemental Strategy Setup Fees</h3>' +
+        '<p class="temp-supp-fee-note">Flat one-time Brookhaven setup fee per strategy. Charged once if the strategy is funded (regardless of how many investments), then subtracted from the net benefit, the strategy’s own contribution, and Return on Planning. Leave blank for $0.</p>' +
+        '<table class="temp-supp-fee-table"><tbody>' + rows + '</tbody></table>' +
       '</div>';
   }
 
@@ -1370,11 +1497,20 @@
   // 401k unified shape, augusta, PTET) only absorb against ordinary
   // income — they don't reach recap. We default those to ord-only.
   function _computeSuppOrdOffsetForYear(displayedI, fundedSupps) {
-    var ZERO = { ord: 0, r1245: 0, r1250: 0, total: 0, oilGasOrd: 0 };
+    // ltGainAdd / stLoss / qdivAdd capture the CAPITAL-CONVERSION side of a
+    // supp that doesn't just deduct ordinary income but ALSO creates long-term
+    // gain + qualified dividends and an offsetting short-term loss (today:
+    // Delphi). They stay 0 for pure ordinary-deduction supps (O&G, Farm, PTET,
+    // Augusta, Equipment Leasing). The results column and the honest-benefit
+    // recompute add them back so the "with strategy" income + tax reflect the
+    // gain Delphi adds (not just the ordinary it offsets) — a true picture.
+    var ZERO = { ord: 0, r1245: 0, r1250: 0, total: 0, oilGasOrd: 0,
+                 ltGainAdd: 0, stLoss: 0, qdivAdd: 0 };
     if (!Array.isArray(fundedSupps)) return ZERO;
     // oilGasOrd = the Oil & Gas portion of the ordinary offset — IDC, which is
     // deducted for regular tax but added back for AMT (see amtIdcPreference).
-    var acc = { ord: 0, r1245: 0, r1250: 0, oilGasOrd: 0 };
+    var acc = { ord: 0, r1245: 0, r1250: 0, oilGasOrd: 0,
+                ltGainAdd: 0, stLoss: 0, qdivAdd: 0 };
     fundedSupps.forEach(function (s) {
       var extraSpec = (root.__rettSupplementalExtra && root.__rettSupplementalExtra[s.id]) || null;
       var coreSpec  = (root.__rettSupplemental      && root.__rettSupplemental[s.id])      || null;
@@ -1403,6 +1539,10 @@
           var c = (py.absorbed != null) ? Number(py.absorbed) : Number(py.deduction || 0);
           if (c > 0) { acc.ord += c * sc; if (s.id === 'oilGas') acc.oilGasOrd += c * sc; }
         }
+        // Capital-conversion side (Delphi per-year fields), same sat scale.
+        acc.ltGainAdd += Math.max(0, Number(py.ltGainAdd) || 0) * sc;
+        acc.stLoss    += Math.max(0, Number(py.stLossAmt) || 0) * sc;
+        acc.qdivAdd   += Math.max(0, Number(py.qdivAdd)   || 0) * sc;
         return;
       }
       var detail = last.detail || {};
@@ -1431,6 +1571,11 @@
         || 0
       ) || 0;
       if (ordKey > 0) acc.ord += ordKey * sc;
+      // Capital-conversion side (Delphi single-year Y0 allocations), same
+      // sat scale. Absent on ordinary-only supps → contributes 0.
+      acc.ltGainAdd += Math.max(0, Number(allocations.longTermGainAdded)  || 0) * sc;
+      acc.stLoss    += Math.max(0, Number(allocations.shortTermLoss)      || 0) * sc;
+      acc.qdivAdd   += Math.max(0, Number(allocations.qualifiedDividends) || 0) * sc;
     });
     acc.total = acc.ord + acc.r1245 + acc.r1250;
     return acc;
@@ -1711,7 +1856,7 @@
     var coversTax = ctx.entry && ctx.entry.cfg &&
       (ctx.entry.cfg.coverTaxesFromSale === true || ctx.entry.cfg.coverTaxesFromSale === 'yes');
     host.classList.toggle('temp-baselines--withdrawals', !!coversTax);
-    host.innerHTML = html + _renderExcessLossPanel(ctx) + _renderFeesPanel(ctx);
+    host.innerHTML = html + _renderExcessLossPanel(ctx) + _renderFeesPanel(ctx) + _renderSuppFeeInputs();
   }
 
   // ── Honest supplemental benefit ───────────────────────────────────────
@@ -1761,7 +1906,11 @@
       var offOrd  = Math.max(0, Math.round(Number(split.ord)   || 0));
       var off1245 = Math.max(0, Math.round(Number(split.r1245) || 0));
       var off1250 = Math.max(0, Math.round(Number(split.r1250) || 0));
-      if (offOrd + off1245 + off1250 <= 0) return;  // no supp activity this year
+      // Capital-conversion side (Delphi adds LT gain + QD, generates ST loss).
+      var ltAdd  = Math.max(0, Math.round(Number(split.ltGainAdd) || 0));
+      var stLoss = Math.max(0, Math.round(Number(split.stLoss)    || 0));
+      var qdAdd  = Math.max(0, Math.round(Number(split.qdivAdd)   || 0));
+      if (offOrd + off1245 + off1250 + ltAdd + qdAdd <= 0) return;  // no supp activity this year
       var year = Number(row.year) || (year1 + i);
       // Brooklyn-only income (baseline less Brooklyn offsets).
       var brkInc = Object.assign({}, baseInc, {
@@ -1771,9 +1920,14 @@
         recapture1250: Math.max(0, Number(baseInc.recapture1250 || 0) - bt1250),
         recapture:     Math.max(0, Number(baseInc.recapture     || 0) - bt1250)
       });
-      // Brooklyn + supplemental income (also less the supp offsets).
+      // Brooklyn + supplemental income (also less the supp offsets). Delphi
+      // ADDS long-term gain (ltAdd) and generates a short-term loss (stLoss)
+      // that nets against that gain — _recomputePostStrategyTax floors ST at 0,
+      // so net the loss into LT here. Without these the supp side counted only
+      // the ordinary it offsets, ignoring the gain it creates → overstated.
       var suppInc = Object.assign({}, brkInc, {
         ordinary:      Math.max(0, Number(brkInc.ordinary      || 0) - offOrd),
+        longTermGain:  Math.max(0, Number(brkInc.longTermGain  || 0) + ltAdd - stLoss),
         recapture1245: Math.max(0, Number(brkInc.recapture1245 || 0) - off1245),
         recapture1250: Math.max(0, Number(brkInc.recapture1250 || 0) - off1250),
         recapture:     Math.max(0, Number(brkInc.recapture     || 0) - off1245 - off1250)
@@ -1785,6 +1939,9 @@
       // (brkTax) keeps the full SE base — capital losses don't reduce earned
       // income. (advisor 2026-06-10.)
       var suppStruct = Object.assign({}, struct, { seReduction: offOrd,
+        // Delphi's qualified dividends are added on the supp side (taxed at LT
+        // rates) — part of the gain it creates, absent on Brooklyn's side.
+        qualifiedDividend: (Number(struct.qualifiedDividend) || 0) + qdAdd,
         // O&G IDC added back to AMTI on the supp side (brkTax has no supp offset,
         // so its IDC preference is 0) — this is what trims the O&G supp's
         // incremental benefit when the IDC add-back triggers AMT.
@@ -1796,6 +1953,16 @@
     return Math.round(total);
   }
   root.__rettHonestSuppBenefit = _honestSuppBenefitForComp;
+
+  // Expose the source-of-truth resolver so other surfaces (e.g. the admin
+  // Key Points export) can read the SAME chosen-strategy comp + funded-supp
+  // set this page uses — applying the optimizer's partial-deploy dial-back —
+  // instead of re-deriving the fiddly dial-back logic and risking divergence.
+  // Returns { entry, comp, chosen, fundedSupps, solverOut } or null.
+  root.__rettResolveChosen = _resolveChosen;
+  // Per-year saturation scale for a funded supp (Y0 vs Y1+), shared so the
+  // export scales realized supp benefit exactly as Tab 7 does.
+  root.__rettSuppSatScale = _suppSatScale;
 
   root.renderTempPage = render;
 })(window);
