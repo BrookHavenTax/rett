@@ -292,10 +292,19 @@ if (existsSync(DIST_PATH)) {
   });
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(
     `[rett-server] listening on :${PORT} ` +
     `(model=${DEFAULT_MODEL}, key=${GEMINI_API_KEY ? 'set' : 'MISSING'})`,
   );
 });
+
+// The engine bootstrap loads ~55 legacy scripts one-by-one over keep-alive.
+// Node closes idle HTTP/1.1 keep-alive sockets after 5s by default, which races
+// the browser reusing one for the next script request (ECONNRESET) and surfaces
+// as an intermittent "Failed to load <module>.js" on refresh. Give idle sockets
+// a generous window so the whole sequential load can ride one connection.
+// headersTimeout must stay above keepAliveTimeout (Node requirement).
+server.keepAliveTimeout = 75_000;
+server.headersTimeout = 80_000;

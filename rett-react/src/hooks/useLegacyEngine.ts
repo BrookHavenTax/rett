@@ -109,20 +109,63 @@ export type EngineStatus =
 
 let bootstrapPromise: Promise<void> | null = null;
 
-function loadOne(src: string): Promise<void> {
+// One transient blip used to abort the whole bootstrap: a single <script>
+// onerror would reject and surface "Failed to load <module>.js". The most
+// common trigger is a keep-alive socket race — Node closes an idle HTTP/1.1
+// keep-alive connection (default 5s) right as the browser reuses it for the
+// next sequential /legacy/js/*.js request, yielding ECONNRESET with no
+// browser-level retry. A momentary 403 right at unlock has the same effect.
+// With ~55 scripts loaded one-by-one on every refresh, even a tiny per-request
+// failure rate compounds. So each load gets a few bounded retries with
+// exponential backoff + jitter; only a persistent failure aborts the boot.
+const MAX_LOAD_ATTEMPTS = 4;
+const RETRY_BASE_DELAY_MS = 150;
+
+const cacheBuster = () =>
+  `?v=${import.meta.env.MODE === 'development' ? Date.now() : '1'}`;
+
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// A single injection attempt. Resolves on load. On error it removes the failed
+// element BEFORE rejecting, so the dedup guard doesn't short-circuit the retry
+// to a (false) success on the dead <script> still sitting in the DOM.
+function injectScriptOnce(url: string, attr: string, key: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[data-rett-legacy="${src}"]`)) {
+    if (document.querySelector(`script[${attr}="${key}"]`)) {
       resolve();
       return;
     }
     const el = document.createElement('script');
-    el.src = SCRIPT_BASE + src + `?v=${import.meta.env.MODE === 'development' ? Date.now() : '1'}`;
+    el.src = url + cacheBuster();
     el.async = false; // preserve insertion order
-    el.dataset.rettLegacy = src;
+    el.setAttribute(attr, key);
     el.onload = () => resolve();
-    el.onerror = () => reject(new Error('Failed to load ' + src));
+    el.onerror = () => {
+      el.remove();
+      reject(new Error('Failed to load ' + key));
+    };
     document.head.appendChild(el);
   });
+}
+
+async function loadWithRetry(url: string, attr: string, key: string): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_LOAD_ATTEMPTS; attempt++) {
+    try {
+      await injectScriptOnce(url, attr, key);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_LOAD_ATTEMPTS) {
+        await delay(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) + Math.random() * 100);
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('Failed to load ' + key);
+}
+
+function loadOne(src: string): Promise<void> {
+  return loadWithRetry(SCRIPT_BASE + src, 'data-rett-legacy', src);
 }
 
 // React-only legacy mirrors — files that upstream embeds as INLINE
@@ -136,19 +179,7 @@ const REACT_ONLY_SCRIPTS: ReadonlyArray<string> = [
 ];
 
 function loadReactOnly(absSrc: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[data-rett-react-only="${absSrc}"]`)) {
-      resolve();
-      return;
-    }
-    const el = document.createElement('script');
-    el.src = absSrc + `?v=${import.meta.env.MODE === 'development' ? Date.now() : '1'}`;
-    el.async = false;
-    el.dataset.rettReactOnly = absSrc;
-    el.onload = () => resolve();
-    el.onerror = () => reject(new Error('Failed to load ' + absSrc));
-    document.head.appendChild(el);
-  });
+  return loadWithRetry(absSrc, 'data-rett-react-only', absSrc);
 }
 
 async function bootstrap(onProgress: (loaded: number) => void): Promise<void> {
