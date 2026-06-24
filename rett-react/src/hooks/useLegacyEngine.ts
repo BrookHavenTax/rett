@@ -102,6 +102,23 @@ const LEGACY_SCRIPTS: ReadonlyArray<string> = [
 
 const SCRIPT_BASE = '/legacy/js/';
 
+// Ad blockers (uBlock Origin, AdBlock, AdGuard, Brave Shields, …) block ANY
+// request whose URL contains the substring "banner" — the classic ad-banner
+// filter rule from EasyList. That silently cancels the request for
+// `04-ui/banner.js`, firing the <script> onerror and surfacing as a HARD,
+// repeatable "Failed to load 04-ui/banner.js" (retries don't help — every
+// attempt to that URL is blocked). It only happens in real user browsers with
+// a blocker installed, which is why automated/clean browsers never saw it.
+//
+// Fix: request that one module under an ad-blocker-safe alias. The bytes are
+// identical — the server (server/index.js) and the Vite dev middleware
+// (vite.config.ts) both map this alias back to the real banner.js file. The
+// canonical name is kept as the dedup/order key below so the load order and
+// logs stay readable.
+const AD_SAFE_URL_ALIASES: Readonly<Record<string, string>> = {
+  '04-ui/banner.js': '04-ui/notice-bar.js',
+};
+
 export type EngineStatus =
   | { state: 'loading'; loaded: number; total: number }
   | { state: 'ready' }
@@ -165,7 +182,10 @@ async function loadWithRetry(url: string, attr: string, key: string): Promise<vo
 }
 
 function loadOne(src: string): Promise<void> {
-  return loadWithRetry(SCRIPT_BASE + src, 'data-rett-legacy', src);
+  // Request via the ad-blocker-safe alias when one exists, but keep `src` as
+  // the dedup attribute / error key so order + messages stay canonical.
+  const urlPath = AD_SAFE_URL_ALIASES[src] ?? src;
+  return loadWithRetry(SCRIPT_BASE + urlPath, 'data-rett-legacy', src);
 }
 
 // React-only legacy mirrors — files that upstream embeds as INLINE

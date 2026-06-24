@@ -78,6 +78,26 @@ const verifyLimiter = rateLimit({
 });
 registerAccessRoutes(app, { verifyLimiter });
 
+// ---- Ad-blocker-safe alias for 04-ui/banner.js -------------------------
+// Ad blockers (uBlock/AdBlock/AdGuard/Brave) block ANY URL containing the
+// substring "banner" (classic EasyList ad-banner rule), which made the engine
+// module /legacy/js/04-ui/banner.js fail to load with a hard, repeatable
+// "Failed to load 04-ui/banner.js" for users who run a blocker. The React
+// loader requests this neutral alias instead; we serve the identical bytes.
+// Registered AFTER the access-gate middleware (above) and kept under
+// /legacy/js/ so it stays gated exactly like every other engine module, and
+// BEFORE the static + SPA-catchall handlers so it isn't swallowed by them.
+const BANNER_SOURCES = [
+  resolve(__dirname, '..', 'dist',   'legacy', 'js', '04-ui', 'banner.js'),
+  resolve(__dirname, '..', 'public', 'legacy', 'js', '04-ui', 'banner.js'),
+];
+app.get('/legacy/js/04-ui/notice-bar.js', (_req, res) => {
+  const file = BANNER_SOURCES.find((p) => existsSync(p));
+  if (!file) return res.status(404).end();
+  res.type('application/javascript');
+  return res.sendFile(file);
+});
+
 // ---- Health check (used by EC2 load balancers / pm2 watchdog) ----------
 app.get('/api/health', (_req, res) => {
   res.json({
