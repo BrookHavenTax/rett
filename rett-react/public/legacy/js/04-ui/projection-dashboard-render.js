@@ -4378,20 +4378,15 @@
       return interest[t] === false;
     });
     var nothingClicked = !anyInterested && !anyNotInterested;
-    // Multi-sale string: show ALL THREE cards so the client sees the future-
-    // sale comparison side by side — Installment (best) next to Traditional
-    // and Structured, each carrying its own (discounted) future-sale net.
-    // Otherwise the auto-marked-Interested installment card renders alone and
-    // the future-sale net for Traditional/Structured never shows at all
-    // (advisor 2026-06-30: "it's not showing the net benefit for those future
-    // sales for this chain of thoughts").
-    var _multiSaleSnap = false;
-    try { var _fySnap = document.getElementById('future-sale-yes-no'); _multiSaleSnap = !!(_fySnap && _fySnap.value === 'yes'); } catch (e) { _multiSaleSnap = false; }
-    var filtered = _multiSaleSnap
-      ? entries.slice()
-      : (anyInterested
-        ? entries.filter(function (e) { return interest[e.type] === true; })
-        : entries.filter(function (e) { return interest[e.type] !== false; }));
+    // Respect the Interested marks in EVERY mode, including multi-sale: only the
+    // strategies the client actually marked Interested render here (advisor
+    // 2026-06-30: "whatever is hit interested is what shows up"). We briefly
+    // forced all three in multi-sale to show the side-by-side future-sale
+    // comparison, but the advisor wants the projection to mirror their picks —
+    // each shown card still carries its own (discounted) future-sale net.
+    var filtered = anyInterested
+      ? entries.filter(function (e) { return interest[e.type] === true; })
+      : entries.filter(function (e) { return interest[e.type] !== false; });
 
     // The legacy "Mark Interested / Not Interested on the Strategies
     // page to filter this view ..." hint was removed — the cards
@@ -4399,7 +4394,7 @@
     // grid during presentations.
     var hint = '';
 
-    if ((nothingClicked && !_multiSaleSnap) || !filtered.length) {
+    if (nothingClicked || !filtered.length) {
       // Empty state — either user landed on Projections without
       // making a selection, or every strategy was clicked Not
       // Interested. Either way, surface a polite CTA back to Page 3.
