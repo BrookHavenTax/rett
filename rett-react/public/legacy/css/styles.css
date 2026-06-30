@@ -6946,7 +6946,8 @@ body { font-size: 16px; }
         gap: 1pt;
     }
     .print-client-name {
-        font-size: 11pt;
+        /* A little smaller than the 22pt RETT wordmark (advisor 2026-06-30). */
+        font-size: 18pt;
         font-weight: 700;
         color: #0a1d3d;
     }

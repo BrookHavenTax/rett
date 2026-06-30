@@ -762,6 +762,17 @@
           : '') +
         '<tr><td>Filing &middot; State</td><td class="print-r">' + _filingLabel(cfg.filingStatus) +
           ' &middot; ' + (cfg.state && cfg.state !== 'NONE' ? cfg.state : '&mdash;') + '</td></tr>' +
+        // Future sale(s) listed as part of What You Told Us (advisor 2026-06-30):
+        // "a future sale of $X with this much cost basis" — one row each. The
+        // savings + fees roll into the totals below (no separate section).
+        ((d.futureSales && d.futureSales.sales && d.futureSales.sales.length)
+          ? d.futureSales.sales.map(function (sale) {
+              var _fb = Math.max(0, (Number(sale.projectedValue) || 0) - (Number(sale.gain) || 0));
+              return '<tr><td>Future sale' + (sale.saleYear ? ' &middot; ' + sale.saleYear : '') +
+                ' <span style="opacity:.65">(cost basis ' + _fmt(_fb) + ')</span></td>' +
+                '<td class="print-r">' + _fmt(Number(sale.projectedValue) || 0) + '</td></tr>';
+            }).join('')
+          : '') +
       '</tbody></table>' +
     '</div>';
     h += '</div>'; // /print-col left
@@ -835,24 +846,9 @@
     // advisor 2026-06-15 — the dial-back rationale is internal and isn't
     // shown to the client.
 
-    // ===== Future sales (multi-sale only): show the additional sale(s) we're
-    // also covering. Already folded into the collective totals above; this just
-    // breaks them out so the client sees the future sale (advisor 2026-06-30).
-    if (d.futureSales && d.futureSales.sales && d.futureSales.sales.length) {
-      var _pfRows = d.futureSales.sales.map(function (sale) {
-        return '<tr><td>' + (sale.saleYear || '&mdash;') + '</td>' +
-          '<td class="print-num">' + _fmt(sale.projectedValue) + '</td>' +
-          '<td class="print-num print-green">+' + _fmt(sale.net) + '</td></tr>';
-      }).join('');
-      h += '<div class="print-section print-future-section">' +
-        '<div class="print-section-head">Future Sales &mdash; Also Covered</div>' +
-        '<table class="print-table">' +
-          '<thead><tr><th>Sale Year</th><th class="print-num">Projected Value</th><th class="print-num">Est. Net Benefit</th></tr></thead>' +
-          '<tbody>' + _pfRows + '</tbody>' +
-        '</table>' +
-        '<div class="print-future-note">Already included in the Net Benefit and You Save totals above.</div>' +
-      '</div>';
-    }
+    // Future sales are now listed inline in "What You Told Us" above (advisor
+    // 2026-06-30: "we don't need to say future sales also covered"); their
+    // savings + fees already roll into the What We Save You + Fees totals.
 
     // ===== 4 : "Fees" (the full roll-up, at the very bottom) =====
     h += '<div class="print-section print-fees-section">' +
