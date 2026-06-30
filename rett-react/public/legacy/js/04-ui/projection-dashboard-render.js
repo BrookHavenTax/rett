@@ -3138,27 +3138,11 @@
     // tie together for the same chosen strategy (advisor 2026-06-22 / 06-30).
     var _futureNetCard = _multiSaleCard ? _futureSaleNetFor(typeLabel) : 0;
     var _showCollectiveNet = (_multiSaleCard && _futureNetCard > 0);
-    // Multi-sale recommendation framing (advisor 2026-06-30): show all three
-    // options, but PRESELECT + recommend the Installment (middle) card — most
-    // flexibility, highest net. Traditional/Structured stay on the table as
-    // valid options, flagged with a short note that they lower the net / carry
-    // more tax (but still real benefit). Copy only on the multi-sale string.
-    var _multiRecBadge = '';
-    var _multiRecMsg = '';
-    if (_multiSaleCard) {
-      if (typeLabel === 'B') {
-        _multiRecBadge = '<span class="rett-rec-badge">Recommended</span>';
-        _multiRecMsg = '<div class="rett-strategy-note rett-strategy-note--best">' +
-          'The best fit for most sellers &mdash; it offers the most flexibility and the highest net benefit. ' +
-          'If you&rsquo;re comfortable with your buyer, this is the one we recommend.' +
-        '</div>';
-      } else {
-        _multiRecMsg = '<div class="rett-strategy-note">' +
-          'A strong option with real benefit &mdash; though it lowers your net benefit and carries greater ' +
-          'tax consequences than the installment sale.' +
-        '</div>';
-      }
-    }
+    // Multi-sale: PRESELECT + recommend the Installment (middle) card with a
+    // minimal "Recommended" badge only. The verbose per-card strategy notes
+    // were removed (advisor 2026-06-30: keep the cards to just the number).
+    var _multiRecBadge = (_multiSaleCard && typeLabel === 'B')
+      ? '<span class="rett-rec-badge">Recommended</span>' : '';
     // Lockup line replaces the old "Time horizon · Leverage" auto-pick
     // summary. Strategy choice is now described by how long the seller's
     // proceeds are tied up:
@@ -3250,7 +3234,6 @@
       (_showCollectiveNet
         ? '<div class="rett-interested-net-sub">This sale ' + _fmt(Number(metrics.net)) + ' &middot; future sales ' + _fmt(_futureNetCard) + '</div>'
         : '') +
-      _multiRecMsg +
       // The "Payment Period" lockup is about a single sale's cadence, which
       // isn't relevant once we're projecting MULTIPLE sales — so it's hidden
       // on EVERY card on the multi-sale string (advisor 2026-06-30). Hiding it
