@@ -305,7 +305,7 @@
 '.kp-body{padding:18px 28px 0 28px;}' +
 '.kp-sec{margin:0 0 20px 0;}' +
 '.kp-sec h2{font-family:Arial,Helvetica,sans-serif;font-size:12px;letter-spacing:1.5px;' +
-  'text-transform:uppercase;color:#7a1620;border-bottom:2px solid #7a1620;' +
+  'text-transform:uppercase;color:#14233f;border-bottom:2px solid #1f6feb;' +
   'padding:0 0 5px 0;margin:0 0 10px 0;}' +
 '.kp-strat{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline;}' +
 '.kp-strat .kp-strat-name{font-size:18px;font-weight:700;color:#14233f;}' +

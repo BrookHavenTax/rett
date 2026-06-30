@@ -701,17 +701,14 @@
     var tax = Math.max(0, Number(taxDueFromSale) || 0);
     var taxBounded = Math.min(tax, g);
     var keep = Math.max(0, g - taxBounded);
-    // Show the WHOLE sale proportionally: return of basis (your capital back)
-    // + gain kept + tax. Denominator = sale price so the tax slice reads in
-    // proportion to the full transaction, not just the gain (advisor 2026-06-23).
-    var basisAmt = Math.max(0, Number(basis) || 0);
-    var sale = basisAmt + g;
-    var denom = sale > 0 ? sale : 1;
-    var basisPct = basisAmt / denom;
+    // Breakdown of the GAIN only: blue Gain Kept + red Gain Lost, summing to
+    // the gain. Denominator = gain so the ring reads "of the $X you made,
+    // here's what you keep vs. what you lose to tax" (advisor 2026-06-30 —
+    // reverts the sale-denominated 3-slice version back to the original
+    // two-slice gain breakdown; the return-of-basis slice was choppy/noise).
+    var denom = g > 0 ? g : 1;
     var keepPct  = keep / denom;
     var taxPct   = taxBounded / denom;
-    // Center stat stays "% of the GAIN going to tax" — the advisor's chosen
-    // headline metric — even though the ring is now denominated by the sale.
     var lostPctReal = g > 0 ? (tax / g) : 0;
 
     // viewBox: -160 -10 520 240. Donut center (110, 110).
@@ -742,13 +739,11 @@
     }
 
     var start = -Math.PI / 2;
-    var basisSweep = basisPct * Math.PI * 2;
     var keepSweep  = keepPct * Math.PI * 2;
     var taxSweep   = taxPct * Math.PI * 2;
     var svg = '';
-    svg += _arc(start, basisSweep, '#c2ccd9');                         // slate (return of basis)
-    svg += _arc(start + basisSweep, keepSweep, '#5ba9ff');             // cyan (gain kept)
-    svg += _arc(start + basisSweep + keepSweep, taxSweep, '#dc2626');  // red (tax)
+    svg += _arc(start, keepSweep, '#5ba9ff');             // cyan (gain kept)
+    svg += _arc(start + keepSweep, taxSweep, '#dc2626');  // red (gain lost / tax)
     slicesEl.innerHTML = svg;
 
     // Leader lines + labels (SVG). Title on top line, dollar amount
@@ -777,17 +772,13 @@
                dollarStr + '</text>';
     }
     var leaders = '';
-    if (sale > 0) {
-      if (basisSweep > 0.10) {
-        var basisMid = start + basisSweep / 2;
-        leaders += _leader(basisMid, '#7c8aa0', 'Return of Basis', _fmt(basisAmt));
-      }
+    if (g > 0) {
       if (keepSweep > 0.10) {
-        var keepMid = start + basisSweep + keepSweep / 2;
+        var keepMid = start + keepSweep / 2;
         leaders += _leader(keepMid, '#2e7bb6', 'Gain Kept', _fmt(keep));
       }
       if (taxSweep > 0.10) {
-        var lostMid = start + basisSweep + keepSweep + taxSweep / 2;
+        var lostMid = start + keepSweep + taxSweep / 2;
         leaders += _leader(lostMid, '#b91c1c', 'Gain Lost', _fmt(tax));
       }
     }

@@ -530,6 +530,16 @@ body {
   border-color: var(--rett-blue);
   box-shadow: var(--bh-glow), var(--shadow);
 }
+/* Interested BUTTON (strategy cards + supplemental cards) — fill with the
+   same blue as the default-risk "Yes" toggle (#1F6FEB) instead of the amber
+   (#F0CA17), so the pick reads as one cohesive blue treatment rather than a
+   blue border around a mustard button (advisor 2026-06-30). */
+.strategy-pick-btn.is-interested,
+.supp-pick-btn.is-active[data-supx-pick-action="interested"] {
+  background: #1F6FEB;
+  border-color: #1F6FEB;
+  color: #ffffff;
+}
 
 /* ----------------------------------------------------------------------------
    11. BASELINE TILES + DONUT — brand color coding.

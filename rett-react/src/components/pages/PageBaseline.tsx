@@ -38,7 +38,7 @@ export default function PageBaseline() {
           <div className="baseline-tile-sub">Sale price &minus; tax</div>
         </div>
         <div className="baseline-pie-card">
-          <div className="baseline-pie-label">Breakdown of Sale</div>
+          <div className="baseline-pie-label">Breakdown of Gain</div>
           <div className="baseline-pie-wrap">
             {/* Donut SVG. Slices + leader lines are drawn by
                 baseline-table.js into #bt-pie-slices / #bt-pie-leaders.
