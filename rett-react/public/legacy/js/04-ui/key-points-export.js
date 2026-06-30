@@ -402,10 +402,22 @@
       suppsHtml = '<p class="kp-none">No supplemental strategies funded for this plan.</p>';
     }
 
-    // Future-sales section — rendered ONLY when d.futureSales is present (multi-
-    // sale). For a single/granular sale this is '' and the report is unchanged.
+    // Collective totals (current sale + future sales) for the SINGLE combined
+    // Bottom Line + the rolled-up fee total (advisor 2026-06-30: one bottom line
+    // — individual sale, future sales projected, then one bottom line).
+    var _hasFuture = !!(d.futureSales && d.futureSales.sales && d.futureSales.sales.length);
+    var _fsNet = _hasFuture ? (Number(d.futureSales.net) || 0) : 0;
+    var _fsFees = _hasFuture ? (Number(d.futureSales.fees) || 0) : 0;
+    var _allNet = (Number(d.net) || 0) + _fsNet;
+    var _allFeesTotal = (Number(d.fees.total) || 0) + _fsFees;
+    var _allSaved = Math.round(_allNet) + Math.round(_allFeesTotal);
+
+    // Future-sales schedule — sits RIGHT UNDER the current sale's year-by-year
+    // schedule (advisor 2026-06-30). The separate All-Sales bottom was removed in
+    // favor of the ONE combined Bottom Line below; future-sale fees roll into the
+    // Projected Fees total.
     var futureSalesHtml = '';
-    if (d.futureSales && d.futureSales.sales && d.futureSales.sales.length) {
+    if (_hasFuture) {
       var fs = d.futureSales;
       var fsRows = fs.sales.map(function (sale) {
         return '<tr><td class="kp-l kp-year">' + (sale.saleYear ? _esc(sale.saleYear) : '&mdash;') + '</td>' +
@@ -415,25 +427,14 @@
       }).join('');
       var fsTotal = '<tr class="kp-total"><td class="kp-l">Total</td><td>&mdash;</td><td>&mdash;</td>' +
         '<td>' + _usd(fs.net) + '</td></tr>';
-      // Combined "All Sales" total so the Key Points has a headline matching the
-      // Strategy Summary's collective "Net Benefit — All Sales" (current + future).
-      // Purely additive — the current-sale Bottom Line above is unchanged.
-      var allNet = (Number(d.net) || 0) + (Number(fs.net) || 0);
-      // Gross all-sales tax saved = all-sales net + all-sales fees (matches the
-      // Strategy Summary's collective You Save, ties out).
-      var allSaved = Math.round(allNet) + Math.round((Number(d.fees.total) || 0) + (Number(fs.fees) || 0));
       futureSalesHtml =
         '<div class="kp-sec"><h2>Future Sales &mdash; Projected</h2>' +
           '<p class="kp-note">Projected from the future-sale inputs (years until sale + growth) as &sect;453 installment sales' +
           (fs.usedOptimizer ? ' with cross-sale carryforward optimization' : '') +
-          '. Estimated tax saved ' + _usd(fs.taxSaved) + ' across ' + _usd(fs.fees) + ' in fees.</p>' +
+          '. Estimated tax saved ' + _usd(fs.taxSaved) + ' across ' + _usd(fs.fees) + ' in fees (rolled into the totals below).</p>' +
           '<table class="kp-tbl"><thead><tr>' +
           '<th class="kp-l">Sale Year</th><th>Projected Value</th><th>Projected Gain</th><th>Est. Net Benefit</th>' +
           '</tr></thead><tbody>' + fsRows + fsTotal + '</tbody></table>' +
-          '<div class="kp-bottom" style="margin-top:12px;">' +
-            '<div class="kp-bl kp-bl-net"><p class="kp-bl-lbl">Net Benefit &mdash; All Sales</p><p class="kp-bl-val">' + _usd(allNet) + '</p></div>' +
-            '<div class="kp-bl kp-bl-sav"><p class="kp-bl-lbl">Total Tax Saved &mdash; All Sales</p><p class="kp-bl-val">' + _usd(allSaved) + '</p></div>' +
-          '</div>' +
         '</div>';
     }
 
@@ -453,6 +454,7 @@
           '<table class="kp-tbl"><thead><tr>' +
           '<th class="kp-l">Year</th><th>Sale Proceeds</th><th>Capital Invested</th><th>Expected Loss</th><th>Fees</th>' +
           '</tr></thead><tbody>' + pyBody + pyTotal + '</tbody></table></div>' +
+        futureSalesHtml +
         '<div class="kp-sec"><h2>Projected Fees</h2>' +
           '<div class="kp-fees">' +
             '<div class="kp-fee"><p class="kp-fee-lbl">Asset Manager</p><p class="kp-fee-val">' + _usd(d.fees.brooklyn) + '</p></div>' +
@@ -460,15 +462,17 @@
               ? '<div class="kp-fee"><p class="kp-fee-lbl">Supplemental Strategies</p><p class="kp-fee-val">' + _usd(d.fees.supp) + '</p></div>'
               : '') +
             '<div class="kp-fee"><p class="kp-fee-lbl">Brookhaven</p><p class="kp-fee-val">' + _usd(d.fees.brookhaven) + '</p></div>' +
-            '<div class="kp-fee"><p class="kp-fee-lbl">Total Fees</p><p class="kp-fee-val">' + _usd(d.fees.total) + '</p></div>' +
+            (_hasFuture && _fsFees > 0
+              ? '<div class="kp-fee"><p class="kp-fee-lbl">Future Sales</p><p class="kp-fee-val">' + _usd(_fsFees) + '</p></div>'
+              : '') +
+            '<div class="kp-fee"><p class="kp-fee-lbl">Total Fees</p><p class="kp-fee-val">' + _usd(_allFeesTotal) + '</p></div>' +
           '</div></div>' +
         '<div class="kp-sec"><h2>Supplemental Strategies</h2>' + suppsHtml + '</div>' +
         '<div class="kp-sec"><h2>Bottom Line</h2>' +
           '<div class="kp-bottom">' +
-            '<div class="kp-bl kp-bl-net"><p class="kp-bl-lbl">Net Benefit</p><p class="kp-bl-val">' + _usd(d.net) + '</p></div>' +
-            '<div class="kp-bl kp-bl-sav"><p class="kp-bl-lbl">Total Tax Saved</p><p class="kp-bl-val">' + _usd(d.savings) + '</p></div>' +
+            '<div class="kp-bl kp-bl-net"><p class="kp-bl-lbl">Net Benefit' + (_hasFuture ? ' &mdash; All Sales' : '') + '</p><p class="kp-bl-val">' + _usd(_allNet) + '</p></div>' +
+            '<div class="kp-bl kp-bl-sav"><p class="kp-bl-lbl">Total Tax Saved' + (_hasFuture ? ' &mdash; All Sales' : '') + '</p><p class="kp-bl-val">' + _usd(_allSaved) + '</p></div>' +
           '</div></div>' +
-        futureSalesHtml +
       '</div>' +
       '<div class="kp-foot">Prepared by BrookHaven for planning discussion. Figures are projections based on the inputs provided and current tax law; they are estimates, not a guarantee of results, and do not constitute tax or legal advice. Confirm with your CPA before acting.</div>' +
     '</div>';
