@@ -4630,10 +4630,12 @@ body { font-size: 16px; }
     background: var(--ink);
 }
 .rett-interested-card.is-chosen {
-    /* Chosen ring switched from green to navy — the dark ring "moves
-       the eye" to the selected strategy without competing with the
-       money-gained green slice in the donut. */
-    box-shadow: 0 0 0 3px var(--rett-navy), var(--shadow);
+    /* Chosen ring uses John's Brookhaven-Blue brand accent (--rett-blue,
+       #41B9EA in brand-theme.css — the documented primary CTA/accent) so the
+       projection's selection treatment matches the lighter blue used across
+       the rest of John's app, instead of the darker navy that read as
+       off-brand here (advisor 2026-06-30). */
+    box-shadow: 0 0 0 3px var(--rett-blue), var(--shadow);
 }
 .rett-use-strategy-btn {
     margin-top: 14px;
@@ -4643,8 +4645,8 @@ body { font-size: 16px; }
        picks the strategy, .is-chosen below fills it solid navy and
        the surrounding card border darkens to match. */
     background: var(--paper);
-    color: var(--rett-navy);
-    border: 1.5px solid var(--rett-navy);
+    color: var(--rett-blue);
+    border: 1.5px solid var(--rett-blue);
     border-radius: 2px;
     font-family: var(--font-body);
     font-size: 0.92em;
@@ -4659,12 +4661,12 @@ body { font-size: 16px; }
     transform: translateY(-1px);
 }
 .rett-interested-card.is-chosen .rett-use-strategy-btn {
-    background: var(--rett-navy);
-    border-color: var(--rett-navy);
+    background: var(--rett-blue);
+    border-color: var(--rett-blue);
     color: var(--paper);
 }
 .rett-interested-card.is-chosen .rett-use-strategy-btn:hover {
-    background: var(--rett-navy-soft);
+    background: var(--rett-blue-soft);
 }
 .rett-interested-header {
     display: flex;
