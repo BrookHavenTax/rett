@@ -263,6 +263,37 @@
     var suppFeesTotal = fundedSuppFees.reduce(function (sum, s) { return sum + s.fee; }, 0);
     var totalFeesAll = fees + suppFeesTotal;   // all fees: Brooklyn + Brookhaven + supp mgmt + setup
 
+    // ---- Supp benefit DISPLAY = each supp's MARGINAL contribution -----------
+    // (advisor 2026-06-30) The engine reduces the chosen strategy's primary net
+    // to absorb the supp<->primary tax interaction and reports each supp's
+    // STANDALONE saving, so a supp could read +$525K while the headline only
+    // moved +$234K. Rescale the DISPLAYED supp benefits so they sum to the real
+    // marginal lift = net - (the chosen strategy's net with NO supps), and show
+    // the primary at that supp-blind value. The headline net, the fee roll-up,
+    // and the You Save / Fees / Net reconciliation are UNTOUCHED — only the
+    // primary<->supp attribution shown to the client changes. Gated on funded
+    // supps so the no-supp case skips the extra supp-blind pass entirely.
+    var _suppBlindPrimary = primaryNet;
+    var _suppDisplayScale = 1;
+    if (supplementalBenefit > 0 && solverOut && Array.isArray(solverOut.supplementals)) {
+      try {
+        var _sbSum = root.buildInterestedSummary({ suppBlind: true });
+        var _sbE = (_sbSum && _sbSum.entries)
+          ? _sbSum.entries.filter(function (e) { return e.type === entry.type; })[0] : null;
+        if (_sbE && _sbE.metrics && Number.isFinite(_sbE.metrics.net)) {
+          _suppBlindPrimary = Number(_sbE.metrics.net);
+          var _suppMarginalTotal = Math.max(0, net - _suppBlindPrimary);
+          var _curSuppSum = solverOut.supplementals.reduce(function (a, s) {
+            if (!s.enabled || !s.available || (s.rivalry && !s.rivalry.funded)) return a;
+            var rn = Number.isFinite(Number(s.realizedNetBenefit))
+              ? Number(s.realizedNetBenefit) : (Number(s.netBenefit) || 0);
+            return a + Math.max(0, rn);
+          }, 0);
+          _suppDisplayScale = (_curSuppSum > 0) ? (_suppMarginalTotal / _curSuppSum) : 0;
+        }
+      } catch (e) { _suppDisplayScale = 1; _suppBlindPrimary = primaryNet; }
+    }
+
     // ---- Multi-sale string: layer the future sales onto the summary ----
     // (advisor 2026-06-22) When the client flagged future sales, the Strategy
     // Summary reflects ALL their sales: the Net Benefit hero, Return on
@@ -452,7 +483,7 @@
           // master-solver supplementals' incomeBucket field (mapped
           // from spec.bucket at registration time). Brooklyn's primary
           // net is always 'cash'.
-          _renderNetBenefitBreakdown(primaryNet, solverOut, futureNet) +
+          _renderNetBenefitBreakdown(_suppBlindPrimary, solverOut, futureNet, _suppDisplayScale) +
         '</div>' +
       '</div>' +
       '<div class="forward-rop-square">' +
@@ -481,7 +512,7 @@
             '</div>' +
           '</div>' +
         '</div>' +
-        _renderSupplementalLeftColumn(solverOut) +
+        _renderSupplementalLeftColumn(solverOut, _suppDisplayScale) +
       '</div>' +
     '</div>';
 
@@ -1069,7 +1100,11 @@
   // (registry maps it from spec.bucket). 'charity' → charity bucket,
   // 'asset' → physical-asset bucket, anything else → cash bucket.
   // Brooklyn's primary net is always cash.
-  function _renderNetBenefitBreakdown(primaryNet, solverOut, futureNet) {
+  function _renderNetBenefitBreakdown(primaryNet, solverOut, futureNet, displayScale) {
+    // primaryNet is the SUPP-BLIND primary and the supp nets are scaled to their
+    // marginal contribution (advisor 2026-06-30), so the breakdown reconciles to
+    // the same hero while attributing the supp<->primary interaction to the supps.
+    var _bScale = (typeof displayScale === 'number' && isFinite(displayScale)) ? displayScale : 1;
     var cashNet = Number(primaryNet) || 0;
     var charityNet = 0;
     var assetNet = 0;
@@ -1080,8 +1115,8 @@
         if (!(s.enabled && s.available && s.rivalry && s.rivalry.funded)) return;
         // Use realized (post shared-ordinary-pool saturation) benefit so
         // the breakdown sums to the saturated hero, not the raw double-count.
-        var net = Number.isFinite(Number(s.realizedNetBenefit))
-          ? Number(s.realizedNetBenefit) : (Number(s.netBenefit) || 0);
+        var net = (Number.isFinite(Number(s.realizedNetBenefit))
+          ? Number(s.realizedNetBenefit) : (Number(s.netBenefit) || 0)) * _bScale;
         var bucket = String(s.incomeBucket || 'cash').toLowerCase();
         if (bucket === 'charity') {
           charityNet += net;
@@ -1193,16 +1228,20 @@
     '</div>';
   }
 
-  function _renderSupplementalLeftColumn(solverOut) {
+  function _renderSupplementalLeftColumn(solverOut, displayScale) {
     if (!solverOut || !solverOut.anyInterested) return '';
+    // Marginal-contribution display scale (advisor 2026-06-30): the supp amounts
+    // shown sum to the real headline lift, not each supp's standalone saving.
+    var _dScale = (typeof displayScale === 'number' && isFinite(displayScale)) ? displayScale : 1;
     // Only surface supps that actually contribute. Rivalry-rejected
     // supps (Brooklyn-beats, capital-exhausted, negative-net) and
     // pending / disabled rows are hidden — the advisor explains in
     // conversation that some Interested picks didn't add benefit and
     // were dropped. Keeps Page 5 focused on what the client gets.
     function _realized(s) {
-      return Number.isFinite(Number(s.realizedNetBenefit))
+      var raw = Number.isFinite(Number(s.realizedNetBenefit))
         ? Number(s.realizedNetBenefit) : (Number(s.netBenefit) || 0);
+      return raw * _dScale;   // marginal contribution, not standalone
     }
     // ACTIVE = supps currently adding benefit (enabled, funded, realized > 0).
     var active = solverOut.supplementals.filter(function (s) {
