@@ -3230,7 +3230,10 @@
     // aligned across all three cards. A presenter can click it during
     // the meeting if a payment-cadence question comes up; otherwise
     // it stays out of the way.
-    var paymentArrow = ((typeLabel === 'B' || typeLabel === 'C') && paymentScheduleHtml)
+    // Payment-schedule drop-down: shown for B/C on the single-sale string only.
+    // On the multi-sale string the per-sale payment cadence isn't relevant
+    // (multiple sales), so it's hidden on every card (advisor 2026-06-30).
+    var paymentArrow = (!_multiSaleCard && (typeLabel === 'B' || typeLabel === 'C') && paymentScheduleHtml)
       ? '<details class="rett-interested-paysched-arrow">' +
           '<summary aria-label="Show payment schedule"><span class="rett-paysched-arrow-glyph" aria-hidden="true"></span></summary>' +
           paymentScheduleHtml +
@@ -3248,11 +3251,11 @@
         ? '<div class="rett-interested-net-sub">This sale ' + _fmt(Number(metrics.net)) + ' &middot; future sales ' + _fmt(_futureNetCard) + '</div>'
         : '') +
       _multiRecMsg +
-      // The single-sale "Payment Period · N months" lockup is about the one
-      // current sale, so it's suppressed on the multi-sale string — the
-      // payment cadence there lives in the future-sales receipt drop-down
-      // below (advisor 2026-06-22).
-      ((_multiSaleCard && typeLabel === 'B') ? '' :
+      // The "Payment Period" lockup is about a single sale's cadence, which
+      // isn't relevant once we're projecting MULTIPLE sales — so it's hidden
+      // on EVERY card on the multi-sale string (advisor 2026-06-30). Hiding it
+      // for all three (not just installment) also keeps the cards aligned.
+      (_multiSaleCard ? '' :
         '<div class="rett-interested-lockup">' +
           '<span class="rett-interested-lockup-label">Payment Period</span>' +
           '<span class="rett-interested-lockup-value">' + lockupValue + '</span>' +

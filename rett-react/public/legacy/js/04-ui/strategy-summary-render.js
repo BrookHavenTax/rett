@@ -553,6 +553,23 @@
     // single Download PDF button at the bottom of #page-allocator
     // (index.html, uses html2pdf.js) is the only export control now.
 
+    // Compact future-sales breakdown for the leave-behind (multi-sale only),
+    // pro-rated to the DISCOUNTED collective futureNet so it ties to the
+    // on-screen Savings-by-Sale (advisor 2026-06-30: the print PDF must also
+    // show the future sale, not just fold it into the totals).
+    var _printFutureSales = null;
+    if (isMultiSummary && _fbSummary && Array.isArray(_fbSummary.perSale) && _fbSummary.perSale.length) {
+      var _pfProj = (typeof root.__rettFutureSalesProjected === 'function')
+        ? root.__rettFutureSalesProjected().filter(function (f) { return f.gain > 0; }) : [];
+      var _pfIndep = _fbSummary.perSale.reduce(function (a, p) { return a + (Number(p.net) || 0); }, 0);
+      var _pfSales = _fbSummary.perSale.map(function (p, i) {
+        var pr = _pfProj[i] || {};
+        var share = (_pfIndep > 0) ? (Number(p.net) || 0) * (futureNet / _pfIndep) : 0;
+        return { saleYear: pr.saleYear || null, projectedValue: Number(p.price) || Number(pr.projectedPrice) || 0, gain: Number(p.gain) || 0, net: Math.round(share) };
+      }).sort(function (a, b) { return (a.saleYear || 0) - (b.saleYear || 0); });
+      _printFutureSales = { sales: _pfSales, net: futureNet, taxSaved: futureTaxSaved };
+    }
+
     // Print view — hidden on screen, visible only when printing.
     html += _renderPrintView({
       cfg:            currentCfg,
@@ -571,6 +588,7 @@
       savings:        displaySavings,
       net:            displayNet,
       futureFees:     futureFees,
+      futureSales:    _printFutureSales,
       roi:            roi,
       // Return on Planning — use the SAME ratio the on-screen ROP square
       // shows (net / (fees + setup fees)) so the printout and the screen
@@ -785,6 +803,25 @@
     // "Investment optimized" note removed from the client leave-behind per
     // advisor 2026-06-15 — the dial-back rationale is internal and isn't
     // shown to the client.
+
+    // ===== Future sales (multi-sale only): show the additional sale(s) we're
+    // also covering. Already folded into the collective totals above; this just
+    // breaks them out so the client sees the future sale (advisor 2026-06-30).
+    if (d.futureSales && d.futureSales.sales && d.futureSales.sales.length) {
+      var _pfRows = d.futureSales.sales.map(function (sale) {
+        return '<tr><td>' + (sale.saleYear || '&mdash;') + '</td>' +
+          '<td class="print-num">' + _fmt(sale.projectedValue) + '</td>' +
+          '<td class="print-num print-green">+' + _fmt(sale.net) + '</td></tr>';
+      }).join('');
+      h += '<div class="print-section print-future-section">' +
+        '<div class="print-section-head">Future Sales &mdash; Also Covered</div>' +
+        '<table class="print-table">' +
+          '<thead><tr><th>Sale Year</th><th class="print-num">Projected Value</th><th class="print-num">Est. Net Benefit</th></tr></thead>' +
+          '<tbody>' + _pfRows + '</tbody>' +
+        '</table>' +
+        '<div class="print-future-note">Already included in the Net Benefit and You Save totals above.</div>' +
+      '</div>';
+    }
 
     // ===== 4 : "Fees" (the full roll-up, at the very bottom) =====
     h += '<div class="print-section print-fees-section">' +

@@ -219,12 +219,17 @@
       var _isMulti = !!(_fyEl && _fyEl.value === 'yes');
       if (_isMulti && typeof root.__rettFutureInstallmentBenefit === 'function') {
         var _fb = root.__rettFutureInstallmentBenefit();
+        // Discount the future-sale net by the CHOSEN strategy's factor so the
+        // Key Points "All Sales" total ties to the Strategy Summary collective
+        // (Installment 1.00, Traditional 0.70, Structured 0.85) — advisor 2026-06-30.
+        var _futFactorK = (root.__rettFutureSaleFactor && root.__rettFutureSaleFactor[ctx.chosen] != null)
+          ? root.__rettFutureSaleFactor[ctx.chosen] : 1;
         var _proj = (typeof root.__rettFutureSalesProjected === 'function')
           ? root.__rettFutureSalesProjected().filter(function (f) { return f.gain > 0; }) : [];
         var _per = (_fb && Array.isArray(_fb.perSale)) ? _fb.perSale : [];
         if (_fb && _per.length && ((Number(_fb.net) || 0) > 0 || (Number(_fb.fees) || 0) > 0)) {
           var _indepNetTotal = _per.reduce(function (a, p) { return a + (Number(p.net) || 0); }, 0);
-          var _targetNet = Number(_fb.net) || 0;
+          var _targetNet = (Number(_fb.net) || 0) * _futFactorK;
           var _sales = _per.map(function (p, i) {
             var pr = _proj[i] || {};
             // Pro-rate each sale's net to the OPTIMIZED collective (mirrors Tab 6's
@@ -242,9 +247,9 @@
           }).sort(function (a, b) { return (a.saleYear || 0) - (b.saleYear || 0); });
           futureSales = {
             sales: _sales,
-            taxSaved: Number(_fb.taxSaved) || 0,
-            fees: Number(_fb.fees) || 0,
-            net: Number(_fb.net) || 0,
+            taxSaved: Math.round((Number(_fb.taxSaved) || 0) * _futFactorK),
+            fees: Math.round((Number(_fb.fees) || 0) * _futFactorK),
+            net: Math.round((Number(_fb.net) || 0) * _futFactorK),
             usedOptimizer: !!_fb.usedOptimizer
           };
         }
@@ -336,10 +341,13 @@
 '.kp-note{font-family:Arial,Helvetica,sans-serif;font-size:10.5px;color:#6b7280;margin:0 0 9px 0;}' +
 '.kp-bottom{display:flex;gap:0;border-radius:5px;overflow:hidden;margin:4px 0 0 0;}' +
 '.kp-bottom .kp-bl{flex:1;padding:14px 16px;color:#fff;}' +
-'.kp-bottom .kp-bl-net{background-color:#1850b8;' +
-  'background-image:linear-gradient(135deg,#1f6feb 0%,#0b1b3a 100%);}' +
-'.kp-bottom .kp-bl-sav{background-color:#1a7a44;' +
-  'background-image:linear-gradient(135deg,#22a85a 0%,#0f5132 100%);}' +
+/* Toned down (advisor 2026-06-30): the old gradients ran into near-black navy /
+   forest green, which read too bold/intense. Lighter, lower-contrast mid-tones
+   keep white text legible without the heavy feel. */
+'.kp-bottom .kp-bl-net{background-color:#3d7fae;' +
+  'background-image:linear-gradient(135deg,#5aa6d6 0%,#3d7fae 100%);}' +
+'.kp-bottom .kp-bl-sav{background-color:#3a8a5c;' +
+  'background-image:linear-gradient(135deg,#59ad81 0%,#3a8a5c 100%);}' +
 '.kp-bl .kp-bl-lbl{font-family:Arial,Helvetica,sans-serif;font-size:10.5px;letter-spacing:1px;' +
   'text-transform:uppercase;opacity:.8;margin:0 0 3px 0;}' +
 '.kp-bl .kp-bl-val{font-size:22px;font-weight:700;}' +

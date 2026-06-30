@@ -4742,6 +4742,7 @@ body { font-size: 16px; }
     text-align: center;
     letter-spacing: -0.01em;
     margin-bottom: 14px;
+    font-variant-numeric: tabular-nums lining-nums;
 }
 /* Savings by Sale table (Strategy Summary, multi-sale string). Big, bold,
    green amounts so the per-sale savings have real pop. */
@@ -5950,6 +5951,10 @@ body { font-size: 16px; }
     font-family: var(--font-display);
     font-style: italic;
     font-weight: 500;
+    /* Tabular LINING figures so the 1s/7s are even-width and full-height in the
+       big Hanken Grotesk numbers — the hero was missing this while .rop-amt /
+       .supp-strat-amt already had it (advisor 2026-06-30: "1s and 7s look odd"). */
+    font-variant-numeric: tabular-nums lining-nums;
     /* Bumped from 84px → 108px per advisor spec; this is now the
        single largest dollar figure on the page, anchoring the eye. */
     font-size: 108px;
@@ -7009,6 +7014,15 @@ body { font-size: 16px; }
         font-size: 7.5pt;
         color: #666;
         margin-top: 2pt;
+    }
+    /* Future-sales breakout on the leave-behind — compact so the print stays
+       on one page (advisor 2026-06-30). */
+    .print-future-section { margin-top: 7pt; }
+    .print-future-note {
+        font-size: 7pt;
+        color: #6b7a90;
+        font-style: italic;
+        margin-top: 3pt;
     }
 
     /* Body columns */
