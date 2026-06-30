@@ -682,11 +682,9 @@
     // Header mirrors the trade-booth wall: RETT wordmark + 3-bar
     // glyph on the LEFT, client name/email/date stacked on the
     // RIGHT, with an amber rule beneath.
-    var glyphSVG = '<svg class="print-brand-glyph" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">' +
-      '<rect x="4"  y="16" width="7" height="20" fill="#1e4f9a"/>' +
-      '<rect x="15" y="8"  width="7" height="28" fill="#1e4f9a"/>' +
-      '<rect x="26" y="3"  width="7" height="33" fill="#6dc5e8"/>' +
-    '</svg>';
+    // Brand logo (advisor 2026-06-30: use the logo image instead of the 3-bar
+    // glyph, on the same line as the RETT wordmark via the flex header).
+    var glyphSVG = '<img class="print-brand-logo" src="/assets/rett-logo.png" alt="BrookHaven RETT" />';
     var h = '<div class="print-view"><div class="print-doc-frame">';
     h += '<div class="print-header">' +
       '<div class="print-header-brand">' +

@@ -6903,6 +6903,12 @@ body { font-size: 16px; }
         height: 22pt;
         flex: 0 0 22pt;
     }
+    .print-brand-logo {
+        height: 30pt;
+        width: auto;
+        flex: 0 0 auto;
+        object-fit: contain;
+    }
     .print-brand-text {
         display: flex;
         flex-direction: column;
@@ -7695,9 +7701,18 @@ body { font-size: 16px; }
    download path (added programmatically before snapshot). */
 @media print {
     @page {
+        /* margin:0 so the browser drops its own date / page-title / URL
+           (localhost) headers — they live in the @page margin (advisor
+           2026-06-30). The leave-behind supplies its own inset via padding on
+           .print-view below. */
         size: letter portrait;
-        margin: 0.4in 0.45in;
+        margin: 0;
     }
+    .print-view { padding: 0.4in 0.45in; }
+    /* Native print = the one-page leave-behind ONLY. The on-screen summary (the
+       host's other children) is for the screen; printing it too spilled the PDF
+       to ~3 pages with a blank trailer (advisor 2026-06-30). */
+    #strategy-fee-summary-host > :not(.print-view) { display: none !important; }
 }
 .print-mode {
     background: #fff !important;
