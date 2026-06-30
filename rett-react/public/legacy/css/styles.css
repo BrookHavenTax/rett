@@ -4280,6 +4280,15 @@ body { font-size: 16px; }
     align-items: center;
     justify-content: center;
 }
+/* Supp cards stretch to equal height in the grid, but their "Input Details"
+   panels differ in row count (Oil & Gas has 2 rows, Delphi 1). With the
+   default stretched 6-row grid that extra card height was distributed AMONG
+   the auto rows, so the shorter-panel card (Delphi) had its rows spread apart
+   and its Input Details arrow + panel pushed DOWN out of line with the others.
+   align-content:start packs every card's rows to the top so the content — and
+   the Input Details row — lines up across the row; the leftover stretch height
+   simply sits as blank space at the card bottom (advisor 2026-06-30). */
+.supp-strategy-card { align-content: start; }
 .strategy-pick-tagline {
     font-family: var(--font-body);
     font-size: 1.05em;
