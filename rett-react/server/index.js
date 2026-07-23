@@ -27,6 +27,7 @@ import {
   createAccessGateMiddleware,
   registerAccessRoutes,
 } from './access-gate.js';
+import { createFlowsRouter } from './flows.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_CANDIDATES = [
@@ -66,7 +67,13 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '1kb' }));
+// The 1kb JSON cap protects the tiny access-verify bodies. Flow snapshots
+// (full captureFormState payloads) are far bigger, so /api/flows carries its
+// own 2mb parser inside its router and is routed around this one.
+const smallJson = express.json({ limit: '1kb' });
+app.use((req, res, next) =>
+  req.path.startsWith('/api/flows') ? next() : smallJson(req, res, next),
+);
 app.use(createAccessGateMiddleware());
 
 const verifyLimiter = rateLimit({
@@ -107,6 +114,11 @@ app.get('/api/health', (_req, res) => {
     uptimeSec:     Math.floor(process.uptime()),
   });
 });
+
+// ---- Saved RETT flows (Neon Postgres) ----------------------------------
+// Cloud persistence for completed + in-progress workflows. Sits behind the
+// access gate like every other /api route. See server/flows.js.
+app.use('/api/flows', createFlowsRouter());
 
 // ---- Multer: 10 MB cap, in-memory ----
 const upload = multer({

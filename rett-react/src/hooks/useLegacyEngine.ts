@@ -196,6 +196,12 @@ function loadOne(src: string): Promise<void> {
 // the sync-from-upstream rsync mirror uses --delete on those subfolders.
 const REACT_ONLY_SCRIPTS: ReadonlyArray<string> = [
   '/rett-react-only/additional-funds-ui.js',
+  // Cloud persistence + Saved Flows history tab. Must load AFTER
+  // case-storage.js and controls.js define RETTCaseStorage/showPage (it
+  // patches both) and BEFORE bindControls() runs below — bindControls fires
+  // the boot-time showPage(startPage), and the wrap must already be in
+  // place so page tracking starts correct.
+  '/rett-react-only/cloud-sync.js',
 ];
 
 function loadReactOnly(absSrc: string): Promise<void> {

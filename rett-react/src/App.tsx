@@ -12,6 +12,7 @@ import PageProjection from './components/pages/PageProjection';
 import PageSupplemental from './components/pages/PageSupplemental';
 import PageSummary from './components/pages/PageSummary';
 import PageTemp from './components/pages/PageTemp';
+import PageHistory from './components/pages/PageHistory';
 
 // React renders the same DOM scaffold the upstream `index.html` ships, then
 // hands navigation control entirely to upstream's `js/04-ui/controls.js`,
@@ -41,6 +42,7 @@ export default function App() {
         <PageSupplemental />
         <PageSummary />
         <PageTemp />
+        <PageHistory />
       </main>
       <Footer />
       <EngineGate status={engine} />

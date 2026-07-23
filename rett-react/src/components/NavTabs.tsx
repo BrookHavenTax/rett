@@ -43,6 +43,13 @@ export default function NavTabs() {
     }
   }
 
+  function showHistory() {
+    const w = window as unknown as { __rettShowHistoryPage?: () => void };
+    // No-op until the engine (and cloud-sync.js with it) finishes loading —
+    // the EngineGate overlay blocks clicks until then anyway.
+    w.__rettShowHistoryPage?.();
+  }
+
   return (
     <nav className="nav" role="tablist" aria-label="Workflow steps">
       <button id="nav-pmq"          className="nav-tab active" role="tab" aria-selected="true"  aria-controls="page-pmq"          type="button">0. Pre-Meeting</button>
@@ -88,6 +95,20 @@ export default function NavTabs() {
         onClick={hideTab7}
         hidden={!tempVisible}
       >{'\u2212'}</button>
+      {/* React-only Saved Flows tab. page-history is not in controls.js
+          PAGE_IDS (upstream mirror \u2014 we avoid editing it), so this button
+          carries its own onClick into cloud-sync.js's
+          window.__rettShowHistoryPage, which mirrors showPage() semantics
+          for the history section. */}
+      <button
+        id="nav-history"
+        className="nav-tab nav-history-tab"
+        role="tab"
+        aria-selected="false"
+        aria-controls="page-history"
+        type="button"
+        onClick={showHistory}
+      >Saved Flows</button>
     </nav>
   );
 }

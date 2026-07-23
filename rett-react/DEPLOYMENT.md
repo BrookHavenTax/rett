@@ -115,6 +115,9 @@ PORT=8787
 ALLOWED_ORIGINS=https://rett.yourdomain.com
 RATE_LIMIT_WINDOW_MS=600000
 RATE_LIMIT_MAX=30
+# Neon Postgres — saved RETT flows (history + auto-save). Without this the
+# app still works, but /api/flows returns 503 and nothing saves to the cloud.
+DATABASE_URL=postgresql://USER:PASSWORD@YOUR-NEON-HOST/neondb?sslmode=require&channel_binding=require
 EOF
 
 sudo chown root:rett /etc/rett/server.env

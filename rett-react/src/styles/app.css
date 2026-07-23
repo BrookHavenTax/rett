@@ -152,3 +152,132 @@
 #nav-temp-hide {
   border-right: 1px solid #0b0b0e;
 }
+
+/* ---------- Saved Flows (History) page ----------
+   Scaffold rendered by PageHistory.tsx; rows rendered into
+   #history-list-host by rett-react-only/cloud-sync.js. Palette leans on
+   the brand-theme variables (--ink/--paper/--rule) so the table reads as
+   part of the existing system. */
+
+.history-page-header { margin-bottom: 18px; }
+
+.history-page-sub {
+  color: var(--ink-soft, #423c7a);
+  max-width: 640px;
+  margin: 6px 0 14px;
+  line-height: 1.5;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.history-sync-status {
+  font-size: 12.5px;
+  color: var(--ink-soft, #4a5568);
+}
+.history-sync-status.is-error { color: #8a1f1f; }
+
+.history-summary {
+  color: var(--ink-soft, #4a5568);
+  font-size: 13.5px;
+  margin: 0 0 10px;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule, #dce6f3);
+  border-radius: 10px;
+  background: var(--paper, #fff);
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.history-table th {
+  text-align: left;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #4a5568);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule, #dce6f3);
+  background: var(--paper-cool, #f3f7fc);
+  white-space: nowrap;
+}
+
+.history-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule-soft, #eaf1f9);
+  vertical-align: middle;
+}
+
+.history-table tbody tr:last-child td { border-bottom: none; }
+.history-table tbody tr:hover { background: var(--paper-warm, #eef4fb); }
+
+.history-client { font-weight: 600; color: var(--ink, #231F55); }
+
+.history-draft-name {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--ink-soft, #6b7280);
+}
+
+.history-state-code {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft, #4a5568);
+  border: 1px solid var(--rule, #dce6f3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  vertical-align: 1px;
+}
+
+.history-pill {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.history-pill-done { background: #e9f7ec; color: #1f5f33; }
+.history-pill-wip  { background: #fff7e6; color: #8a5a00; }
+
+.history-when {
+  white-space: nowrap;
+  color: var(--ink-soft, #4a5568);
+  font-size: 13px;
+}
+
+.history-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+.history-actions .btn {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.history-actions .btn + .btn { margin-left: 8px; }
+
+.history-empty,
+.history-error {
+  border: 1px dashed var(--rule, #dce6f3);
+  border-radius: 10px;
+  padding: 36px 24px;
+  text-align: center;
+  color: var(--ink-soft, #4a5568);
+}
+.history-empty-sub { font-size: 13px; margin-top: 6px; }
+.history-error { border-color: #e5b8b3; color: #8a1f1f; }
+.history-error .btn { margin-top: 12px; }
+
+.history-loading { color: var(--ink-soft, #4a5568); }
