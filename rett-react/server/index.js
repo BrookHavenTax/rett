@@ -40,6 +40,13 @@ for (const p of ENV_CANDIDATES) {
 
 const app = express();
 
+// Behind the Nginx TLS terminator in production: trust the first proxy hop so
+// req.ip reflects the real client (correct per-IP rate limiting) and req.secure
+// reflects X-Forwarded-Proto (so the access cookie gets its Secure flag over
+// HTTPS). Harmless in dev where there is no proxy setting the X-Forwarded-*
+// headers. Scoped to one hop — do not trust arbitrary forwarded chains.
+app.set('trust proxy', 1);
+
 // ---- Config from env ---------------------------------------------------
 const PORT             = Number(process.env.PORT || 8787);
 const GEMINI_API_KEY   = process.env.GEMINI_API_KEY || '';
