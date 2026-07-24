@@ -577,6 +577,12 @@
           openBtn.addEventListener('click', function () { openFlow(f.id, openBtn); });
           actions.appendChild(openBtn);
 
+          var pdfBtn = _el('button', 'btn btn-secondary history-pdf-btn', 'PDF');
+          pdfBtn.type = 'button';
+          pdfBtn.title = 'Download this flow as a PDF';
+          pdfBtn.addEventListener('click', function () { downloadFlowPdf(f, pdfBtn); });
+          actions.appendChild(pdfBtn);
+
           var delBtn = _el('button', 'btn btn-secondary history-delete-btn', 'Delete');
           delBtn.type = 'button';
           delBtn.addEventListener('click', function () {
@@ -700,6 +706,56 @@
         if (typeof root.showBanner === 'function') {
           root.showBanner('error', 'Could not open the saved flow: ' + (err && err.message ? err.message : 'unknown error'));
         }
+      });
+  }
+
+  function downloadFlowPdf(f, btn) {
+    if (typeof root.__rettDownloadFlowPdf !== 'function') {
+      if (typeof root.showBanner === 'function') {
+        root.showBanner('error', 'PDF export is still loading — try again in a moment.');
+      }
+      return;
+    }
+    var meta = {
+      clientName: f.client_name || '',
+      status: f.status,
+      taxYear: f.tax_year || '',
+      stateCode: f.state_code || '',
+      updatedAt: f.updated_at,
+    };
+    // If this row is the flow currently on the form, export the freshest
+    // capture rather than the last-synced snapshot (they can differ by up to
+    // the debounce window). Match by active client name, or by draft id.
+    var activeName = _activeName();
+    var isCurrent = (f.client_name && activeName &&
+        f.client_name.toLowerCase() === activeName.toLowerCase()) ||
+      (!f.client_name && !activeName && _getDraftId() && _getDraftId() === f.id);
+    if (isCurrent) {
+      try {
+        root.__rettDownloadFlowPdf(store.captureFormState(), meta);
+        return;
+      } catch (e) { /* fall through to the stored snapshot */ }
+    }
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    fetch('/api/flows/' + encodeURIComponent(f.id))
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (b) {
+          throw new Error((b && b.error) || ('HTTP ' + r.status));
+        });
+        return r.json();
+      })
+      .then(function (data) {
+        var flow = data && data.flow;
+        if (!flow || !flow.form_state) throw new Error('Flow payload is empty.');
+        root.__rettDownloadFlowPdf(flow.form_state, meta);
+      })
+      .catch(function (err) {
+        if (typeof root.showBanner === 'function') {
+          root.showBanner('error', 'Could not build the PDF: ' + (err && err.message ? err.message : 'unknown error'));
+        }
+      })
+      .finally(function () {
+        if (btn) { btn.disabled = false; btn.textContent = 'PDF'; }
       });
   }
 

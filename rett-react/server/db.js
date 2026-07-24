@@ -44,6 +44,19 @@ function getPool() {
   return pool;
 }
 
+// Two tables:
+//   rett_flows          — the LIVE, current state of each flow (name-keyed).
+//   rett_flow_versions  — an APPEND-ONLY, immutable audit log. Every save
+//                         writes a new version row; a delete first archives
+//                         the final state as a 'delete' version. Rows here are
+//                         never UPDATEd or DELETEd, so no overwrite or deletion
+//                         of a live flow can ever lose data — the full history
+//                         is always recoverable from this table.
+//
+// The whole block is idempotent (IF NOT EXISTS) and purely additive: it
+// contains no DROP/TRUNCATE/ALTER-DROP, so running it on every cold start —
+// including a prod deploy against a database that already holds live data —
+// can never destroy or alter existing rows.
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS rett_flows (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -60,6 +73,19 @@ const SCHEMA_SQL = `
     ON rett_flows (lower(client_name)) WHERE client_name <> '';
   CREATE INDEX IF NOT EXISTS rett_flows_updated_idx
     ON rett_flows (updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS rett_flow_versions (
+    version_id   BIGSERIAL PRIMARY KEY,
+    flow_id      UUID NOT NULL,
+    client_name  TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'in_progress',
+    form_state   JSONB NOT NULL,
+    last_page    TEXT NOT NULL DEFAULT 'page-inputs',
+    event        TEXT NOT NULL DEFAULT 'sync',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS rett_flow_versions_flow_idx
+    ON rett_flow_versions (flow_id, version_id DESC);
 `;
 
 // Idempotent; retried on the next request if a cold start raced Neon.
@@ -82,4 +108,23 @@ export function ensureSchema() {
 export async function dbQuery(text, params) {
   await ensureSchema();
   return getPool().query(text, params);
+}
+
+// Run fn inside a single transaction on a dedicated client. Used so a live-row
+// write and its append-only version-log insert commit atomically — either both
+// land or neither does, so the audit history can never drift from the live row.
+export async function withTransaction(fn) {
+  await ensureSchema();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already broken */ }
+    throw err;
+  } finally {
+    client.release();
+  }
 }

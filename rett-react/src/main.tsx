@@ -8,6 +8,9 @@ import './styles/app.css';
 // overrides upstream :root tokens + class hooks, never touches the synced
 // /legacy/css/styles.css. See the file header for the full rationale.
 import './styles/brand-theme.css';
+// Registers window.__rettDownloadFlowPdf for the Saved Flows PDF export.
+// Side-effect import — the module assigns the global on load.
+import './pdf/flowPdf';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
