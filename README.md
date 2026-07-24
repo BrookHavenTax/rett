@@ -7,6 +7,10 @@ upstream HTML site is preserved 1:1. Nothing has been redesigned, removed,
 or "improved." The upstream calculator JS runs unchanged, including the
 upstream W-2 / 1040 → Section 02 Gemini Flash autofill.
 
+> **Setting up on a new machine?** See [`rett-react/SETUP.md`](rett-react/SETUP.md)
+> — clone, install, and connect the Neon-backed **Saved Flows** database
+> (the connection string is a secret kept out of this public repo).
+
 ```
 Rett/
 ├── _original-source/     # Untouched clone of the upstream HTML/CSS/JS site,
