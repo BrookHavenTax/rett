@@ -14,8 +14,10 @@
 
 // Load env from server/.env regardless of where node was launched from
 // (concurrently runs us with cwd=rett-react; pm2 in production runs us with
-// cwd=/var/www/rett-react/server). Either way, the .env we want is alongside
-// this file. In production we ALSO honor /etc/rett/server.env if present.
+// cwd=/home/ubuntu/rett-react/rett-react). Either way, the .env we want is
+// alongside this file — that IS the live config in production. We also honor
+// /etc/rett/server.env, which takes precedence if present; today it is not
+// (the dir exists but is empty on the box). See ../DEPLOYMENT.md §4.
 import { config as dotenvConfig } from 'dotenv';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -320,9 +322,10 @@ app.use((err, _req, res, _next) => {
 });
 
 // ---- Serve the built React app from ../dist if it exists. This lets a single
-// ---- Node process serve both the static frontend and the /api proxy on EC2,
-// ---- so we don't need Nginx. In dev (vite running separately) dist/ won't
-// ---- exist and these handlers no-op.
+// ---- Node process serve both the static frontend and the /api routes on EC2:
+// ---- Nginx is only a TLS terminator there and proxies ALL of `location /`
+// ---- here, so these handlers are what actually serve the site in production.
+// ---- In dev (vite running separately) dist/ won't exist and they no-op.
 const DIST_PATH = resolve(__dirname, '..', 'dist');
 if (existsSync(DIST_PATH)) {
   app.use(express.static(DIST_PATH, { index: 'index.html', extensions: ['html'] }));

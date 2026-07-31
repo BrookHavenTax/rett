@@ -146,10 +146,15 @@ that one element until you re-point the override.
    git add public/legacy public/rett-react-only src/components src/styles src/hooks index.html SYNC.md
    git commit -m "Sync upstream <short-sha>: <one-line summary>"
    git push
-   ssh -i ~/.ssh/rett.pem ubuntu@<ec2-ip> '
-     cd ~/rett-react/rett-react && git pull && npm run build && pm2 restart rett
+   ssh -i ~/.ssh/rett-ec2.pem ubuntu@18.222.239.106 '
+     cd ~/rett-react && git fetch origin && git reset --hard origin/main &&
+     cd rett-react && npm ci && npm run build &&
+     pm2 restart rett --update-env && pm2 save
    '
    ```
+
+   `DEPLOYMENT.md` §2 is the canonical deploy sequence — if it and this block
+   ever disagree, that one wins. Smoke-test after (`DEPLOYMENT.md` §6).
 
 ## Sync history
 

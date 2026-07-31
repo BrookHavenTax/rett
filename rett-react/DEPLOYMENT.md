@@ -1,258 +1,457 @@
-# Deploying the RETT React app on AWS EC2
+# Production deployment — RETT React app on AWS EC2
 
-This document is a runbook for getting the React frontend + Express Gemini
-proxy onto an Ubuntu 24.04 EC2 instance, fronted by Nginx, and reachable
-over HTTPS at a domain you control.
+This is the runbook for the **live** deployment. Everything below was verified
+against the running box on **2026-07-30**; where this doc and your memory
+disagree, re-verify with the smoke tests in §6 before changing anything.
 
-## 0. Architecture
-
-```
-                 ┌──────────────────────────────────────────┐
-                 │ EC2 (t3.small or t3.micro is enough)     │
-                 │                                          │
-  Internet ───▶ Nginx :443 ──┬─▶ /            (static)      │
-                             │   /var/www/rett-react/dist/  │
-                             │                              │
-                             └─▶ /api/...     (proxy)       │
-                                 → http://127.0.0.1:8787    │
-                                   pm2-managed Node:        │
-                                   server/index.js          │
-                                   (holds GEMINI_API_KEY)   │
-                 └──────────────────────────────────────────┘
-```
-
-Two key benefits of this setup:
-
-- **The Gemini API key never leaves the server.** It's in
-  `/etc/rett/server.env`, readable only by the `rett` user.
-- **HTTP/2 + gzip on Nginx** for the static bundle; Node only handles the
-  one `/api/*` route. Easy to scale, easy to debug.
+> **Read §1 before anything else.** A previous version of this doc described an
+> architecture that was never deployed (Nginx serving static files out of
+> `/var/www`, a pm2 app called `rett-api`, a placeholder domain). That cost a
+> real deploy real time. The facts below are the ones that matter.
 
 ---
 
-## 1. Pre-flight (do this on your laptop)
+## 1. Production facts (the whole point of this document)
 
-1. **Rotate the Gemini API key you sent in chat.** Do this *before* you put
-   anything on EC2. <https://aistudio.google.com/apikey>.
-2. Buy or repoint a domain (e.g. `rett.yourdomain.com`) to the EC2
-   instance's elastic IP. Without a domain you can't get a free TLS cert
-   from Let's Encrypt.
-3. Build the React bundle locally to make sure it builds:
-   ```bash
-   cd rett-react && npm install && npm run build
-   ls dist/   # should contain index.html, assets/, legacy/, data/
-   ```
-
-## 2. Launch the EC2 instance
-
-| Setting              | Value                                                       |
-| -------------------- | ----------------------------------------------------------- |
-| AMI                  | `Ubuntu 24.04 LTS (HVM), SSD Volume Type` (ARM64 or x86_64) |
-| Instance type        | `t3.small` (2 vCPU, 2 GB) — `t3.micro` works for low traffic |
-| Storage              | 20 GB gp3                                                   |
-| Security group       | Inbound 22 (your IP), 80, 443 (0.0.0.0/0). Outbound: all.   |
-| Key pair             | One you have local access to                                |
-| Elastic IP           | Allocate + associate so the IP doesn't change on reboot     |
+| Thing | Value |
+| --- | --- |
+| **Public URL** | <https://18.222.239.106.sslip.io> |
+| **Host** | `ubuntu@18.222.239.106` (EC2 `i-068c00424e3cead53`, `t3.micro`, `us-east-2`) |
+| **SSH key** | `~/.ssh/rett-ec2.pem` |
+| **OS / runtime** | Ubuntu 26.04 LTS, Node v22.22.2, npm 10.9.7, pm2 7.0.1 |
+| **Deploy dir** | `~/rett-react` — a git clone of `BrookHavenTax/rett`, branch `main` |
+| **App dir** | `~/rett-react/rett-react` (the repo has the app one level down) |
+| **pm2 app name** | **`rett`** (running as the `ubuntu` user) |
+| **App port** | `127.0.0.1:8787` (loopback only; not exposed publicly) |
+| **Live env file** | `~/rett-react/rett-react/server/.env` (mode `0600`) |
+| **Nginx site** | `/etc/nginx/sites-available/rett.conf` → symlinked into `sites-enabled/` |
+| **TLS cert** | `/etc/letsencrypt/live/18.222.239.106.sslip.io/`, auto-renewing |
 
 SSH in:
 
 ```bash
-ssh -i ~/.ssh/your-key.pem ubuntu@<elastic-ip>
+ssh -i ~/.ssh/rett-ec2.pem ubuntu@18.222.239.106
 ```
 
-## 3. System bootstrap
+Note on the key: `~/.ssh/rett-ec2.pem` and `~/Downloads/rettnew.pem` are the
+**same key** (both `SHA256:C0Ufo6QU1599fxlQGdYvG8mgt2meMCxIKzjFPQmQddE`).
+`~/.ssh/rett-ec2.pem` is the canonical path — use it.
+
+There is **no custom domain**. The hostname is
+`18.222.239.106.sslip.io`, which is [sslip.io](https://sslip.io) resolving the
+embedded IP back to itself. That is what makes a free Let's Encrypt cert
+possible without owning a domain. If the elastic IP ever changes, the hostname,
+the cert, and the Nginx `server_name` all change with it — see §8.
+
+---
+
+## 2. Deploying an update
+
+This is the whole deploy. Run it on the box:
 
 ```bash
-# Latest packages and the basics.
-sudo apt update && sudo apt -y upgrade
-sudo apt -y install nginx git curl ufw
-
-# Node 20 LTS via NodeSource.
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt -y install nodejs
-
-# pm2 globally for managing the Express proxy as a service.
-sudo npm i -g pm2
-
-# Firewall — only Nginx + SSH.
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw --force enable
-
-# Dedicated runtime user (no sudo, no home write outside /var/lib/rett).
-sudo useradd -r -m -d /var/lib/rett -s /usr/sbin/nologin rett
+cd ~/rett-react
+git fetch origin
+git reset --hard origin/main
+cd rett-react
+npm ci
+npm run build
+pm2 restart rett --update-env
+pm2 save
 ```
 
-## 4. Get the code onto the box
+Then run the smoke tests in §6. As a one-liner:
 
 ```bash
-sudo mkdir -p /var/www/rett-react
-sudo chown -R ubuntu:ubuntu /var/www/rett-react
-
-# Option A — push from laptop with rsync (recommended for iteration):
-#   on your laptop, after `npm run build`:
-#     rsync -avz --delete rett-react/dist/        ubuntu@HOST:/var/www/rett-react/dist/
-#     rsync -avz --delete rett-react/server/      ubuntu@HOST:/var/www/rett-react/server/
-#     rsync -avz --delete rett-react/package.json ubuntu@HOST:/var/www/rett-react/
-
-# Option B — clone on the box if you've pushed it to a private repo:
-#   cd /var/www && sudo -u ubuntu git clone git@github.com:you/rett.git rett-react
-#   cd rett-react && npm install && npm run build
-
-# Either way, install the proxy's deps:
-cd /var/www/rett-react/server
-npm install --omit=dev
+ssh -i ~/.ssh/rett-ec2.pem ubuntu@18.222.239.106 \
+  'cd ~/rett-react && git fetch origin && git reset --hard origin/main && cd rett-react && npm ci && npm run build && pm2 restart rett --update-env && pm2 save'
 ```
 
-## 5. Configure the API key (the only secret on the box)
+Why each step:
+
+- **`git reset --hard origin/main`**, not `git pull`. The working tree on the
+  box has untracked cruft in it (§9) and a merge/rebase on a production box is
+  a failure mode nobody wants at 11pm. Reset makes the checkout exactly
+  `origin/main`. Untracked files survive a reset — see §9 for the cleanup.
+- **`npm ci` in `rett-react/`, not the repo root.** There is no package
+  manifest at the repo root. `npm ci` here also runs the `postinstall` hook
+  (`cd server && npm install --omit=dev`), so the Express server's own
+  dependencies are installed as part of this step — you do **not** need a
+  separate install in `server/`.
+- **`npm run build`** = `tsc -b && vite build`, writing `rett-react/dist/`.
+  This is what actually gets served (§3). Builds run **on the box**; a failure
+  here leaves the previous `dist/` in place and the site still up, which is
+  why the restart comes after the build and not before.
+- **`pm2 restart rett --update-env`** re-reads `server/.env`. Without
+  `--update-env`, pm2 reuses the environment captured at first start, so an
+  env change appears to do nothing.
+- **`pm2 save`** rewrites the pm2 dump so the app comes back after a reboot.
+
+**Deploys do not touch Nginx, TLS, or `server/.env`.** The site PIN lives in
+`server/access-config.js` in the repo, so rotating it is a normal code change
+that ships through the sequence above with no server-side env edit.
+
+### When the upstream calculator changes
+
+Run the sync locally, commit, push, then deploy normally:
 
 ```bash
-sudo mkdir -p /etc/rett
-sudo tee /etc/rett/server.env > /dev/null <<'EOF'
-GEMINI_API_KEY=PASTE_THE_NEW_ROTATED_KEY_HERE
-GEMINI_MODEL=gemini-2.5-flash
-PORT=8787
-ALLOWED_ORIGINS=https://rett.yourdomain.com
-RATE_LIMIT_WINDOW_MS=600000
-RATE_LIMIT_MAX=30
-# Neon Postgres — saved RETT flows (history + auto-save). Without this the
-# app still works, but /api/flows returns 503 and nothing saves to the cloud.
-DATABASE_URL=postgresql://USER:PASSWORD@YOUR-NEON-HOST/neondb?sslmode=require&channel_binding=require
-EOF
-
-sudo chown root:rett /etc/rett/server.env
-sudo chmod 640 /etc/rett/server.env  # only root + rett group can read it
+# on your laptop
+cd rett-react && npm run sync:upstream && npm run build   # verify it builds
+git add -A && git commit && git push origin main
+# then run the deploy sequence above on the box
 ```
 
-## 6. Run the proxy under pm2
+There is no `rsync` step. Nothing is copied from your laptop to the box — the
+box builds from git. (See `SYNC.md` for what `sync:upstream` actually does.)
 
-```bash
-# Start the proxy as the rett user, loading env from the file above.
-sudo -u rett env $(cat /etc/rett/server.env | xargs) \
-  pm2 start /var/www/rett-react/server/index.js --name rett-api
+---
 
-# Persist across reboots.
-sudo -u rett pm2 save
-sudo env PATH=$PATH pm2 startup systemd -u rett --hp /var/lib/rett
+## 3. Architecture (what actually runs)
 
-# Smoke test:
-curl -s http://127.0.0.1:8787/api/health | jq
-# {"ok":true,"keyConfigured":true,"defaultModel":"gemini-2.5-flash",...}
+```
+                 ┌────────────────────────────────────────────────────┐
+                 │ EC2 t3.micro — ubuntu@18.222.239.106               │
+                 │                                                    │
+  Internet ──▶ Nginx :443 (TLS terminator ONLY)                       │
+               server_name 18.222.239.106.sslip.io                    │
+                 │                                                    │
+                 │  location /  →  proxy_pass 127.0.0.1:8787          │
+                 │  ALL paths. No `root`. No static files in Nginx.   │
+                 │                     │                              │
+                 │                     ▼                              │
+                 │  pm2 app "rett"  →  node server/index.js           │
+                 │    cwd  /home/ubuntu/rett-react/rett-react         │
+                 │                                                    │
+                 │    ├─ express.static('../dist')  ← the React build │
+                 │    ├─ SPA catch-all → dist/index.html              │
+                 │    ├─ /api/gemini/*   (holds GEMINI_API_KEY)       │
+                 │    ├─ /api/flows/*    (Neon Postgres)              │
+                 │    └─ /api/access/*   (PIN gate)                   │
+                 └────────────────────────────────────────────────────┘
 ```
 
-## 7. Configure Nginx
+**One Node process serves everything** — the static bundle *and* the API. Nginx
+is a TLS terminator and reverse proxy, nothing more. `server/index.js` mounts
+`express.static(resolve(__dirname, '..', 'dist'))` plus an SPA catch-all, which
+is why `location /` can proxy the whole site to `:8787`.
 
-```bash
-sudo tee /etc/nginx/sites-available/rett.conf > /dev/null <<'EOF'
+Consequences worth internalizing:
+
+- **A stale `dist/` is a stale site.** If you `git reset` but skip
+  `npm run build`, Nginx happily serves the old bundle; there is no separate
+  static root to inspect. `pm2 restart` alone does not rebuild anything.
+- **`/var/www` is irrelevant.** Nothing reads from it. If you find yourself
+  rsyncing into `/var/www/rett-react/dist`, you are following the old, wrong
+  runbook.
+- **The app trusts one proxy hop** (`app.set('trust proxy', 1)`) so `req.ip` is
+  the real client for rate limiting and `req.secure` reflects
+  `X-Forwarded-Proto` so the access cookie gets its `Secure` flag. That is
+  correct *because* Nginx is in front and sets those headers. Do not expose
+  `:8787` directly.
+
+### The live Nginx config
+
+`/etc/nginx/sites-available/rett.conf`, symlinked into `sites-enabled/`
+(it is the only enabled site — the stock `default` site is gone):
+
+```nginx
 server {
-  listen 80;
-  server_name rett.yourdomain.com;
+  server_name 18.222.239.106.sslip.io;
 
-  # Static React bundle.
-  root /var/www/rett-react/dist;
-  index index.html;
+  client_max_body_size 12m;   # matches multer 10MB cap + slack
 
-  # gzip everything that compresses well.
-  gzip on;
-  gzip_types text/plain application/javascript application/json text/css image/svg+xml;
-  gzip_min_length 1024;
-
-  # SPA fallback — every URL that isn't a real file goes to index.html so
-  # client-side routing works.
   location / {
-    try_files $uri $uri/ /index.html;
-  }
-
-  # Proxy /api/* to the Express server holding the Gemini key.
-  location /api/ {
     proxy_pass         http://127.0.0.1:8787;
     proxy_http_version 1.1;
     proxy_set_header   Host              $host;
     proxy_set_header   X-Real-IP         $remote_addr;
     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $scheme;
-    client_max_body_size 12m;   # matches multer's 10 MB cap + slack
-    proxy_read_timeout   120s; # Gemini extraction can take ~20s on big PDFs
+    proxy_read_timeout 120s;   # Gemini extraction can take ~20s
   }
 
-  # Long-cache the hashed Vite assets; never cache index.html.
-  location /assets/ {
-    expires 30d;
-    add_header Cache-Control "public, max-age=2592000, immutable";
-  }
-  location = /index.html {
-    add_header Cache-Control "no-cache, no-store, must-revalidate";
-  }
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/18.222.239.106.sslip.io/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/18.222.239.106.sslip.io/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
 }
-EOF
 
-sudo ln -sf /etc/nginx/sites-available/rett.conf /etc/nginx/sites-enabled/rett.conf
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+server {
+    if ($host = 18.222.239.106.sslip.io) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+  listen 80;
+  listen [::]:80;
+  server_name 18.222.239.106.sslip.io;
+    return 404; # managed by Certbot
+}
 ```
 
-Open `http://rett.yourdomain.com` and confirm it loads.
+Certbot wrote the `listen 443`/`ssl_*` lines and the port-80 block. Reload
+after any edit with `sudo nginx -t && sudo systemctl reload nginx`.
 
-## 8. HTTPS via Let's Encrypt
+### `http://18.222.239.106/` returning 404 is correct, not an outage
+
+Read this before you page yourself. Hitting the box by **bare IP over plain
+HTTP** returns **404**, by design:
+
+- The port-80 server block redirects to HTTPS **only when `$host` is
+  `18.222.239.106.sslip.io`**.
+- A bare-IP request has `$host = 18.222.239.106`, matches no `server_name`,
+  falls through to Certbot's catch-all, and gets `return 404`.
+
+So the expected results are:
+
+| Request | Expected | Meaning |
+| --- | --- | --- |
+| `http://18.222.239.106/` | **404** | By design. Not an outage. |
+| `http://18.222.239.106.sslip.io/` | **301** → `https://…` | Certbot redirect. |
+| `https://18.222.239.106.sslip.io/` | **200** | The app. |
+
+Diagnose outages against the **hostname over HTTPS**, never the bare IP.
+
+---
+
+## 4. Secrets and env on the box
+
+The live env file is **`~/rett-react/rett-react/server/.env`**, mode `0600`,
+owned by `ubuntu`. It is gitignored and must never be committed — this repo is
+public. It currently sets:
+
+```
+GEMINI_API_KEY   # W-2 / 1040 autofill proxy
+GEMINI_MODEL     # gemini-2.5-flash
+PORT             # 8787
+ALLOWED_ORIGINS
+DATABASE_URL     # Neon Postgres — saved flows
+```
+
+`server/.env.example` is the annotated template; copy it and fill in real
+values from the Neon dashboard / password manager, out of band.
+
+`server/index.js` loads env from `/etc/rett/server.env` **first**, then
+`server/.env`, with `override: false` — so if `/etc/rett/server.env` ever
+exists it silently wins. **On this box `/etc/rett/` exists but is empty**, so
+`server/.env` is the file in effect. If the app comes up with the wrong key
+after you edited `server/.env`, check that nobody dropped a file into
+`/etc/rett/` — and remember `pm2 restart` needs `--update-env` to pick up env
+changes at all.
+
+Because env lives in the deploy dir, **`git reset --hard` does not touch it**
+(it is untracked/ignored), and neither does `npm ci`. Env changes are a
+separate, manual, deliberate act.
+
+---
+
+## 5. pm2
 
 ```bash
-sudo apt -y install certbot python3-certbot-nginx
-sudo certbot --nginx -d rett.yourdomain.com --non-interactive \
-  --agree-tos -m you@yourdomain.com --redirect
+pm2 list                      # app "rett" should be "online"
+pm2 describe rett             # script path, cwd, restart count
+pm2 logs rett --lines 200     # recent output
+pm2 restart rett --update-env
+pm2 save                      # persist for reboot
 ```
 
-Certbot rewrites the Nginx config to add the 443 server block and an
-HTTP→HTTPS redirect, and installs an auto-renew systemd timer.
+Facts as deployed:
 
-## 9. Updating the site
+- Name **`rett`**. (Older docs said `rett-api`; there has never been a process
+  by that name here. `pm2 restart rett-api` just errors.)
+- Runs as the **`ubuntu`** user, not a dedicated service account. Older docs
+  described a locked-down `rett` system user with env in `/etc/rett` — that was
+  never built. Worth doing someday; it is not what is running today.
+- Script `/home/ubuntu/rett-react/rett-react/server/index.js`, interpreter
+  `node`, cwd `/home/ubuntu/rett-react/rett-react`, fork mode.
+- Boot persistence: the `pm2-ubuntu` systemd unit is **enabled**, and the
+  process list is saved via `pm2 save`.
 
-**Simple deploy (git + pm2 — same as always):**
+---
 
-```bash
-cd ~/rett-react
-git pull origin main
-cd rett-react
-npm ci
-npm run build
-pm2 restart rett
-```
+## 6. Smoke tests
 
-The site PIN lives in `server/access-config.js` in the repo — no new env
-vars on EC2. Your existing `server/.env` (Gemini key only) is unchanged.
-
-Smoke test:
+On the box (bypasses Nginx — isolates "is the app up?"):
 
 ```bash
 curl -s http://127.0.0.1:8787/api/health
 curl -s http://127.0.0.1:8787/api/access/status
 ```
 
-When the upstream calculator changes:
+`/api/health` should return `{"ok":true,"keyConfigured":true,"defaultModel":"gemini-2.5-flash",...}`.
+`keyConfigured:false` means the Gemini key did not load — see §4.
+
+From anywhere (exercises DNS + TLS + Nginx + app):
 
 ```bash
-# locally
-cd rett-react && npm run sync:upstream && npm run build
-rsync -avz --delete dist/ ubuntu@HOST:/var/www/rett-react/dist/
+curl -sS -o /dev/null -w '%{http_code}\n' https://18.222.239.106.sslip.io/
+curl -sS https://18.222.239.106.sslip.io/api/health
 ```
 
-## 10. Operational checklist
+Both endpoints are outside the PIN gate, so they answer without a session
+cookie. Loading the app itself in a browser prompts for the PIN — that is the
+access gate working, not a failure.
 
-- [ ] Rotated the Gemini key that was leaked in chat? (do this first)
-- [ ] `/etc/rett/server.env` is `0640 root:rett`?
-- [ ] `pm2 status` shows `rett-api` `online`?
-- [ ] `curl https://rett.yourdomain.com/api/health` returns `keyConfigured: true`?
-- [ ] `Nginx access log` shows `/api/gemini/extract-w2` `200`s when you upload a W-2?
-- [ ] `pm2 logs rett-api --lines 200` is clean?
-- [ ] Cloudwatch / billing alarm set on the AWS account so a leaked endpoint
-      doesn't surprise you with a bill?
-- [ ] Gemini per-key budget cap configured in Google AI Studio? (separate
-      from AWS — limits the API spend specifically.)
+A green deploy is: `pm2 list` shows `rett` online, both local curls succeed,
+the public URL returns 200, and the browser loads past the PIN.
 
-## 11. Cost notes
+---
 
-- `t3.small` on-demand: ~$15/mo. Reserved 1-year: ~$9/mo.
-- Outbound data: first 1 GB/mo is free, then $0.09/GB. The whole bundle is
-  ~250 KB gzipped; serving 100k page views ≈ 25 GB out ≈ $2.25.
+## 7. TLS certificates
+
+- Cert lives at `/etc/letsencrypt/live/18.222.239.106.sslip.io/`, issued by
+  Let's Encrypt for CN `18.222.239.106.sslip.io`.
+- Current cert: issued 2026-07-24, **valid to 2026-10-22**.
+- Renewal is automatic — `certbot.timer` is enabled and active. Certbot
+  renews within 30 days of expiry and reloads Nginx itself.
+
+Check or dry-run:
+
+```bash
+sudo certbot certificates
+sudo certbot renew --dry-run
+```
+
+---
+
+## 8. If the elastic IP changes
+
+The IP is baked into the hostname, so an IP change breaks the hostname, the
+cert, and the Nginx `server_name` at once. Re-point everything to the new
+`<new-ip>.sslip.io`:
+
+```bash
+sudo sed -i 's/18\.222\.239\.106/<NEW-IP>/g' /etc/nginx/sites-available/rett.conf
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d <NEW-IP>.sslip.io --agree-tos -m you@example.com --redirect
+```
+
+Then update §1 of this doc, and `ALLOWED_ORIGINS` in `server/.env` if it names
+the old hostname. Better: keep the elastic IP associated so this never happens.
+
+---
+
+## 9. Known drift on the box (untracked files)
+
+`git status` in `~/rett-react` is **not** clean. Two untracked files:
+
+| File | What it is |
+| --- | --- |
+| `package-lock.json` (repo root) | Stray. Left by an `npm install` run at the repo root, where there is no `package.json`. Harmless but confusing — nothing reads it. |
+| `rett-react/server/.env.bak.1784854323` | An env backup sitting next to the live `server/.env`. |
+
+**The `.env.bak` file should be removed.** It contains a `GEMINI_API_KEY` line
+(it predates the Neon work — no `DATABASE_URL`), and unlike the live `.env`
+(mode `0600`) it is mode **`0664` — readable by every user on the box**. That
+is a real, if small, credential-exposure gap, and the key in it is stale enough
+to be worth rotating rather than preserving.
+
+Neither file affects the running app, and neither is removed by the deploy
+sequence (`git reset --hard` leaves untracked files alone). Cleanup, when
+someone decides to do it:
+
+```bash
+rm ~/rett-react/rett-react/server/.env.bak.1784854323
+rm ~/rett-react/package-lock.json
+```
+
+Deliberately **not** part of the deploy runbook — deleting a file that might be
+the only copy of a working key belongs to a human, not to a script.
+
+---
+
+## 10. Rebuilding this box from scratch
+
+Only needed if the instance is lost. This reflects what is actually deployed,
+not an aspiration.
+
+```bash
+# --- 1. Launch: Ubuntu 26.04 LTS, t3.micro, 8 GB gp3, us-east-2.
+#        Security group: inbound 22 (your IP), 80, 443 (0.0.0.0/0). Outbound all.
+#        Allocate + associate an elastic IP.
+
+# --- 2. Bootstrap
+sudo apt update && sudo apt -y upgrade
+sudo apt -y install nginx git curl ufw
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt -y install nodejs
+sudo npm i -g pm2
+
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'
+sudo ufw --force enable
+
+# --- 3. Code
+cd ~ && git clone https://github.com/BrookHavenTax/rett.git rett-react
+cd ~/rett-react/rett-react
+npm ci          # postinstall also installs server/ deps
+npm run build
+
+# --- 4. Secrets  (see §4 for the key list; get real values out of band)
+cp server/.env.example server/.env
+chmod 600 server/.env
+${EDITOR:-nano} server/.env
+
+# --- 5. pm2
+pm2 start server/index.js --name rett
+pm2 save
+pm2 startup systemd -u ubuntu --hp /home/ubuntu   # run the sudo line it prints
+
+# --- 6. Nginx — plain HTTP first; certbot adds the TLS block in step 7.
+sudo tee /etc/nginx/sites-available/rett.conf > /dev/null <<'EOF'
+server {
+  listen 80;
+  server_name <NEW-IP>.sslip.io;
+
+  client_max_body_size 12m;
+
+  location / {
+    proxy_pass         http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 120s;
+  }
+}
+EOF
+sudo ln -sf /etc/nginx/sites-available/rett.conf /etc/nginx/sites-enabled/rett.conf
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+
+# --- 7. TLS
+sudo apt -y install certbot python3-certbot-nginx
+sudo certbot --nginx -d <NEW-IP>.sslip.io --non-interactive \
+  --agree-tos -m you@example.com --redirect
+```
+
+Then run §6's smoke tests and update §1 with the new IP.
+
+---
+
+## 11. Operational checklist
+
+- [ ] `pm2 list` shows **`rett`** `online`?
+- [ ] `curl http://127.0.0.1:8787/api/health` returns `keyConfigured: true`?
+- [ ] `curl https://18.222.239.106.sslip.io/api/health` returns the same from outside?
+- [ ] Browser loads `https://18.222.239.106.sslip.io/` and prompts for the PIN?
+- [ ] `pm2 logs rett --lines 200` clean?
+- [ ] `git status` in `~/rett-react` shows only the two known untracked files (§9)?
+- [ ] `sudo certbot certificates` shows > 30 days remaining?
+- [ ] `server/.env` still mode `0600`?
+- [ ] AWS billing alarm set, and a Gemini per-key budget cap in Google AI Studio?
+
+## 12. Cost notes
+
+- `t3.micro` on-demand in `us-east-2`: ~$7.50/mo, plus ~$0.80/mo for the 8 GB
+  gp3 volume. An idle elastic IP costs extra only when *not* associated.
+- Outbound data: first 1 GB/mo free, then ~$0.09/GB. The bundle is ~250 KB
+  gzipped, so 100k page views ≈ 25 GB out ≈ $2.25.
 - Gemini 2.5 Flash: ~$0.075 per million input tokens, ~$0.30 per million
-  output. A W-2 extraction is roughly 2–4k input tokens + ~200 output, so
-  ~$0.0005/extraction.
+  output. A W-2 extraction is ~2–4k input + ~200 output ≈ $0.0005 each.
+- The box is small: ~900 MB RAM and ~3 GB free disk. `npm ci && npm run build`
+  runs on it comfortably today, but it is the tightest part of the deploy — if
+  a build ever dies mid-way, check `df -h` and memory before blaming the code.

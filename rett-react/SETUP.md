@@ -88,5 +88,6 @@ curl -s http://localhost:8787/api/health
 | Browser sync + Saved Flows UI | `public/rett-react-only/cloud-sync.js` |
 | History page scaffold | `src/components/pages/PageHistory.tsx` |
 
-Production deployment (env in `/etc/rett/server.env`, pm2, Nginx) is covered in
+Production deployment (env in `server/.env` on the EC2 box, pm2, Nginx as a TLS
+terminator in front of a single Node process) is covered in
 [DEPLOYMENT.md](DEPLOYMENT.md).
